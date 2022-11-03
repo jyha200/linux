@@ -155,10 +155,10 @@ static int journal_submit_commit_record(journal_t *journal,
 
 	if (journal->j_flags & NJBD2_BARRIER &&
 	    !njbd2_has_feature_async_commit(journal))
-		ret = submit_bh(REQ_OP_WRITE | REQ_SYNC | REQ_PREFLUSH |
+		ret = submit_bh_fake(REQ_OP_WRITE | REQ_SYNC | REQ_PREFLUSH |
 				REQ_FUA, bh);
 	else
-		ret = submit_bh(REQ_OP_WRITE | REQ_SYNC, bh);
+		ret = submit_bh_fake(REQ_OP_WRITE | REQ_SYNC, bh);
 
 	*cbh = bh;
 	return ret;
@@ -763,7 +763,7 @@ start_journal_io:
 				clear_buffer_dirty(bh);
 				set_buffer_uptodate(bh);
 				bh->b_end_io = journal_end_buffer_io_sync;
-				submit_bh(REQ_OP_WRITE | REQ_SYNC, bh);
+				submit_bh_fake(REQ_OP_WRITE | REQ_SYNC, bh);
 			}
 			cond_resched();
 
@@ -816,7 +816,7 @@ start_journal_io:
 	if (commit_transaction->t_need_data_flush &&
 	    (journal->j_fs_dev != journal->j_dev) &&
 	    (journal->j_flags & NJBD2_BARRIER))
-		blkdev_issue_flush(journal->j_fs_dev);
+		blkdev_issue_flush_fake(journal->j_fs_dev, __func__);
 
 	/* Done it all: now write the commit record asynchronously. */
 	if (njbd2_has_feature_async_commit(journal)) {
@@ -923,7 +923,7 @@ start_journal_io:
 	stats.run.rs_blocks_logged++;
 	if (njbd2_has_feature_async_commit(journal) &&
 	    journal->j_flags & NJBD2_BARRIER) {
-		blkdev_issue_flush(journal->j_dev);
+		blkdev_issue_flush_fake(journal->j_dev, __func__);
 	}
 
 	if (err)

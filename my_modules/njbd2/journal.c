@@ -1636,7 +1636,7 @@ static int njbd2_write_superblock(journal_t *journal, blk_opf_t write_flags)
 		sb->s_checksum = njbd2_superblock_csum(journal, sb);
 	get_bh(bh);
 	bh->b_end_io = end_buffer_write_sync;
-	ret = submit_bh(REQ_OP_WRITE | write_flags, bh);
+	ret = submit_bh_fake(REQ_OP_WRITE | write_flags, bh);
 	wait_on_buffer(bh);
 	if (buffer_write_io_error(bh)) {
 		clear_buffer_write_io_error(bh);
@@ -1844,7 +1844,7 @@ static int __njbd2_journal_erase(journal_t *journal, unsigned int flags)
 		block_start = ~0ULL;
 	}
 
-	return blkdev_issue_flush(journal->j_dev);
+	return blkdev_issue_flush_fake(journal->j_dev, __func__);
 }
 
 /**

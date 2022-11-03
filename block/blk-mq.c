@@ -2829,6 +2829,9 @@ void blk_mq_submit_bio(struct bio *bio)
 	}
 
 	if (op_is_flush(bio->bi_opf)) {
+    if (op_is_fake_flush(bio->bi_opf)) {
+      rq->cmd_flags |= REQ_FAKE_FLUSH;
+    }
 		blk_insert_flush(rq);
 		return;
 	}

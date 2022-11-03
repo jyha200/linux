@@ -171,7 +171,7 @@ static inline void __next4_read_bh(struct buffer_head *bh, blk_opf_t op_flags,
 
 	bh->b_end_io = end_io ? end_io : end_buffer_read_sync;
 	get_bh(bh);
-	submit_bh(REQ_OP_READ | op_flags, bh);
+	submit_bh_fake(REQ_OP_READ | op_flags, bh);
 }
 
 void next4_read_bh_nowait(struct buffer_head *bh, blk_opf_t op_flags,
@@ -5949,7 +5949,7 @@ static int next4_commit_super(struct super_block *sb)
 	/* Clear potential dirty bit if it was journalled update */
 	clear_buffer_dirty(sbh);
 	sbh->b_end_io = end_buffer_write_sync;
-	submit_bh(REQ_OP_WRITE | REQ_SYNC |
+	submit_bh_fake(REQ_OP_WRITE | REQ_SYNC |
 		  (test_opt(sb, BARRIER) ? REQ_FUA : 0), sbh);
 	wait_on_buffer(sbh);
 	if (buffer_write_io_error(sbh)) {
@@ -6097,7 +6097,7 @@ static int next4_sync_fs(struct super_block *sb, int wait)
 		needs_barrier = true;
 	if (needs_barrier) {
 		int err;
-		err = blkdev_issue_flush(sb->s_bdev);
+		err = blkdev_issue_flush_fake(sb->s_bdev, __func__);
 		if (!ret)
 			ret = err;
 	}

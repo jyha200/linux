@@ -668,7 +668,7 @@ static void next4_fc_submit_bh(struct super_block *sb, bool is_tail)
 	set_buffer_dirty(bh);
 	set_buffer_uptodate(bh);
 	bh->b_end_io = next4_end_buffer_io_sync;
-	submit_bh(REQ_OP_WRITE | write_flags, bh);
+	submit_bh_fake(REQ_OP_WRITE | write_flags, bh);
 	NEXT4_SB(sb)->s_fc_bh = NULL;
 }
 
@@ -1115,7 +1115,7 @@ static int next4_fc_perform_commit(journal_t *journal)
 	 * flush before we start writing fast commit blocks.
 	 */
 	if (journal->j_fs_dev != journal->j_dev)
-		blkdev_issue_flush(journal->j_fs_dev);
+		blkdev_issue_flush_fake(journal->j_fs_dev, __func__);
 
 	blk_start_plug(&plug);
 	if (sbi->s_fc_bytes == 0) {
@@ -1598,7 +1598,7 @@ static int next4_fc_replay_inode(struct super_block *sb, struct next4_fc_tl *tl,
 out:
 	iput(inode);
 	if (!ret)
-		blkdev_issue_flush(sb->s_bdev);
+		blkdev_issue_flush_fake(sb->s_bdev, __func__);
 
 	return 0;
 }

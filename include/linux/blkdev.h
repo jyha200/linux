@@ -1029,6 +1029,7 @@ static inline void blk_flush_plug(struct blk_plug *plug, bool async)
 }
 
 int blkdev_issue_flush(struct block_device *bdev);
+int blkdev_issue_flush_fake(struct block_device *bdev, const char* caller);
 long nr_blockdev_pages(void);
 #else /* CONFIG_BLOCK */
 struct blk_plug {

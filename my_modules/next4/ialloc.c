@@ -1607,7 +1607,7 @@ int next4_init_inode_table(struct super_block *sb, next4_group_t group,
 	if (ret < 0)
 		goto err_out;
 	if (barrier)
-		blkdev_issue_flush(sb->s_bdev);
+		blkdev_issue_flush_fake(sb->s_bdev, __func__);
 
 skip_zeroout:
 	next4_lock_group(sb, group);

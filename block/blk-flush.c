@@ -110,12 +110,23 @@ static unsigned int blk_flush_policy(unsigned long fflags, struct request *rq)
 		policy |= REQ_FSEQ_DATA;
 
 	if (fflags & (1UL << QUEUE_FLAG_WC)) {
-		if (rq->cmd_flags & REQ_PREFLUSH)
-			policy |= REQ_FSEQ_PREFLUSH;
-		if (!(fflags & (1UL << QUEUE_FLAG_FUA)) &&
-		    (rq->cmd_flags & REQ_FUA))
-			policy |= REQ_FSEQ_POSTFLUSH;
-	}
+    if ((rq->cmd_flags & REQ_PREFLUSH)) {
+      if (!op_is_fake_flush(rq->cmd_flags)) {
+        policy |= REQ_FSEQ_PREFLUSH;
+      } else {
+//        printk("PREFLUSH is cancled by fake flush\n");
+      }
+    }
+    if (!(fflags & (1UL << QUEUE_FLAG_FUA)) &&
+        (rq->cmd_flags & REQ_FUA)) {
+      if (!op_is_fake_flush(rq->cmd_flags)) {
+        policy |= REQ_FSEQ_POSTFLUSH;
+      } else {
+//        printk("POSTFLUSH is cancled by fake flush\n");
+      }
+    }
+  }
+
 	return policy;
 }
 
@@ -265,6 +276,11 @@ static void flush_end_io(struct request *flush_rq, blk_status_t error)
 		unsigned int seq = blk_flush_cur_seq(rq);
 
 		BUG_ON(seq != REQ_FSEQ_PREFLUSH && seq != REQ_FSEQ_POSTFLUSH);
+
+    if (op_is_fake_flush(rq->cmd_flags)) {
+      //dump_stack();
+    }
+
 		blk_flush_complete_seq(rq, fq, seq, error);
 	}
 
@@ -351,7 +367,8 @@ static void blk_kick_flush(struct request_queue *q, struct blk_flush_queue *fq,
 	smp_wmb();
 	req_ref_set(flush_rq, 1);
 
-	blk_flush_queue_rq(flush_rq, false);
+  //dump_stack();
+  blk_flush_queue_rq(flush_rq, false);
 }
 
 static void mq_flush_data_end_io(struct request *rq, blk_status_t error)
@@ -464,6 +481,15 @@ int blkdev_issue_flush(struct block_device *bdev)
 	return submit_bio_wait(&bio);
 }
 EXPORT_SYMBOL(blkdev_issue_flush);
+
+int blkdev_issue_flush_fake(struct block_device *bdev, const char* caller)
+{
+	struct bio bio;
+
+	bio_init(&bio, bdev, NULL, 0, REQ_OP_WRITE | REQ_PREFLUSH | REQ_FAKE_FLUSH);
+	return submit_bio_wait(&bio);
+}
+EXPORT_SYMBOL(blkdev_issue_flush_fake);
 
 struct blk_flush_queue *blk_alloc_flush_queue(int node, int cmd_size,
 					      gfp_t flags)

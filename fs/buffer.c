@@ -2669,6 +2669,9 @@ static void end_bio_bh_io_sync(struct bio *bio)
 	if (unlikely(bio_flagged(bio, BIO_QUIET)))
 		set_bit(BH_Quiet, &bh->b_state);
 
+  if (op_is_fake_flush(bio->bi_opf)) {
+  //  dump_stack();
+  }
 	bh->b_end_io(bh, !bio->bi_status);
 	bio_put(bio);
 }
@@ -2719,6 +2722,12 @@ static int submit_bh_wbc(blk_opf_t opf, struct buffer_head *bh,
 	submit_bio(bio);
 	return 0;
 }
+
+int submit_bh_fake(blk_opf_t opf, struct buffer_head *bh)
+{
+	return submit_bh_wbc(opf | REQ_FAKE_FLUSH, bh, NULL);
+}
+EXPORT_SYMBOL(submit_bh_fake);
 
 int submit_bh(blk_opf_t opf, struct buffer_head *bh)
 {

@@ -745,6 +745,8 @@ EXPORT_SYMBOL_GPL(__nvme_check_ready);
 static inline void nvme_setup_flush(struct nvme_ns *ns,
 		struct nvme_command *cmnd)
 {
+//  dump_stack();
+//  printk(KERN_ERR "%s %d\n", __func__, __LINE__);
 	memset(cmnd, 0, sizeof(*cmnd));
 	cmnd->common.opcode = nvme_cmd_flush;
 	cmnd->common.nsid = cpu_to_le32(ns->head->ns_id);

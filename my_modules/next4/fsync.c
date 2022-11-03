@@ -174,7 +174,7 @@ int next4_sync_file(struct file *file, loff_t start, loff_t end, int datasync)
 		ret = next4_fsync_journal(inode, datasync, &needs_barrier);
 
 	if (needs_barrier) {
-		err = blkdev_issue_flush(inode->i_sb->s_bdev);
+		err = blkdev_issue_flush_fake(inode->i_sb->s_bdev, __func__);
 		if (!ret)
 			ret = err;
 	}

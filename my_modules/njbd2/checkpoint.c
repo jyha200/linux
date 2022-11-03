@@ -400,7 +400,7 @@ int njbd2_cleanup_journal_tail(journal_t *journal)
 	 * njbd2_cleanup_journal_tail() doesn't get called all that often.
 	 */
 	if (journal->j_flags & NJBD2_BARRIER)
-		blkdev_issue_flush(journal->j_fs_dev);
+		blkdev_issue_flush_fake(journal->j_fs_dev, __func__);
 
 	return __njbd2_update_log_tail(journal, first_tid, blocknr);
 }

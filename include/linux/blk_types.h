@@ -424,6 +424,8 @@ enum req_flag_bits {
 	/* for REQ_OP_WRITE_ZEROES: */
 	__REQ_NOUNMAP,		/* do not free blocks when zeroing */
 
+	__REQ_FAKE_FLUSH,
+
 	__REQ_NR_BITS,		/* stops here */
 };
 
@@ -452,6 +454,8 @@ enum req_flag_bits {
 
 #define REQ_DRV		(__force blk_opf_t)(1ULL << __REQ_DRV)
 #define REQ_SWAP	(__force blk_opf_t)(1ULL << __REQ_SWAP)
+
+#define REQ_FAKE_FLUSH	(__force blk_opf_t)(1ULL << __REQ_FAKE_FLUSH)
 
 #define REQ_FAILFAST_MASK \
 	(REQ_FAILFAST_DEV | REQ_FAILFAST_TRANSPORT | REQ_FAILFAST_DRIVER)
@@ -492,6 +496,11 @@ static inline bool op_is_write(blk_opf_t op)
 static inline bool op_is_flush(blk_opf_t op)
 {
 	return op & (REQ_FUA | REQ_PREFLUSH);
+}
+
+static inline bool op_is_fake_flush(blk_opf_t op)
+{
+	return op & (REQ_FAKE_FLUSH);
 }
 
 /*
