@@ -247,11 +247,15 @@ static int nvme_user_cmd(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 	unsigned timeout = 0;
 	u64 result;
 	int status;
+	int no_user_mem = 0;
+	struct nvme_passthru_cmd* temp = ucmd;
 
 	if (!capable(CAP_SYS_ADMIN))
 		return -EACCES;
-	if (copy_from_user(&cmd, ucmd, sizeof(cmd)))
-		return -EFAULT;
+	if (copy_from_user(&cmd, ucmd, sizeof(cmd))) {
+		memcpy(&cmd, ucmd, sizeof(ucmd));
+		no_user_mem = 1;
+	}
 	if (cmd.flags)
 		return -EINVAL;
 	if (!nvme_validate_passthru_nsid(ctrl, ns, cmd.nsid))
@@ -279,8 +283,11 @@ static int nvme_user_cmd(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 			0, &result, timeout, false);
 
 	if (status >= 0) {
-		if (put_user(result, &ucmd->result))
+		if (no_user_mem) {
+			temp->result = result;
+		} else if (put_user(result, &ucmd->result)) {
 			return -EFAULT;
+		}
 	}
 
 	return status;
