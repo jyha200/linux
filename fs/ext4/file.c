@@ -257,9 +257,15 @@ static ssize_t ext4_buffered_write_iter(struct kiocb *iocb,
 {
 	ssize_t ret;
 	struct inode *inode = file_inode(iocb->ki_filp);
+  struct super_block *sb = inode->i_sb;
 
 	if (iocb->ki_flags & IOCB_NOWAIT)
 		return -EOPNOTSUPP;
+
+  if (sb->s_readonly_remount || sb_rdonly(sb)) {
+    printk("ext4: try write to read only area");
+    return -EIO;
+  }
 
 	inode_lock(inode);
 	ret = ext4_write_checks(iocb, from);
