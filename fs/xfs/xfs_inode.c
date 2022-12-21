@@ -860,6 +860,7 @@ xfs_init_new_inode(
 
 	ip->i_extsize = 0;
 	ip->i_diflags = 0;
+  ip->i_failed = false;
 
 	if (xfs_has_v3inodes(mp)) {
 		inode_set_iversion(inode, 1);

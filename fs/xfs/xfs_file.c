@@ -747,6 +747,10 @@ write_retry:
 	ret = xfs_file_write_checks(iocb, from, &iolock);
 	if (ret)
 		goto out;
+  if (ip->i_failed) {
+    ret = -EIO;
+    goto out;
+  }
 
 	/* We can write back this queue in page reclaim */
 	current->backing_dev_info = inode_to_bdi(inode);
