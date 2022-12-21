@@ -79,6 +79,7 @@ typedef struct xfs_inode {
 	spinlock_t		i_ioend_lock;
 	struct work_struct	i_ioend_work;
 	struct list_head	i_ioend_list;
+  bool i_failed;
 } xfs_inode_t;
 
 static inline bool xfs_inode_has_attr_fork(struct xfs_inode *ip)
