@@ -706,6 +706,7 @@ xfs_file_buffered_write(
 	ssize_t			ret;
 	bool			cleared_space = false;
 	unsigned int		iolock;
+  struct xfs_mount *mp = ip->i_mount;
 
 write_retry:
 	iolock = XFS_IOLOCK_EXCL;
@@ -716,7 +717,7 @@ write_retry:
 	ret = xfs_file_write_checks(iocb, from, &iolock);
 	if (ret)
 		goto out;
-  if (ip->i_failed) {
+  if (mp->m_failed) {
     ret = -EIO;
     goto out;
   }

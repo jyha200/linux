@@ -942,6 +942,7 @@ xfs_sb_mount_common(
 	mp->m_bsize = XFS_FSB_TO_BB(mp, 1);
 	mp->m_alloc_set_aside = xfs_alloc_set_aside(mp);
 	mp->m_ag_max_usable = xfs_alloc_ag_max_usable(mp);
+  mp->m_failed = false;
 }
 
 /*

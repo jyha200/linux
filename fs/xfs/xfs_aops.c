@@ -133,7 +133,7 @@ xfs_end_ioend(
 		error = xfs_setfilesize(ip, ioend->io_offset, ioend->io_size);
 done:
   if (error) {
-    ip->i_failed = true;
+    mp->m_failed = true;
   }
 
 	iomap_finish_ioends(ioend, error);
