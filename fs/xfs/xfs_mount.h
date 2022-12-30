@@ -230,6 +230,7 @@ typedef struct xfs_mount {
 	 */
 	uint32_t		m_generation;
 	struct mutex		m_growlock;	/* growfs mutex */
+  bool m_failed;
 
 #ifdef DEBUG
 	/*
