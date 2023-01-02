@@ -1597,6 +1597,8 @@ struct super_block {
 
 	spinlock_t		s_inode_wblist_lock;
 	struct list_head	s_inodes_wb;	/* writeback inodes */
+
+  bool s_failed;
 } __randomize_layout;
 
 /* Helper functions so that in most cases filesystems will

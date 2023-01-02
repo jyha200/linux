@@ -586,9 +586,21 @@ ssize_t vfs_write(struct file *file, const char __user *buf, size_t count, loff_
 	file_start_write(file);
 	if (file->f_op->write)
 		ret = file->f_op->write(file, buf, count, pos);
-	else if (file->f_op->write_iter)
-		ret = new_sync_write(file, buf, count, pos);
-	else
+	else if (file->f_op->write_iter){
+    ret = 0;
+    if (file->f_mapping) {
+      if (file->f_mapping->host) {
+	      struct inode *inode = file->f_mapping->host;
+        struct super_block *sb = inode->i_sb;
+        if (sb->s_failed) {
+          ret = -EIO;
+        }
+      }
+    }
+    if (ret >= 0) {
+      ret = new_sync_write(file, buf, count, pos);
+    }
+  } else
 		ret = -EINVAL;
 	if (ret > 0) {
 		fsnotify_modify(file);
