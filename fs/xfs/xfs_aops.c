@@ -134,6 +134,7 @@ xfs_end_ioend(
 done:
   if (error) {
     mp->m_failed = true;
+    mp->m_super->s_failed = true;
   }
 
 	iomap_finish_ioends(ioend, error);
