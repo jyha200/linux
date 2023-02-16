@@ -255,6 +255,7 @@ static int nvme_user_cmd(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 	if (copy_from_user(&cmd, ucmd, sizeof(cmd))) {
 		memcpy(&cmd, ucmd, sizeof(ucmd));
 		no_user_mem = 1;
+		cmd.timeout_ms = ucmd->timeout_ms;
 	}
 	if (cmd.flags)
 		return -EINVAL;
