@@ -953,6 +953,17 @@ ssize_t part_stat_show(struct device *dev,
 		(unsigned int)div_u64(stat.nsecs[STAT_FLUSH], NSEC_PER_MSEC));
 }
 
+void part_inflight_get(struct device *dev, char *buf, unsigned int* inflight) {
+  struct block_device *bdev = dev_to_bdev(dev);
+  struct request_queue *q = bdev_get_queue(bdev);
+
+  if (queue_is_mq(q))
+    blk_mq_in_flight_rw(q, bdev, inflight);
+  else
+    part_in_flight_rw(bdev, inflight);
+}
+EXPORT_SYMBOL_GPL(part_inflight_get);
+
 ssize_t part_inflight_show(struct device *dev, struct device_attribute *attr,
 			   char *buf)
 {
