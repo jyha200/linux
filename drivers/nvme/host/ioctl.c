@@ -152,7 +152,7 @@ static inline bool nvme_is_fixedb_passthru(struct io_uring_cmd *ioucmd)
 	return ((ioucmd) && (ioucmd->flags & URING_CMD_FIXEDBUFS));
 }
 
-static int nvme_submit_user_cmd(struct request_queue *q,
+int nvme_submit_user_cmd(struct request_queue *q,
 		struct nvme_command *cmd, u64 ubuffer,
 		unsigned bufflen, void __user *meta_buffer, unsigned meta_len,
 		u32 meta_seed, u64 *result, unsigned timeout,
@@ -225,6 +225,7 @@ static int nvme_submit_user_cmd(struct request_queue *q,
 	blk_mq_free_request(req);
 	return ret;
 }
+EXPORT_SYMBOL_GPL(nvme_submit_user_cmd);
 
 
 static int nvme_submit_io(struct nvme_ns *ns, struct nvme_user_io __user *uio)
