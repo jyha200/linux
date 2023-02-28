@@ -604,6 +604,7 @@ static inline unsigned int blk_queue_depth(struct request_queue *q)
 	for (; _bio; _bio = _bio->bi_next)
 
 void part_inflight_get(struct device *dev, char *buf, unsigned int* inflight);
+void part_stat_get2(struct device *dev, unsigned long* stats);
 
 extern int blk_register_queue(struct gendisk *disk);
 extern void blk_unregister_queue(struct gendisk *disk);

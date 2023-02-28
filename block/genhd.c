@@ -909,6 +909,32 @@ ssize_t part_size_show(struct device *dev,
 	return sprintf(buf, "%llu\n", bdev_nr_sectors(dev_to_bdev(dev)));
 }
 
+void part_stat_get2(struct device *dev, unsigned long* stats)
+{
+	struct block_device *bdev = dev_to_bdev(dev);
+	struct request_queue *q = bdev_get_queue(bdev);
+	struct disk_stats stat;
+	unsigned int inflight;
+
+	if (queue_is_mq(q))
+		inflight = blk_mq_in_flight(q, bdev);
+	else
+		inflight = part_in_flight(bdev);
+
+	if (inflight) {
+		part_stat_lock();
+		update_io_ticks(bdev, jiffies, true);
+		part_stat_unlock();
+	}
+	part_stat_read_all(bdev, &stat);
+  stats[0] = inflight;
+  stats[1] = stat.ios[STAT_WRITE];
+  stats[2] = stat.sectors[STAT_WRITE];
+  stats[3] = stat.ios[STAT_READ];
+  stats[4] = stat.sectors[STAT_READ];
+}
+EXPORT_SYMBOL_GPL(part_stat_get2);
+
 ssize_t part_stat_show(struct device *dev,
 		       struct device_attribute *attr, char *buf)
 {
