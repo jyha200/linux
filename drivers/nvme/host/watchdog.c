@@ -95,6 +95,8 @@ int watchdog_fn(void* arg) {
   struct device* raw_devs[MAX_DEVICES] = {0,};
   struct nvme_command c;
   unsigned timeout = msecs_to_jiffies(timeout_ms);
+  unsigned long prev_stats[5] = {0,};
+  bool first = true;
   memset(&c, 0x0, sizeof(struct nvme_command));
   c.common.opcode = INVALID_OPCODE;
   parse_device_list();
@@ -123,25 +125,35 @@ int watchdog_fn(void* arg) {
         int ret = 0;
         u64 result = 0;
         struct file* dev = devs[idx];
-        unsigned int inflights[2];
+        unsigned long stats[5];
         long long time_diff;
         struct nvme_ctrl* ctrl = devs[idx]->private_data;
         ktime_t start_time, end_time;
-        part_inflight_get(raw_devs[idx], NULL, inflights);
+        part_stat_get2(raw_devs[idx], stats);
         start_time = ktime_get();
         ret = nvme_submit_user_cmd(ctrl->admin_q, &c, NULL, 0, NULL, 0, 0, &result, timeout, false);
         end_time = ktime_get();
         time_diff = ktime_to_ns(ktime_sub(end_time, start_time));
-        printk("inflights %u %u , duration %lld ns", inflights[0], inflights[1], time_diff);
+        if (first) {
+          printk("inflights %lu duration %lld ns", stats[0], time_diff);
+        } else {
+          printk("inflights %lu w_ios %lu w_secs %lu r_ios %lu r_secs %lu duration %lld ns", stats[0], stats[1] - prev_stats[1], stats[2] - prev_stats[2], stats[3] - prev_stats[3], stats[4] - prev_stats[4], time_diff);
+        }
         if (ret == -4) {
           if (validate_path(validated_device_path[idx])) {
-            printk("inference failed");
+//            printk("inference failed");
           } else {
             filp_close(dev, NULL);
             devs[idx] = NULL;
             printk("device failure detected");
           }
         }
+        prev_stats[0] = stats[0];
+        prev_stats[1] = stats[1];
+        prev_stats[2] = stats[2];
+        prev_stats[3] = stats[3];
+        prev_stats[4] = stats[4];
+        first = false;
       }
     }
     msleep(polling_duration_ms);

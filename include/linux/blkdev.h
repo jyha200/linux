@@ -809,6 +809,7 @@ static inline u64 sb_bdev_nr_blocks(struct super_block *sb)
 int bdev_disk_changed(struct gendisk *disk, bool invalidate);
 
 void part_inflight_get(struct device *dev, char *buf, unsigned int* inflight);
+void part_stat_get2(struct device *dev, unsigned long* stats);
 void put_disk(struct gendisk *disk);
 struct gendisk *__blk_alloc_disk(int node, struct lock_class_key *lkclass);
 
