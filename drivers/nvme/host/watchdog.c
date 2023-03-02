@@ -26,9 +26,11 @@ static int num_devices = 0;
 static int cur_idx = 0;
 static long polling_duration_ms = 1000;
 static long timeout_ms = 50;
+static long max_kiops = 480;
 module_param(device_list, charp, 0);
 module_param(polling_duration_ms, long, 0);
 module_param(timeout_ms, long, 0);
+module_param(max_kiops, long, 0);
 
 void parse_device_list(void) {
   char* ret = strsep(&device_list, ",");
@@ -87,20 +89,99 @@ int get_next_nvme_dev(void) {
   }
   return cur_idx;
 }
+#define NUM_LAT (4)
+#define NUM_IOPS (2)
+#define NUM_SIZE (4)
+#define NUM_INFLIGHT (2)
 
+const int ALPHA = 3;
+const int GAMMA = 8;
+const int REWARD_CORRECT = 10;
+const int REWARD_SOME_CORRECT = -5;
+const int REWARD_NOT_CORRECT = -10;
+const int WORST_LAT = 1000; // 1 second
+int lat_bound[NUM_LAT - 1] = {1, 4, 16};
+int iops_bound[NUM_IOPS - 1];
+int size_bound[NUM_SIZE - 1] = {8, 32, 128};
+int inflight_bound[NUM_INFLIGHT - 1] = {13};
+
+int q_table[NUM_IOPS][NUM_SIZE][NUM_INFLIGHT][NUM_LAT] = {0,};
+
+int get_idx(int* bound, int num, int val) {
+  int i = 0;
+  for (; i < num - 1 ; i++) {
+    if (bound[i] > val) {
+      break;
+    }
+  }
+  return i;
+}
+
+int get_inflight_idx(int inflight) {
+  return get_idx(inflight_bound, NUM_INFLIGHT, inflight);
+}
+
+int get_size_idx(int size) {
+  return get_idx(size_bound, NUM_SIZE, size);
+}
+
+int get_iops_idx(int iops) {
+  return get_idx(iops_bound, NUM_IOPS, iops);
+}
+
+int get_lat_idx(int lat) {
+  return get_idx(lat_bound, NUM_LAT, lat);
+}
+
+unsigned infer_timeout(unsigned long iops, unsigned long inflight,
+    unsigned long size, int** max_loc) {
+  int inflight_idx = get_inflight_idx(inflight);
+  int size_idx = get_size_idx(size);
+  int iops_idx = get_iops_idx(iops);
+  int max_idx = 0;
+
+  *max_loc = &q_table[iops_idx][size_idx][inflight_idx][0];
+  for (int i = 1 ; i < NUM_LAT ; i++) {
+    if (**max_loc < q_table[iops_idx][size_idx][inflight_idx][i]) {
+      *max_loc = &q_table[iops_idx][size_idx][inflight_idx][i];
+      max_idx = i;
+    }
+  }
+  return max_idx;
+}
+
+const int CALIBRATION = 100000;
+
+void feedback(int* prev_loc, int cur_q, int reward) {
+  if (prev_loc != NULL) {
+    int val = *prev_loc / CALIBRATION / 10;
+    int diff = ALPHA * (reward + GAMMA * cur_q / CALIBRATION / 100 - val) * CALIBRATION;
+    if (INT_MAX - val > diff || INT_MIN - val < diff) {
+      *prev_loc += diff;
+    }
+    //    printf("%lf %d %lf %d\n", *prev_loc, val, cur_q, diff);
+  }
+}
 
 int watchdog_fn(void* arg) {
   int no_device_list = strlen(device_list) == 0;
   struct file* devs[MAX_DEVICES] = {0,};
   struct device* raw_devs[MAX_DEVICES] = {0,};
   struct nvme_command c;
-  unsigned timeout = msecs_to_jiffies(timeout_ms);
   unsigned long prev_stats[5] = {0,};
   bool first = true;
+  int* prev_loc = NULL;
+  int prev_reward = 0;
+  int spec_max_iops = max_kiops * 1000;
+  long good = 0, bad = 0, some_bad = 0, count = 0;
   memset(&c, 0x0, sizeof(struct nvme_command));
   c.common.opcode = INVALID_OPCODE;
   parse_device_list();
   validate_device_list();
+  for (int i = NUM_IOPS - 2 ; i >= 0 ; i--) {
+    iops_bound[i] = spec_max_iops;
+    spec_max_iops >>= 1;
+  }
 
   for (int i = 0 ; i < num_devices ; i++) {
     if (validated_device_path[i][0] != '\0') {
@@ -122,6 +203,7 @@ int watchdog_fn(void* arg) {
       if (devs[idx] == NULL) {
 //        printk("no valid nvme device");
       } else {
+        int reward = 0;
         int ret = 0;
         u64 result = 0;
         struct file* dev = devs[idx];
@@ -129,31 +211,76 @@ int watchdog_fn(void* arg) {
         long long time_diff;
         struct nvme_ctrl* ctrl = devs[idx]->private_data;
         ktime_t start_time, end_time;
+        unsigned timeout_idx = 0;
+        unsigned timeout = 0;
+        int real_time_idx = 0;
+        unsigned long iops = 0, size = 0, inflight = 0;
+        int* loc = NULL;
         part_stat_get2(raw_devs[idx], stats);
+        iops = stats[1] - prev_stats[1];
+        inflight = stats[0];
+        if (iops == 0) {
+          size = 0;
+        } else {
+          size = (stats[2] - prev_stats[2]) * 512 / iops;
+        }
+        timeout_idx = infer_timeout(iops, inflight, size, &loc);
+
+        if (timeout_idx < NUM_LAT - 1) {
+          timeout = msecs_to_jiffies(lat_bound[timeout_idx]);
+        } else {
+          timeout = msecs_to_jiffies(WORST_LAT);
+        }
+
         start_time = ktime_get();
         ret = nvme_submit_user_cmd(ctrl->admin_q, &c, NULL, 0, NULL, 0, 0, &result, timeout, false);
         end_time = ktime_get();
         time_diff = ktime_to_ns(ktime_sub(end_time, start_time));
+        real_time_idx = get_lat_idx(time_diff / 1000000);
+        //printk("inferred expected_idx %d exeuted_idx %d", timeout_idx, real_time_idx);
+#if 0
         if (first) {
           printk("inflights %lu duration %lld ns", stats[0], time_diff);
         } else {
           printk("inflights %lu w_ios %lu w_secs %lu r_ios %lu r_secs %lu duration %lld ns", stats[0], stats[1] - prev_stats[1], stats[2] - prev_stats[2], stats[3] - prev_stats[3], stats[4] - prev_stats[4], time_diff);
         }
+#endif
         if (ret == -4) {
           if (validate_path(validated_device_path[idx])) {
-//            printk("inference failed");
+            reward = REWARD_NOT_CORRECT;
+            bad++;
+            printk("inference failed");
           } else {
             filp_close(dev, NULL);
             devs[idx] = NULL;
             printk("device failure detected");
           }
         }
+        else {
+          if (timeout_idx == real_time_idx) {
+            reward = REWARD_CORRECT;
+            good++;
+          } else if (timeout_idx < real_time_idx) {
+            reward = REWARD_NOT_CORRECT;
+            bad++;
+          } else {
+            reward = REWARD_SOME_CORRECT;
+            some_bad++;
+          }
+        }
+        count++;
+        feedback(prev_loc, *loc, prev_reward);
         prev_stats[0] = stats[0];
         prev_stats[1] = stats[1];
         prev_stats[2] = stats[2];
         prev_stats[3] = stats[3];
         prev_stats[4] = stats[4];
+        prev_loc = loc;
+        prev_reward = reward;
         first = false;
+        if (count % 100 == 0) {
+          printk("%ld: %ld %ld %ld ratio %ld", count, good, some_bad, bad, good * 100 / count);
+        }
       }
     }
     msleep(polling_duration_ms);
