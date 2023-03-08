@@ -19,6 +19,8 @@ MODULE_IMPORT_NS(NVME_TARGET_PASSTHRU);
 #define MAX_DEVICES (32)
 #define MAX_PATH_LEN (64)
 
+#define EXCLUDE_IOPS (1)
+
 static char* device_list = "";
 static char* parsed_device_list[MAX_DEVICES];
 static char validated_device_path[MAX_DEVICES][MAX_PATH_LEN] = {0,};
@@ -124,9 +126,12 @@ int get_inflight_idx(int inflight) {
 int get_size_idx(int size) {
   return get_idx(size_bound, NUM_SIZE, size);
 }
-
 int get_iops_idx(int iops) {
+#if EXCLUDE_IOPS
+  return 0;
+#else
   return get_idx(iops_bound, NUM_IOPS, iops);
+#endif
 }
 
 int get_lat_idx(int lat) {
