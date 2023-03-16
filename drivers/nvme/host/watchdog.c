@@ -19,8 +19,6 @@ MODULE_IMPORT_NS(NVME_TARGET_PASSTHRU);
 #define MAX_DEVICES (32)
 #define MAX_PATH_LEN (64)
 
-#define EXCLUDE_IOPS (1)
-
 static char* device_list = "";
 static char* parsed_device_list[MAX_DEVICES];
 static char validated_device_path[MAX_DEVICES][MAX_PATH_LEN] = {0,};
@@ -92,7 +90,7 @@ int get_next_nvme_dev(void) {
   return cur_idx;
 }
 #define NUM_LAT (4)
-#define NUM_IOPS (2)
+#define NUM_IOPS (3)
 #define NUM_SIZE (4)
 #define NUM_INFLIGHT (2)
 
@@ -101,8 +99,8 @@ const int GAMMA = 8;
 const int REWARD_CORRECT = 10;
 const int REWARD_SOME_CORRECT = -5;
 const int REWARD_NOT_CORRECT = -10;
-const int WORST_LAT = 1000; // 1 second
-int lat_bound[NUM_LAT - 1] = {1, 4, 16};
+const int WORST_LAT = 1000000000; // 1 second
+int lat_bound[NUM_LAT - 1] = {1000000, 4000000, 16000000};
 int iops_bound[NUM_IOPS - 1];
 int size_bound[NUM_SIZE - 1] = {8, 32, 128};
 int inflight_bound[NUM_INFLIGHT - 1] = {13};
@@ -127,11 +125,7 @@ int get_size_idx(int size) {
   return get_idx(size_bound, NUM_SIZE, size);
 }
 int get_iops_idx(int iops) {
-#if EXCLUDE_IOPS
-  return 0;
-#else
   return get_idx(iops_bound, NUM_IOPS, iops);
-#endif
 }
 
 int get_lat_idx(int lat) {
@@ -178,6 +172,7 @@ int watchdog_fn(void* arg) {
   int* prev_loc = NULL;
   int prev_reward = 0;
   int spec_max_iops = max_kiops * 1000;
+  spec_max_iops /= 16;
   long good = 0, bad = 0, some_bad = 0, count = 0;
   memset(&c, 0x0, sizeof(struct nvme_command));
   c.common.opcode = INVALID_OPCODE;
@@ -185,7 +180,7 @@ int watchdog_fn(void* arg) {
   validate_device_list();
   for (int i = NUM_IOPS - 2 ; i >= 0 ; i--) {
     iops_bound[i] = spec_max_iops;
-    spec_max_iops >>= 1;
+    spec_max_iops >>= 4;
   }
 
   for (int i = 0 ; i < num_devices ; i++) {
@@ -232,16 +227,16 @@ int watchdog_fn(void* arg) {
         timeout_idx = infer_timeout(iops, inflight, size, &loc);
 
         if (timeout_idx < NUM_LAT - 1) {
-          timeout = msecs_to_jiffies(lat_bound[timeout_idx]);
+          timeout = nsecs_to_jiffies(lat_bound[timeout_idx]);
         } else {
-          timeout = msecs_to_jiffies(WORST_LAT);
+          timeout = nsecs_to_jiffies(WORST_LAT);
         }
 
         start_time = ktime_get();
         ret = nvme_submit_user_cmd(ctrl->admin_q, &c, NULL, 0, NULL, 0, 0, &result, timeout, false);
         end_time = ktime_get();
         time_diff = ktime_to_ns(ktime_sub(end_time, start_time));
-        real_time_idx = get_lat_idx(time_diff / 1000000);
+        real_time_idx = get_lat_idx(time_diff);
         //printk("inferred expected_idx %d exeuted_idx %d", timeout_idx, real_time_idx);
 #if 0
         if (first) {
@@ -283,8 +278,8 @@ int watchdog_fn(void* arg) {
         prev_loc = loc;
         prev_reward = reward;
         first = false;
-        if (count % 100 == 0) {
-          printk("%ld: %ld %ld %ld ratio %ld", count, good, some_bad, bad, good * 100 / count);
+        if (count % 1000 == 0) {
+//          printk("%ld: %ld %ld %ld ratio %ld", count, good, some_bad, bad, good * 100 / count);
         }
       }
     }
