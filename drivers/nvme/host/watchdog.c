@@ -25,12 +25,14 @@ static char validated_device_path[MAX_DEVICES][MAX_PATH_LEN] = {0,};
 static int num_devices = 0;
 static int cur_idx = 0;
 static long polling_duration_ms = 1000;
-static long timeout_ms = 50;
+static long timeout_ms = 0;
 static long max_kiops = 480;
 module_param(device_list, charp, 0);
 module_param(polling_duration_ms, long, 0);
 module_param(timeout_ms, long, 0);
 module_param(max_kiops, long, 0);
+
+static bool rl_on = false;
 
 void parse_device_list(void) {
   char* ret = strsep(&device_list, ",");
@@ -216,27 +218,34 @@ int watchdog_fn(void* arg) {
         int real_time_idx = 0;
         unsigned long iops = 0, size = 0, inflight = 0;
         int* loc = NULL;
-        part_stat_get2(raw_devs[idx], stats);
-        iops = stats[1] - prev_stats[1];
-        inflight = stats[0];
-        if (iops == 0) {
-          size = 0;
-        } else {
-          size = (stats[2] - prev_stats[2]) * 512 / iops;
-        }
-        timeout_idx = infer_timeout(iops, inflight, size, &loc);
+        if (rl_on) {
+          part_stat_get2(raw_devs[idx], stats);
+          iops = stats[1] - prev_stats[1];
+          inflight = stats[0];
+          if (iops == 0) {
+            size = 0;
+          } else {
+            size = (stats[2] - prev_stats[2]) * 512 / iops;
+          }
+          timeout_idx = infer_timeout(iops, inflight, size, &loc);
 
-        if (timeout_idx < NUM_LAT - 1) {
-          timeout = nsecs_to_jiffies(lat_bound[timeout_idx]);
-        } else {
-          timeout = nsecs_to_jiffies(WORST_LAT);
-        }
+          if (timeout_idx < NUM_LAT - 1) {
+            timeout = nsecs_to_jiffies(lat_bound[timeout_idx]);
+          } else {
+            timeout = nsecs_to_jiffies(WORST_LAT);
+          }
 
-        start_time = ktime_get();
+          start_time = ktime_get();
+        }
+        else {
+          timeout = msecs_to_jiffies(timeout_ms);
+        }
         ret = nvme_submit_user_cmd(ctrl->admin_q, &c, NULL, 0, NULL, 0, 0, &result, timeout, false);
-        end_time = ktime_get();
-        time_diff = ktime_to_ns(ktime_sub(end_time, start_time));
-        real_time_idx = get_lat_idx(time_diff);
+        if (rl_on) {
+          end_time = ktime_get();
+          time_diff = ktime_to_ns(ktime_sub(end_time, start_time));
+          real_time_idx = get_lat_idx(time_diff);
+        }
         //printk("inferred expected_idx %d exeuted_idx %d", timeout_idx, real_time_idx);
 #if 0
         if (first) {
@@ -247,8 +256,10 @@ int watchdog_fn(void* arg) {
 #endif
         if (ret == -4) {
           if (validate_path(validated_device_path[idx])) {
-            reward = REWARD_NOT_CORRECT;
-            bad++;
+            if (rl_on) {
+              reward = REWARD_NOT_CORRECT;
+              bad++;
+            }
             printk("inference failed");
           } else {
             filp_close(dev, NULL);
@@ -257,26 +268,28 @@ int watchdog_fn(void* arg) {
           }
         }
         else {
-          if (timeout_idx == real_time_idx) {
-            reward = REWARD_CORRECT;
-            good++;
-          } else if (timeout_idx < real_time_idx) {
-            reward = REWARD_NOT_CORRECT;
-            bad++;
-          } else {
-            reward = REWARD_SOME_CORRECT;
-            some_bad++;
+          if (rl_on) {
+            if (timeout_idx == real_time_idx) {
+              reward = REWARD_CORRECT;
+              good++;
+            } else if (timeout_idx < real_time_idx) {
+              reward = REWARD_NOT_CORRECT;
+              bad++;
+            } else {
+              reward = REWARD_SOME_CORRECT;
+              some_bad++;
+            }
           }
+          count++;
+          feedback(prev_loc, *loc, prev_reward);
+          prev_stats[0] = stats[0];
+          prev_stats[1] = stats[1];
+          prev_stats[2] = stats[2];
+          prev_stats[3] = stats[3];
+          prev_stats[4] = stats[4];
+          prev_loc = loc;
+          prev_reward = reward;
         }
-        count++;
-        feedback(prev_loc, *loc, prev_reward);
-        prev_stats[0] = stats[0];
-        prev_stats[1] = stats[1];
-        prev_stats[2] = stats[2];
-        prev_stats[3] = stats[3];
-        prev_stats[4] = stats[4];
-        prev_loc = loc;
-        prev_reward = reward;
         first = false;
         if (count % 1000 == 0) {
 //          printk("%ld: %ld %ld %ld ratio %ld", count, good, some_bad, bad, good * 100 / count);
@@ -300,6 +313,10 @@ static struct task_struct* watchdog_task = NULL;
 static int watchdog_mod_init(void) {
 
   printk("%s\n", __func__);
+  if (timeout_ms == 0) {
+    rl_on = true;
+  }
+  printk("arguments: device_list %s polling_duration_ms %ld timeout_ms %ld max_kiops %ld rl_on %d", device_list, polling_duration_ms, timeout_ms, max_kiops, rl_on);
 
   watchdog_task = kthread_run(watchdog_fn, NULL, "pcie_watchdog");
   if (watchdog_task) {
