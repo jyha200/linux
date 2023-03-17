@@ -101,8 +101,8 @@ const int GAMMA = 8;
 const int REWARD_CORRECT = 10;
 const int REWARD_SOME_CORRECT = -5;
 const int REWARD_NOT_CORRECT = -10;
-const int WORST_LAT = 1000000000; // 1 second
-int lat_bound[NUM_LAT - 1] = {1000000, 4000000, 16000000};
+const int WORST_LAT = 1000; // 1 second
+int lat_bound[NUM_LAT - 1] = {1, 4, 16};
 int iops_bound[NUM_IOPS - 1];
 int size_bound[NUM_SIZE - 1] = {8, 32, 128};
 int inflight_bound[NUM_INFLIGHT - 1] = {13};
@@ -139,10 +139,10 @@ unsigned infer_timeout(unsigned long iops, unsigned long inflight,
   int inflight_idx = get_inflight_idx(inflight);
   int size_idx = get_size_idx(size);
   int iops_idx = get_iops_idx(iops);
-  int max_idx = 0;
+  int max_idx = NUM_LAT - 1;
 
-  *max_loc = &q_table[iops_idx][size_idx][inflight_idx][0];
-  for (int i = 1 ; i < NUM_LAT ; i++) {
+  *max_loc = &q_table[iops_idx][size_idx][inflight_idx][NUM_LAT - 1];
+  for (int i = NUM_LAT - 2; i >= 0 ; i--) {
     if (**max_loc < q_table[iops_idx][size_idx][inflight_idx][i]) {
       *max_loc = &q_table[iops_idx][size_idx][inflight_idx][i];
       max_idx = i;
@@ -230,10 +230,11 @@ int watchdog_fn(void* arg) {
           timeout_idx = infer_timeout(iops, inflight, size, &loc);
 
           if (timeout_idx < NUM_LAT - 1) {
-            timeout = nsecs_to_jiffies(lat_bound[timeout_idx]);
+            timeout = msecs_to_jiffies(lat_bound[timeout_idx]);
           } else {
-            timeout = nsecs_to_jiffies(WORST_LAT);
+            timeout = msecs_to_jiffies(WORST_LAT);
           }
+          //timeout = msecs_to_jiffies(WORST_LAT);
 
           start_time = ktime_get();
         }
@@ -244,9 +245,9 @@ int watchdog_fn(void* arg) {
         if (rl_on) {
           end_time = ktime_get();
           time_diff = ktime_to_ns(ktime_sub(end_time, start_time));
-          real_time_idx = get_lat_idx(time_diff);
+          real_time_idx = get_lat_idx(time_diff/1000000);
         }
-        //printk("inferred expected_idx %d exeuted_idx %d", timeout_idx, real_time_idx);
+    //    printk("inferred expected_idx %d exeuted_idx %d", timeout_idx, real_time_idx);
 #if 0
         if (first) {
           printk("inflights %lu duration %lld ns", stats[0], time_diff);
@@ -255,6 +256,7 @@ int watchdog_fn(void* arg) {
         }
 #endif
         if (ret == -4) {
+          msleep(500);
           if (validate_path(validated_device_path[idx])) {
             if (rl_on) {
               reward = REWARD_NOT_CORRECT;
