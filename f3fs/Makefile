@@ -3,7 +3,7 @@ obj-m += f3fs.o
 
 f3fs-y		:= dir.o file.o inode.o namei.o hash.o super.o inline.o
 f3fs-y		+= checkpoint.o gc.o data.o node.o segment.o recovery.o
-f3fs-y		+= shrinker.o extent_cache.o sysfs.o
+f3fs-y		+= shrinker.o extent_cache.o sysfs.o calclock.o
 #f3fs-$(CONFIG_F2FS_STAT_FS) += debug.o
 #f3fs-$(CONFIG_F2FS_FS_XATTR) += xattr.o
 #f3fs-$(CONFIG_F2FS_FS_POSIX_ACL) += acl.o

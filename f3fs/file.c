@@ -36,6 +36,8 @@
 #include <trace/events/f3fs.h>
 #include <uapi/linux/f3fs.h>
 
+#include "calclock.h"
+
 static vm_fault_t f3fs_filemap_fault(struct vm_fault *vmf)
 {
 	struct inode *inode = file_inode(vmf->vma->vm_file);
@@ -1682,7 +1684,11 @@ static int expand_inode_data(struct inode *inode, loff_t offset,
 next_alloc:
 		if (has_not_enough_free_secs(sbi, 0,
 			GET_SEC_FROM_SEG(sbi, overprovision_segments(sbi)))) {
+      ktime_t gc_lock_time[2];
+      ktget(&gc_lock_time[0]);
 			f3fs_down_write(&sbi->gc_lock);
+      ktget(&gc_lock_time[1]);
+      ktcond_print(gc_lock_time);
 			err = f3fs_gc(sbi, &gc_control);
 			if (err && err != -ENODATA)
 				goto out_err;
@@ -2432,7 +2438,11 @@ do_more:
 			goto out;
 		}
 	} else {
+    ktime_t gc_lock_time[2];
+    ktget(&gc_lock_time[0]);
 		f3fs_down_write(&sbi->gc_lock);
+    ktget(&gc_lock_time[1]);
+    ktcond_print(gc_lock_time);
 	}
 
 	gc_control.victim_segno = GET_SEGNO(sbi, range->start);
