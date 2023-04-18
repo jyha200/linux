@@ -3658,6 +3658,7 @@ bool f3fs_need_SSR(struct f3fs_sb_info *sbi);
 int f3fs_commit_atomic_write(struct inode *inode);
 void f3fs_abort_atomic_write(struct inode *inode, bool clean);
 void f3fs_balance_fs(struct f3fs_sb_info *sbi, bool need);
+void f3fs_balance_fs2(struct f3fs_sb_info *sbi, bool need);
 void f3fs_balance_fs_bg(struct f3fs_sb_info *sbi, bool from_bg);
 int f3fs_issue_flush(struct f3fs_sb_info *sbi, nid_t ino);
 int f3fs_create_flush_cmd_control(struct f3fs_sb_info *sbi);
@@ -3755,6 +3756,8 @@ struct page *f3fs_get_tmp_page(struct f3fs_sb_info *sbi, pgoff_t index);
 bool f3fs_is_valid_blkaddr(struct f3fs_sb_info *sbi,
 					block_t blkaddr, int type);
 int f3fs_ra_meta_pages(struct f3fs_sb_info *sbi, block_t start, int nrpages,
+			int type, bool sync);
+int f3fs_ra_meta_pages2(struct f3fs_sb_info *sbi, block_t start, int nrpages,
 			int type, bool sync);
 void f3fs_ra_meta_pages_cond(struct f3fs_sb_info *sbi, pgoff_t index,
 							unsigned int ra_blocks);
