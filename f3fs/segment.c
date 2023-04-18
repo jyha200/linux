@@ -25,6 +25,8 @@
 #include "iostat.h"
 #include <trace/events/f3fs.h>
 
+#include "calclock.h"
+
 #define __reverse_ffz(x) __reverse_ffs(~(x))
 
 static struct kmem_cache *discard_entry_slab;
@@ -368,7 +370,6 @@ int f3fs_commit_atomic_write(struct inode *inode)
 
 	return err;
 }
-
 /*
  * This function balances dirty node and dentry pages.
  * In addition, it controls garbage collection.
@@ -408,11 +409,92 @@ void f3fs_balance_fs(struct f3fs_sb_info *sbi, bool need)
 				.no_bg_gc = true,
 				.should_migrate_blocks = false,
 				.err_gc_skipped = false,
-				.nr_free_secs = 1 };
-			f3fs_down_write(&sbi->gc_lock);
-			f3fs_gc(sbi, &gc_control);
+        .nr_free_secs = 1 };
+
+      f3fs_down_write(&sbi->gc_lock);
+      f3fs_gc(sbi, &gc_control);
 		}
 	}
+}
+#define PROF6_1 (0)
+/*
+ * This function balances dirty node and dentry pages.
+ * In addition, it controls garbage collection.
+ */
+void f3fs_balance_fs2(struct f3fs_sb_info *sbi, bool need)
+{
+#if PROF6_1
+  ktime_t ttt[15];
+  ttt[0] = ktime_get_raw();
+#endif
+
+	if (time_to_inject(sbi, FAULT_CHECKPOINT)) {
+		f3fs_show_injection_info(sbi, FAULT_CHECKPOINT);
+		f3fs_stop_checkpoint(sbi, false);
+	}
+
+	/* balance_fs_bg is able to be pending */
+	if (need && excess_cached_nats(sbi))
+		f3fs_balance_fs_bg(sbi, false);
+
+	if (!f3fs_is_checkpoint_ready(sbi)) {
+#if PROF6_1
+  ttt[1] = ktime_get_raw();
+  ttt[2] = ttt[1];
+  ttt[3] = ttt[2];
+  ktcond_print2(ttt, 7, 4);
+#endif
+		return;
+  }
+
+	/*
+	 * We should do GC or end up with checkpoint, if there are so many dirty
+	 * dir/node pages without enough free segments.
+	 */
+	if (has_not_enough_free_secs(sbi, 0, 0)) {
+		if (test_opt(sbi, GC_MERGE) && sbi->gc_thread &&
+					sbi->gc_thread->f3fs_gc_task) {
+			DEFINE_WAIT(wait);
+
+			prepare_to_wait(&sbi->gc_thread->fggc_wq, &wait,
+						TASK_UNINTERRUPTIBLE);
+			wake_up(&sbi->gc_thread->gc_wait_queue_head);
+			io_schedule();
+			finish_wait(&sbi->gc_thread->fggc_wq, &wait);
+#if PROF6_1
+      ttt[1] = ktime_get_raw();
+      ttt[2] = ttt[1];
+      ttt[3] = ttt[2];
+#endif
+		} else {
+			struct f3fs_gc_control gc_control = {
+				.victim_segno = NULL_SEGNO,
+				.init_gc_type = BG_GC,
+				.no_bg_gc = true,
+				.should_migrate_blocks = false,
+				.err_gc_skipped = false,
+        .nr_free_secs = 1 };
+#if PROF6_1
+      ttt[1] = ktime_get_raw();
+#endif
+
+      f3fs_down_write(&sbi->gc_lock);
+#if PROF6_1
+      ttt[2] = ktime_get_raw();
+#endif
+      f3fs_gc(sbi, &gc_control);
+		}
+	} else {
+#if PROF6_1
+    ttt[1] = ktime_get_raw();
+    ttt[2] = ttt[1];
+    ttt[3] = ttt[2];
+#endif
+  }
+#if PROF6_1
+  ttt[3] = ktime_get_raw();
+  ktcond_print2(ttt, 7, 4);
+#endif
 }
 
 static inline bool excess_dirty_threshold(struct f3fs_sb_info *sbi)
@@ -706,6 +788,130 @@ int f3fs_flush_device_cache(struct f3fs_sb_info *sbi)
 
 	return ret;
 }
+
+#define PROF100 (0)
+#define PROF102 (0)
+#define PROF200 (0)
+
+#if PROF200
+atomic_t full_node_segs = {0,};
+atomic_t full_data_other_segs = {0,};
+atomic_t full_data_gc_segs = {0,};
+#endif
+
+static void __locate_dirty_segment3(struct f3fs_sb_info *sbi, unsigned int segno,
+		enum dirty_type dirty_type, enum dirty_type seg_dirty_type)
+{
+  // sentry_only (read)
+	struct dirty_seglist_info *dirty_i = DIRTY_I(sbi);
+	f3fs_bug_on(sbi, __is_large_section(sbi));
+
+	/* need not be added */
+	if (IS_CURSEG(sbi, segno))
+		return;
+
+	if (!test_and_set_bit(segno, dirty_i->dirty_segmap[dirty_type])) {
+		atomic_inc(&dirty_i->nr_dirty[dirty_type]);
+#if PROF100
+    if (dirty_type == DIRTY) {
+      ktcond_print3(0, 1);
+    } else if (dirty_type == PRE) {
+      ktcond_print3(1, 1);
+    } else {
+      ktcond_print3(2, 1);
+    }
+#endif
+#if PROF102
+    if (dirty_type == DIRTY) {
+      ktcond_print3(1, 1);
+    }
+#endif
+  }
+
+	if (dirty_type == DIRTY) {
+		if (unlikely(seg_dirty_type >= DIRTY)) {
+			f3fs_bug_on(sbi, 1);
+			return;
+		}
+		if (!test_and_set_bit(segno, dirty_i->dirty_segmap[seg_dirty_type]))
+			atomic_inc(&dirty_i->nr_dirty[seg_dirty_type]);
+	}
+}
+
+static void __remove_dirty_segment3(struct f3fs_sb_info *sbi, unsigned int segno,
+		enum dirty_type dirty_type, enum dirty_type seg_dirty_type, block_t valid_blocks)
+{
+  // sentry_only (read)
+	struct dirty_seglist_info *dirty_i = DIRTY_I(sbi);
+	f3fs_bug_on(sbi, __is_large_section(sbi));
+
+	if (test_and_clear_bit(segno, dirty_i->dirty_segmap[dirty_type])) {
+		atomic_dec(&dirty_i->nr_dirty[dirty_type]);
+#if PROF100
+    if (dirty_type == DIRTY) {
+      ktcond_print3(2, 1);
+    } else if (dirty_type == PRE) {
+      ktcond_print3(3, 1);
+    } else {
+      ktcond_print3(4, 1);
+    }
+#endif
+  }
+
+	if (dirty_type == DIRTY) {
+		if (test_and_clear_bit(segno, dirty_i->dirty_segmap[seg_dirty_type]))
+			atomic_dec(&dirty_i->nr_dirty[seg_dirty_type]);
+
+		if (valid_blocks == 0) {
+			clear_bit(GET_SEC_FROM_SEG(sbi, segno),
+						dirty_i->victim_secmap);
+		}
+	}
+}
+
+/*
+ * Should not occur error such as -ENOMEM.
+ * Adding dirty entry into seglist is not critical operation.
+ * If a given segment is one of current working segments, it won't be added.
+ */
+static void locate_dirty_segment3(struct f3fs_sb_info *sbi,
+  unsigned int segno, block_t valid_blocks, enum dirty_type seg_dirty_type)
+{
+	struct dirty_seglist_info *dirty_i = DIRTY_I(sbi);
+	unsigned int usable_blocks;
+
+	if (segno == NULL_SEGNO || IS_CURSEG(sbi, segno))
+		return;
+
+  f3fs_bug_on(sbi, is_sbi_flag_set(sbi, SBI_CP_DISABLED));
+
+	usable_blocks = f3fs_usable_blks_in_seg(sbi, segno);
+//	mutex_lock(&dirty_i->seglist_lock);
+
+	if (valid_blocks == 0) {
+#if PROF200
+    atomic_dec(&full_node_segs);
+#endif
+		__locate_dirty_segment3(sbi, segno, PRE, seg_dirty_type);
+		__remove_dirty_segment3(sbi, segno, DIRTY, seg_dirty_type, valid_blocks);
+#if PROF102
+    ktcond_print3(0, 1);
+#endif
+  } else if (valid_blocks < usable_blocks) {
+    if (!test_bit(segno, dirty_i->dirty_segmap[PRE])) {
+      __locate_dirty_segment3(sbi, segno, DIRTY, seg_dirty_type);
+    }
+	} else {
+#if PROF102
+    ktcond_print3(2, 1);
+#endif
+		/* Recovery routine with SSR needs this */
+		__remove_dirty_segment3(sbi, segno, DIRTY, seg_dirty_type, valid_blocks);
+	}
+
+	//mutex_unlock(&dirty_i->seglist_lock);
+}
+
 static void __locate_dirty_segment2(struct f3fs_sb_info *sbi, unsigned int segno,
 		enum dirty_type dirty_type, enum dirty_type seg_dirty_type)
 {
@@ -717,8 +923,21 @@ static void __locate_dirty_segment2(struct f3fs_sb_info *sbi, unsigned int segno
 	if (IS_CURSEG(sbi, segno))
 		return;
 
-	if (!test_and_set_bit(segno, dirty_i->dirty_segmap[dirty_type]))
+	if (!test_and_set_bit(segno, dirty_i->dirty_segmap[dirty_type])) {
 		atomic_inc(&dirty_i->nr_dirty[dirty_type]);
+#if PROF100
+    if (dirty_type == DIRTY) {
+      ktcond_print3(6, 1);
+    } else if (dirty_type == PRE) {
+      ktcond_print3(7, 1);
+    } else {
+      ktcond_print3(8, 1);
+    }
+#endif
+#if PROF102
+    ktcond_print3(4, 1);
+#endif
+  }
 
 	if (dirty_type == DIRTY) {
 		if (unlikely(seg_dirty_type >= DIRTY)) {
@@ -737,8 +956,18 @@ static void __remove_dirty_segment2(struct f3fs_sb_info *sbi, unsigned int segno
 	struct dirty_seglist_info *dirty_i = DIRTY_I(sbi);
 	f3fs_bug_on(sbi, __is_large_section(sbi));
 
-	if (test_and_clear_bit(segno, dirty_i->dirty_segmap[dirty_type]))
+	if (test_and_clear_bit(segno, dirty_i->dirty_segmap[dirty_type])) {
 		atomic_dec(&dirty_i->nr_dirty[dirty_type]);
+#if PROF100
+    if (dirty_type == DIRTY) {
+      ktcond_print3(9, 1);
+    } else if (dirty_type == PRE) {
+      ktcond_print3(10, 1);
+    } else {
+      ktcond_print3(11, 1);
+    }
+#endif
+  }
 
 	if (dirty_type == DIRTY) {
 		if (test_and_clear_bit(segno, dirty_i->dirty_segmap[seg_dirty_type]))
@@ -771,8 +1000,19 @@ static void locate_dirty_segment2(struct f3fs_sb_info *sbi,
 //	mutex_lock(&dirty_i->seglist_lock);
 
 	if (valid_blocks == 0) {
+#if PROF200
+    if (seg_dirty_type <= DIRTY_COLD_DATA) {
+      atomic_dec(&full_data_other_segs);
+    } else {
+      atomic_dec(&full_data_gc_segs);
+    }
+#endif
 		__locate_dirty_segment2(sbi, segno, PRE, seg_dirty_type);
 		__remove_dirty_segment2(sbi, segno, DIRTY, seg_dirty_type, valid_blocks);
+#if PROF102
+    ktcond_print3(3, 1);
+#endif
+
   } else if (valid_blocks < usable_blocks) {
     if (!test_bit(segno, dirty_i->dirty_segmap[PRE])) {
       __locate_dirty_segment2(sbi, segno, DIRTY, seg_dirty_type);
@@ -780,7 +1020,48 @@ static void locate_dirty_segment2(struct f3fs_sb_info *sbi,
 	} else {
 		/* Recovery routine with SSR needs this */
 		__remove_dirty_segment2(sbi, segno, DIRTY, seg_dirty_type, valid_blocks);
+  #if PROF102
+    ktcond_print3(5, 1);
+#endif
 	}
+#if PROF200
+    {
+      unsigned int free = free_segments(sbi);
+      unsigned int reserved = reserved_segments(sbi);
+      unsigned int dirty_node = 0;
+      unsigned int dirty_data_other = 0;
+      unsigned int dirty_data_gc = 0;
+      unsigned int prefree = atomic_read(&dirty_i->nr_dirty[PRE]);
+      unsigned int full_node = atomic_read(&full_node_segs);
+      unsigned int full_data_other = atomic_read(&full_data_other_segs);
+      unsigned int full_data_gc = atomic_read(&full_data_gc_segs);
+
+      for (int i = DIRTY_HOT_DATA ; i <= DIRTY_COLD_DATA; i++) {
+        dirty_data_other += atomic_read(&dirty_i->nr_dirty[i]);
+      }
+      for (int i = DIRTY_COLD_GC_DATA_START ; i <= DIRTY_COLD_GC_DATA_END; i++) {
+        dirty_data_gc += atomic_read(&dirty_i->nr_dirty[i]);
+      }
+
+      for (int i = DIRTY_HOT_NODE ; i <= DIRTY_COLD_NODE; i++) {
+        dirty_node += atomic_read(&dirty_i->nr_dirty[i]);
+      }
+      if (full_node <= 20000 &&
+          full_data_other <= 20000 &&
+          full_data_gc <= 20000 &&
+          dirty_node <= 20000) {
+        ktcond_print4(0, free);
+        ktcond_print4(1, reserved);
+        ktcond_print4(2, dirty_node);
+        ktcond_print4(3, dirty_data_other);
+        ktcond_print4(4, dirty_data_gc);
+        ktcond_print4(5, prefree);
+        ktcond_print4(6, full_node - dirty_node);
+        ktcond_print4(7, full_data_other - dirty_data_other);
+        ktcond_print4(8, full_data_gc - dirty_data_gc);
+      }
+    }
+#endif
 
 	//mutex_unlock(&dirty_i->seglist_lock);
 }
@@ -790,7 +1071,7 @@ void f3fs_dirty_to_prefree(struct f3fs_sb_info *sbi)
 {
 	struct dirty_seglist_info *dirty_i = DIRTY_I(sbi);
 	unsigned int segno;
-
+  printk("%s",__func__);
 	mutex_lock(&dirty_i->seglist_lock);
 	for_each_set_bit(segno, dirty_i->dirty_segmap[DIRTY], MAIN_SEGS(sbi)) {
     unsigned int valid_blocks = get_valid_blocks(sbi, segno, false);
@@ -2127,6 +2408,8 @@ static inline unsigned long long get_segment_mtime(struct f3fs_sb_info *sbi,
 	return get_seg_entry(sbi, segno)->mtime;
 }
 
+#define PROF9_2 (0)
+
 static void update_sit_entry2(struct f3fs_sb_info *sbi, block_t blkaddr, int del,
   unsigned int* valid_blocks, enum dirty_type* dirty_type, unsigned long long old_mtime)
 {
@@ -2140,6 +2423,13 @@ static void update_sit_entry2(struct f3fs_sb_info *sbi, block_t blkaddr, int del
 #endif
   unsigned long long ctime = 0;//get_mtime(sbi, false);
   unsigned long long mtime = old_mtime ? old_mtime : ctime;
+#if PROF9_2
+  ktime_t ttt[15];
+  bool do_profile = true;
+  if (do_profile) {
+    ttt[0] = ktime_get_raw();
+  }
+#endif
 
 	segno = GET_SEGNO(sbi, blkaddr);
 /*
@@ -2156,12 +2446,27 @@ static void update_sit_entry2(struct f3fs_sb_info *sbi, block_t blkaddr, int del
   else
     se->mtime = div_u64(se->mtime * se->valid_blocks + mtime,
         se->valid_blocks + 1);
+#if PROF9_2
+  if (do_profile) {
+    ttt[1] = ktime_get_raw();
+  }
+#endif
   update_max_mtime_atomic(sbi, ctime);
+#if PROF9_2
+  if (do_profile) {
+    ttt[2] = ktime_get_raw();
+  }
+#endif
 
 /*	f3fs_bug_on(sbi, (new_vblocks < 0 ||
 			(new_vblocks > f3fs_usable_blks_in_seg(sbi, segno))));
 */
 	se->valid_blocks = new_vblocks;
+#if PROF9_2
+  if (do_profile) {
+    ttt[3] = ktime_get_raw();
+  }
+#endif
 
 	/* Update valid block bitmap */
 	if (del > 0) {
@@ -2195,15 +2500,37 @@ static void update_sit_entry2(struct f3fs_sb_info *sbi, block_t blkaddr, int del
 			f3fs_test_and_clear_bit(offset, se->discard_map))
 			sbi->discard_blks++;
 	}
+#if PROF9_2
+  if (do_profile) {
+    ttt[4] = ktime_get_raw();
+  }
+#endif
+
 	if (!test_bit(offset, se->ckpt_valid_map))
 		se->ckpt_valid_blocks += del;
+#if PROF9_2
+  if (do_profile) {
+    ttt[5] = ktime_get_raw();
+  }
+#endif
 
 	__mark_sit_entry_dirty(sbi, segno);
+#if PROF9_2
+  if (do_profile) {
+    ttt[6] = ktime_get_raw();
+  }
+#endif
 
 	/* update total number of valid blocks to be written in ckpt area */
 //	atomic64_add(del, &SIT_I(sbi)->written_valid_blocks);
   *valid_blocks = se->valid_blocks;
   *dirty_type = se->type;
+#if PROF9_2
+  if (do_profile) {
+    ttt[7] = ktime_get_raw();
+    ktcond_print2(ttt, 13, 8);
+  }
+#endif
 }
 
 void f3fs_invalidate_blocks(struct f3fs_sb_info *sbi, block_t addr)
@@ -2513,6 +2840,7 @@ static unsigned int __get_next_segno(struct f3fs_sb_info *sbi, int type)
 	return curseg->segno;
 }
 
+#define PROF10 (0)
 /*
  * Allocate a current working segment.
  * This function always allocates a free segment in LFS manner.
@@ -2524,6 +2852,10 @@ static void new_curseg(struct f3fs_sb_info *sbi, int type, bool new_sec)
 	unsigned short seg_type = curseg->seg_type;
 	unsigned int segno = curseg->segno;
 	int dir = ALLOC_LEFT;
+#if PROF10
+  ktime_t ttt[15];
+  ttt[0] = ktime_get_raw();
+#endif
 
 	if (curseg->inited)
 		write_sum_page(sbi, curseg->sum_blk,
@@ -2536,13 +2868,26 @@ static void new_curseg(struct f3fs_sb_info *sbi, int type, bool new_sec)
 		dir = ALLOC_RIGHT;
 
 	segno = __get_next_segno(sbi, type);
+#if PROF10
+  ttt[1] = ktime_get_raw();
+#endif
+
 	get_new_segment(sbi, &segno, new_sec, dir);
+#if PROF10
+  ttt[2] = ktime_get_raw();
+#endif
+
 	curseg->next_segno = segno;
 	reset_curseg(sbi, type, 1);
 	curseg->alloc_type = LFS;
 	if (F3FS_OPTION(sbi).fs_mode == FS_MODE_FRAGMENT_BLK)
 		curseg->fragment_remained_chunk =
 				prandom_u32() % sbi->max_fragment_chunk + 1;
+#if PROF10
+  ttt[3] = ktime_get_raw();
+  ktcond_print2(ttt, 11, 4);
+#endif
+
 }
 
 static int __next_free_blkoff(struct f3fs_sb_info *sbi,
@@ -2748,6 +3093,8 @@ void f3fs_restore_inmem_curseg(struct f3fs_sb_info *sbi)
 		__f3fs_restore_inmem_curseg(sbi, CURSEG_ALL_DATA_ATGC);
 }
 
+#define PROF12 (0)
+
 static int get_ssr_segment(struct f3fs_sb_info *sbi, int type,
 				int alloc_mode, unsigned long long age)
 {
@@ -2758,14 +3105,28 @@ static int get_ssr_segment(struct f3fs_sb_info *sbi, int type,
 	unsigned short seg_type = curseg->seg_type;
 	int i, cnt;
 	bool reversed = false;
+#if PROF12
+  ktime_t ttt[15];
+  ttt[0] = ktime_get_raw();
+#endif
 
 	sanity_check_seg_type(sbi, seg_type);
 
 	/* f3fs_need_SSR() already forces to do this */
 	if (!v_ops->get_victim(sbi, &segno, BG_GC, seg_type, alloc_mode, age)) {
 		curseg->next_segno = segno;
+#if PROF12
+    ttt[1] = ktime_get_raw();
+    ttt[2] = ttt[1];
+    ttt[3] = ttt[2];
+    ttt[4] = ttt[3];
+    ktcond_print2(ttt, 13, 5);
+#endif
 		return 1;
 	}
+#if PROF12
+  ttt[1] = ktime_get_raw();
+#endif
 
 	/* For node segments, let's do SSR more intensively */
 	if (IS_NODESEG(seg_type)) {
@@ -2785,27 +3146,48 @@ static int get_ssr_segment(struct f3fs_sb_info *sbi, int type,
 		}
 		cnt = NR_CURSEG_DATA_TYPE;
 	}
+#if PROF12
+  ttt[2] = ktime_get_raw();
+#endif
 
 	for (; cnt-- > 0; reversed ? i-- : i++) {
 		if (i == seg_type)
 			continue;
 		if (!v_ops->get_victim(sbi, &segno, BG_GC, i, alloc_mode, age)) {
 			curseg->next_segno = segno;
+#if PROF12
+      ttt[3] = ktime_get_raw();
+      ttt[4] = ttt[3];
+
+      ktcond_print2(ttt, 13, 5);
+#endif
 			return 1;
 		}
 	}
+#if PROF12
+  ttt[3] = ktime_get_raw();
+#endif
 
 	/* find valid_blocks=0 in dirty list */
 	if (unlikely(is_sbi_flag_set(sbi, SBI_CP_DISABLED))) {
 		segno = get_free_segment(sbi);
 		if (segno != NULL_SEGNO) {
 			curseg->next_segno = segno;
+#if PROF12
+      ttt[4] = ktime_get_raw();
+      ktcond_print2(ttt, 13, 5);
+#endif
 			return 1;
 		}
 	}
+#if PROF12
+  ttt[4] = ktime_get_raw();
+  ktcond_print2(ttt, 13, 5);
+#endif
+
 	return 0;
 }
-
+#define PROF11 (0)
 /*
  * flush out current segment and replace it with new segment
  * This function should be returned with success, otherwise BUG
@@ -2815,6 +3197,18 @@ static void allocate_segment_by_default(struct f3fs_sb_info *sbi,
 {
   // sentry_only, dirty_sentry, last_victim
 	struct curseg_info *curseg = CURSEG_I(sbi, type);
+#if PROF11
+  ktime_t ttt[15];
+  ttt[0] = ktime_get_raw();
+  ttt[1] = ttt[0];
+  ttt[2] = ttt[1];
+  ttt[3] = ttt[2];
+  ttt[4] = ttt[3];
+  ttt[5] = ttt[4];
+  ttt[6] = ttt[5];
+  ttt[7] = ttt[6];
+  ttt[8] = ttt[7];
+#endif
 
 	if (force)
 		new_curseg(sbi, type, true);
@@ -2825,13 +3219,70 @@ static void allocate_segment_by_default(struct f3fs_sb_info *sbi,
 			is_next_segment_free(sbi, curseg, type) &&
 			likely(!is_sbi_flag_set(sbi, SBI_CP_DISABLED)))
 		new_curseg(sbi, type, false);
-	else if (f3fs_need_SSR(sbi) &&
-			get_ssr_segment(sbi, type, SSR, 0))
-		change_curseg(sbi, type, true);
-	else
-		new_curseg(sbi, type, false);
+	else {
+#if PROF11
+  ttt[1] = ktime_get_raw();
+  ttt[2] = ttt[1];
+  ttt[3] = ttt[2];
+  ttt[4] = ttt[3];
+  ttt[5] = ttt[4];
+  ttt[6] = ttt[5];
+  ttt[7] = ttt[6];
+  ttt[8] = ttt[7];
 
-	stat_inc_seg_type(sbi, curseg);
+#endif
+    if (f3fs_need_SSR(sbi)) {
+#if PROF11
+      ttt[2] = ktime_get_raw();
+  ttt[3] = ttt[2];
+  ttt[4] = ttt[3];
+  ttt[5] = ttt[4];
+  ttt[6] = ttt[5];
+  ttt[7] = ttt[6];
+  ttt[8] = ttt[7];
+
+#endif
+
+      if (get_ssr_segment(sbi, type, SSR, 0)){
+#if PROF11
+        ttt[3] = ktime_get_raw();
+#endif
+        change_curseg(sbi, type, true);
+#if PROF11
+        ttt[4] = ktime_get_raw();
+        ttt[5] = ttt[4];
+        ttt[6] = ttt[5];
+        ttt[7] = ttt[6];
+        ttt[8] = ttt[7];
+#endif
+      } else {
+#if PROF11
+        ttt[5] = ktime_get_raw();
+#endif
+        new_curseg(sbi, type, false);
+#if PROF11
+        ttt[6] = ktime_get_raw();
+        ttt[7] = ttt[6];
+        ttt[8] = ttt[7];
+#endif
+      }
+    } else {
+#if PROF11
+      ttt[7] = ktime_get_raw();
+#endif
+      new_curseg(sbi, type, false);
+#if PROF11
+      ttt[8] = ktime_get_raw();
+#endif
+    }
+  }
+
+  stat_inc_seg_type(sbi, curseg);
+#if PROF11
+  ttt[9] = ktime_get_raw();
+  ktcond_print2(ttt, 12, 10);
+#endif
+
 }
 
 static void allocate_segment_by_default2(struct f3fs_sb_info *sbi,
@@ -3102,8 +3553,7 @@ int f3fs_trim_fs(struct f3fs_sb_info *sbi, struct fstrim_range *range)
 
 	if (sbi->discard_blks == 0)
 		goto out;
-
-	f3fs_down_write(&sbi->gc_lock);
+  f3fs_down_write(&sbi->gc_lock);
 	err = f3fs_write_checkpoint(sbi, &cpc);
 	f3fs_up_write(&sbi->gc_lock);
 	if (err)
@@ -3244,6 +3694,9 @@ static int __get_segment_type(struct f3fs_io_info *fio)
 	return type;
 }
 
+#define PROF9 (0)
+#define PROF9_1 (0)
+
 void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 		block_t old_blkaddr, block_t *new_blkaddr,
 		struct f3fs_summary *sum, int type,
@@ -3254,6 +3707,13 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
   unsigned int old_valid_blocks, new_valid_blocks;
   enum dirty_type old_seg_dirty_type, new_seg_dirty_type;
   unsigned int new_segno, old_segno;
+#if PROF9
+  ktime_t ttt[15];
+  bool do_profile = fio->io_type == FS_GC_DATA_IO;
+  if (do_profile) {
+    ttt[0] = ktime_get_raw();
+  }
+#endif
   f3fs_bug_on(sbi, type == CURSEG_ALL_DATA_ATGC);
 
 	f3fs_down_read(&SM_I(sbi)->curseg_lock);
@@ -3267,6 +3727,12 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 	*new_blkaddr = NEXT_FREE_BLKADDR(sbi, curseg);
   new_segno = GET_SEGNO(sbi, *new_blkaddr);
   old_segno = GET_SEGNO(sbi, old_blkaddr);
+#if PROF9
+  if (do_profile) {
+    ttt[1] = ktime_get_raw();
+  }
+#endif
+
   while (true) {
     down_write(&get_seg_entry(sbi, new_segno)->local_lock);
     if (new_segno != old_segno && old_segno != NULL_SEGNO) {
@@ -3280,6 +3746,11 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
       break;
     }
   }
+#if PROF9
+  if (do_profile) {
+    ttt[2] = ktime_get_raw();
+  }
+#endif
 
 	f3fs_bug_on(sbi, curseg->next_blkoff >= sbi->blocks_per_seg);
 
@@ -3300,14 +3771,64 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 	 * SIT information should be updated before segment allocation,
 	 * since SSR needs latest valid block information.
 	 */
+#if PROF9
+  if (do_profile) {
+    ttt[3] = ktime_get_raw();
+  }
+#endif
+
 	update_sit_entry2(sbi, *new_blkaddr, 1, &new_valid_blocks, &new_seg_dirty_type, 0);
 	if (old_segno != NULL_SEGNO)
 		update_sit_entry2(sbi, old_blkaddr, -1, &old_valid_blocks, &old_seg_dirty_type, 0);
+#if PROF9
+  if (do_profile) {
+    ttt[4] = ktime_get_raw();
+  }
+#endif
 
 	if (!__has_curseg_space(sbi, curseg)) {
+#if PROF9_1
+    ktime_t ttt[15];
+    bool do_profile = fio->io_type == FS_GC_DATA_IO;
+    if (do_profile) {
+      ttt[0] = ktime_get_raw();
+    }
+#endif
+
 		sit_i->s_ops->allocate_segment2(sbi, type, false);
-	  locate_dirty_segment2(sbi, new_segno, new_valid_blocks, new_seg_dirty_type);
+#if PROF200
+    if (IS_DATASEG(type)) {
+      if (type <= DIRTY_COLD_DATA) {
+        atomic_inc(&full_data_other_segs);
+      } else {
+        atomic_inc(&full_data_gc_segs);
+      }
+    } else {
+      atomic_inc(&full_node_segs);
+    }
+#endif
+#if PROF9_1
+    if (do_profile) {
+      ttt[1] = ktime_get_raw();
+    }
+#endif
+    if (IS_DATASEG(type)) { 
+      locate_dirty_segment2(sbi, new_segno, new_valid_blocks, new_seg_dirty_type);
+    } else {
+      locate_dirty_segment3(sbi, new_segno, new_valid_blocks, new_seg_dirty_type);
+    }
+#if PROF9_1
+    if (do_profile) {
+      ttt[2] = ktime_get_raw();
+      ktcond_print2(ttt, 11, 3);
+    }
+#endif
 	}
+#if PROF9
+  if (do_profile) {
+    ttt[5] = ktime_get_raw();
+  }
+#endif
 	/*
 	 * segment dirty status should be updated after segment allocation,
 	 * so we just need to update status only one time after previous
@@ -3316,9 +3837,18 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
   if (old_segno != NULL_SEGNO && !IS_CURSEG(sbi, old_segno)) {
 	  struct dirty_seglist_info *dirty_i = DIRTY_I(sbi);
     if (!test_bit(old_segno, dirty_i->dirty_segmap[PRE]) || old_valid_blocks == 0) {
-      locate_dirty_segment2(sbi, old_segno, old_valid_blocks, old_seg_dirty_type);
+      if (IS_DATASEG(type)) { 
+        locate_dirty_segment2(sbi, old_segno, old_valid_blocks, old_seg_dirty_type);
+      } else {
+        locate_dirty_segment3(sbi, old_segno, old_valid_blocks, old_seg_dirty_type);
+      }
     }
   }
+#if PROF9
+  if (do_profile) {
+    ttt[6] = ktime_get_raw();
+  }
+#endif
 
 	//up_write(&sit_i->dirty_sentry_lock);
 	//up_write(&sit_i->blk_info_lock);
@@ -3335,6 +3865,11 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 
 		f3fs_inode_chksum_set(sbi, page);
 	}
+#if PROF9
+  if (do_profile) {
+    ttt[7] = ktime_get_raw();
+  }
+#endif
 
 	if (fio) {
 		struct f3fs_bio_info *io;
@@ -3353,6 +3888,12 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 	mutex_unlock(&curseg->curseg_mutex);
 
 	f3fs_up_read(&SM_I(sbi)->curseg_lock);
+#if PROF9
+  if (do_profile) {
+    ttt[8] = ktime_get_raw();
+    ktcond_print2(ttt, 10, 9);
+  }
+#endif
 }
 
 void f3fs_update_device_state(struct f3fs_sb_info *sbi, nid_t ino,
@@ -3382,25 +3923,55 @@ void f3fs_update_device_state(struct f3fs_sb_info *sbi, nid_t ino,
 	}
 }
 
+#define PROF8 (0)
+
 static void do_write_page(struct f3fs_summary *sum, struct f3fs_io_info *fio)
 {
 	int type = __get_segment_type(fio);
 	bool keep_order = (f3fs_lfs_mode(fio->sbi) && (type == CURSEG_COLD_DATA ||
     (type >= CURSEG_COLD_GC_DATA_START && type <= CURSEG_COLD_GC_DATA_END)));
+#if PROF8
+  bool do_profile = (fio->io_type == FS_GC_DATA_IO);
+  ktime_t ttt[15];
+  if (do_profile) {
+    ttt[0] = ktime_get_raw();
+  }
+#endif
 
 	if (keep_order)
 		f3fs_down_read(&fio->sbi->io_order_lock);
 reallocate:
+#if PROF8
+  if (do_profile) {
+    ttt[1] = ktime_get_raw();
+  }
+#endif
 	f3fs_allocate_data_block2(fio->sbi, fio->page, fio->old_blkaddr,
 			&fio->new_blkaddr, sum, type, fio);
+#if PROF8
+  if (do_profile) {
+    ttt[2] = ktime_get_raw();
+  }
+#endif
 	if (GET_SEGNO(fio->sbi, fio->old_blkaddr) != NULL_SEGNO) {
 		invalidate_mapping_pages(META_MAPPING(fio->sbi),
 					fio->old_blkaddr, fio->old_blkaddr);
 		f3fs_invalidate_compress_page(fio->sbi, fio->old_blkaddr);
 	}
+#if PROF8
+  if (do_profile) {
+    ttt[3] = ktime_get_raw();
+  }
+#endif
 
 	/* writeout dirty page into bdev */
 	f3fs_submit_page_write(fio);
+#if PROF8
+  if (do_profile) {
+    ttt[4] = ktime_get_raw();
+  }
+#endif
+
 	if (fio->retry) {
 		fio->old_blkaddr = fio->new_blkaddr;
 		goto reallocate;
@@ -3410,6 +3981,12 @@ reallocate:
 
 	if (keep_order)
 		f3fs_up_read(&fio->sbi->io_order_lock);
+#if PROF8
+  if (do_profile) {
+    ttt[5] = ktime_get_raw();
+    ktcond_print2(ttt, 9, 6);
+  }
+#endif
 }
 
 void f3fs_do_write_meta_page(struct f3fs_sb_info *sbi, struct page *page,
@@ -3449,19 +4026,50 @@ void f3fs_do_write_node_page(unsigned int nid, struct f3fs_io_info *fio)
 
 	f3fs_update_iostat(fio->sbi, fio->io_type, F3FS_BLKSIZE);
 }
+#define PROF7 (0)
 
 void f3fs_outplace_write_data(struct dnode_of_data *dn,
 					struct f3fs_io_info *fio)
 {
 	struct f3fs_sb_info *sbi = fio->sbi;
 	struct f3fs_summary sum;
+#if PROF7
+  bool do_profile = (fio->io_type == FS_GC_DATA_IO);
+  ktime_t ttt[15];
+  if (do_profile) {
+    ttt[0] = ktime_get_raw();
+  }
+#endif
+
 
 	f3fs_bug_on(sbi, dn->data_blkaddr == NULL_ADDR);
 	set_summary(&sum, dn->nid, dn->ofs_in_node, fio->version);
-	do_write_page(&sum, fio);
-	f3fs_update_data_blkaddr(dn, fio->new_blkaddr);
+#if PROF7
+  if (do_profile) {
+    ttt[1] = ktime_get_raw();
+  }
+#endif
 
+	do_write_page(&sum, fio);
+#if PROF7
+  if (do_profile) {
+    ttt[2] = ktime_get_raw();
+  }
+#endif
+	f3fs_update_data_blkaddr(dn, fio->new_blkaddr);
+#if PROF7
+  if (do_profile) {
+    ttt[3] = ktime_get_raw();
+  }
+#endif
 	f3fs_update_iostat(sbi, fio->io_type, F3FS_BLKSIZE);
+#if PROF7
+  if (do_profile) {
+    ttt[4] = ktime_get_raw();
+    ktcond_print2(ttt, 8, 5);
+  }
+#endif
+
 }
 
 int f3fs_inplace_write_data(struct f3fs_io_info *fio)
@@ -3675,6 +4283,7 @@ void f3fs_wait_on_block_writeback(struct inode *inode, block_t blkaddr)
 
 	cpage = find_lock_page(META_MAPPING(sbi), blkaddr);
 	if (cpage) {
+    printk("wait 2");
 		f3fs_wait_on_page_writeback(cpage, DATA, true, true);
 		f3fs_put_page(cpage, 1);
 	}

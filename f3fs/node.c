@@ -750,6 +750,8 @@ got:
 	return level;
 }
 
+#define PROF17_1 (0)
+#define PROF17_2 (1)
 /*
  * Caller should call f3fs_put_dnode(dn).
  * Also, it should grab and release a rwsem by calling f3fs_lock_op() and
@@ -765,10 +767,27 @@ int f3fs_get_dnode_of_data(struct dnode_of_data *dn, pgoff_t index, int mode)
 	nid_t nids[4];
 	int level, i = 0;
 	int err = 0;
+#if PROF17_1
+  ktime_t ttt[15];
+  ttt[0] = ktime_get_raw();
+#endif
 
 	level = get_node_path(dn->inode, index, offset, noffset);
-	if (level < 0)
+#if PROF17_1
+  ttt[1] = ktime_get_raw();
+#endif
+
+	if (level < 0) {
+#if PROF17_1
+    ttt[2] = ktime_get_raw();
+    ttt[3] = ttt[2];
+    ttt[4] = ttt[3];
+    ttt[5] = ttt[4];
+    ktcond_print2(ttt, 2, 6);
+#endif
+
 		return level;
+  }
 
 	nids[0] = dn->inode->i_ino;
 	npage[0] = dn->inode_page;
@@ -778,6 +797,9 @@ int f3fs_get_dnode_of_data(struct dnode_of_data *dn, pgoff_t index, int mode)
 		if (IS_ERR(npage[0]))
 			return PTR_ERR(npage[0]);
 	}
+#if PROF17_1
+  ttt[2] = ktime_get_raw();
+#endif
 
 	/* if inline_data is set, should not report any block indices */
 	if (f3fs_has_inline_data(dn->inode) && index) {
@@ -791,10 +813,17 @@ int f3fs_get_dnode_of_data(struct dnode_of_data *dn, pgoff_t index, int mode)
 		nids[1] = get_nid(parent, offset[0], true);
 	dn->inode_page = npage[0];
 	dn->inode_page_locked = true;
+#if PROF17_1
+  ttt[3] = ktime_get_raw();
+#endif
 
 	/* get indirect or direct nodes */
 	for (i = 1; i <= level; i++) {
 		bool done = false;
+#if PROF17_2
+    ktime_t ttt[15];
+    ttt[0] = ktime_get_raw();
+#endif
 
 		if (!nids[i] && mode == ALLOC_NODE) {
 			/* alloc new node */
@@ -822,12 +851,19 @@ int f3fs_get_dnode_of_data(struct dnode_of_data *dn, pgoff_t index, int mode)
 			}
 			done = true;
 		}
+#if PROF17_2
+    ttt[1] = ktime_get_raw();
+#endif
+
 		if (i == 1) {
 			dn->inode_page_locked = false;
 			unlock_page(parent);
 		} else {
 			f3fs_put_page(parent, 1);
 		}
+#if PROF17_2
+    ttt[2] = ktime_get_raw();
+#endif
 
 		if (!done) {
 			npage[i] = f3fs_get_node_page(sbi, nids[i]);
@@ -837,11 +873,24 @@ int f3fs_get_dnode_of_data(struct dnode_of_data *dn, pgoff_t index, int mode)
 				goto release_out;
 			}
 		}
+#if PROF17_2
+    ttt[3] = ktime_get_raw();
+#endif
+
 		if (i < level) {
 			parent = npage[i];
 			nids[i + 1] = get_nid(parent, offset[i], false);
 		}
+#if PROF17_2
+    ttt[4] = ktime_get_raw();
+    ktcond_print2(ttt, 3, 5);
+#endif
+
 	}
+#if PROF17_1
+  ttt[4] = ktime_get_raw();
+#endif
+
 	dn->nid = nids[level];
 	dn->ofs_in_node = offset[level];
 	dn->node_page = npage[level];
@@ -866,6 +915,11 @@ int f3fs_get_dnode_of_data(struct dnode_of_data *dn, pgoff_t index, int mode)
 					c_len);
 	}
 out:
+#if PROF17_1
+  ttt[5] = ktime_get_raw();
+  ktcond_print2(ttt, 2, 6);
+#endif
+
 	return 0;
 
 release_pages:
