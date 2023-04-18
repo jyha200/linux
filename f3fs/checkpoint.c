@@ -21,6 +21,8 @@
 #include "iostat.h"
 #include <trace/events/f3fs.h>
 
+#include "calclock.h"
+
 #define DEFAULT_CHECKPOINT_IOPRIO (IOPRIO_PRIO_VALUE(IOPRIO_CLASS_BE, 3))
 
 static struct kmem_cache *ino_entry_slab;
@@ -1607,6 +1609,7 @@ int f3fs_write_checkpoint(struct f3fs_sb_info *sbi, struct cp_control *cpc)
 	struct f3fs_checkpoint *ckpt = F3FS_CKPT(sbi);
 	unsigned long long ckpt_ver;
 	int err = 0;
+//  printk("write checkpoint");
 
 	if (f3fs_readonly(sbi->sb) || f3fs_hw_is_readonly(sbi))
 		return -EROFS;
@@ -1697,6 +1700,8 @@ stop:
 	f3fs_update_time(sbi, CP_TIME);
 	trace_f3fs_write_checkpoint(sbi->sb, cpc->reason, "finish checkpoint");
 out:
+//  printk("checkpoint end");
+
 	if (cpc->reason != CP_RESIZE)
 		f3fs_up_write(&sbi->cp_global_sem);
 	return err;
@@ -1745,8 +1750,12 @@ static int __write_checkpoint_sync(struct f3fs_sb_info *sbi)
 {
 	struct cp_control cpc = { .reason = CP_SYNC, };
 	int err;
+  ktime_t gc_lock_time[2];
 
+  ktget(&gc_lock_time[0]);
 	f3fs_down_write(&sbi->gc_lock);
+  ktget(&gc_lock_time[1]);
+  ktcond_print(gc_lock_time);
 	err = f3fs_write_checkpoint(sbi, &cpc);
 	f3fs_up_write(&sbi->gc_lock);
 
@@ -1835,8 +1844,12 @@ int f3fs_issue_checkpoint(struct f3fs_sb_info *sbi)
 	cpc.reason = __get_cp_reason(sbi);
 	if (!test_opt(sbi, MERGE_CHECKPOINT) || cpc.reason != CP_SYNC) {
 		int ret;
+    ktime_t gc_lock_time[2];
 
+    ktget(&gc_lock_time[0]);
 		f3fs_down_write(&sbi->gc_lock);
+    ktget(&gc_lock_time[1]);
+    ktcond_print(gc_lock_time);
 		ret = f3fs_write_checkpoint(sbi, &cpc);
 		f3fs_up_write(&sbi->gc_lock);
 
