@@ -36,6 +36,8 @@
 #include <trace/events/f3fs.h>
 #include <uapi/linux/f3fs.h>
 
+#include "calclock.h"
+
 static vm_fault_t f3fs_filemap_fault(struct vm_fault *vmf)
 {
 	struct inode *inode = file_inode(vmf->vma->vm_file);
