@@ -660,6 +660,36 @@ static inline bool has_not_enough_free_secs(struct f3fs_sb_info *sbi,
 	return !has_curseg_enough_space(sbi, node_blocks, dent_blocks);
 }
 
+static inline bool has_not_enough_free_secs2(struct f3fs_sb_info *sbi,
+					int freed, int needed)
+{
+	unsigned int total_node_blocks = get_pages(sbi, F3FS_DIRTY_NODES) +
+					get_pages(sbi, F3FS_DIRTY_DENTS) +
+					get_pages(sbi, F3FS_DIRTY_IMETA);
+	unsigned int total_dent_blocks = get_pages(sbi, F3FS_DIRTY_DENTS);
+	unsigned int node_secs = total_node_blocks / CAP_BLKS_PER_SEC(sbi);
+	unsigned int dent_secs = total_dent_blocks / CAP_BLKS_PER_SEC(sbi);
+	unsigned int node_blocks = total_node_blocks % CAP_BLKS_PER_SEC(sbi);
+	unsigned int dent_blocks = total_dent_blocks % CAP_BLKS_PER_SEC(sbi);
+	unsigned int free, need_lower, need_upper;
+
+	if (unlikely(is_sbi_flag_set(sbi, SBI_POR_DOING)))
+		return false;
+
+	free = free_sections(sbi) + freed;
+	need_lower = node_secs + dent_secs + reserved_sections(sbi) + needed;
+	need_upper = need_lower + (node_blocks ? 1 : 0) + (dent_blocks ? 1 : 0);
+
+  if (freed == 0 && needed == 0) {
+  //printk("lower %d upper %d", need_lower, need_upper);
+}
+	if (free > need_upper)
+		return false;
+	else if (free <= need_lower)
+		return true;
+	return !has_curseg_enough_space(sbi, node_blocks, dent_blocks);
+}
+
 static inline bool f3fs_is_checkpoint_ready(struct f3fs_sb_info *sbi)
 {
 	if (likely(!is_sbi_flag_set(sbi, SBI_CP_DISABLED)))

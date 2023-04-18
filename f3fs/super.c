@@ -39,7 +39,11 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/f3fs.h>
 
+#include "calclock.h"
+
 static struct kmem_cache *f3fs_inode_cachep;
+
+KTDEC(gc_profile);
 
 #ifdef CONFIG_F3FS_FAULT_INJECTION
 
@@ -2117,8 +2121,13 @@ static int f3fs_disable_checkpoint(struct f3fs_sb_info *sbi)
 			.should_migrate_blocks = false,
 			.err_gc_skipped = true,
 			.nr_free_secs = 1 };
-
-		f3fs_down_write(&sbi->gc_lock);
+    {
+      ktime_t gc_lock_time[2];
+      ktget(&gc_lock_time[0]);
+      f3fs_down_write(&sbi->gc_lock);
+      ktget(&gc_lock_time[1]);
+      ktcond_print(gc_lock_time);
+    }
 		err = f3fs_gc(sbi, &gc_control);
 		if (err == -ENODATA) {
 			err = 0;
@@ -2141,7 +2150,14 @@ static int f3fs_disable_checkpoint(struct f3fs_sb_info *sbi)
 	}
 
 skip_gc:
-	f3fs_down_write(&sbi->gc_lock);
+  {
+    ktime_t gc_lock_time[2];
+    ktget(&gc_lock_time[0]);
+    f3fs_down_write(&sbi->gc_lock);
+    ktget(&gc_lock_time[1]);
+    ktcond_print(gc_lock_time);
+  }
+
 	cpc.reason = CP_PAUSE;
 	set_sbi_flag(sbi, SBI_CP_DISABLED);
 	err = f3fs_write_checkpoint(sbi, &cpc);
@@ -2172,8 +2188,14 @@ static void f3fs_enable_checkpoint(struct f3fs_sb_info *sbi)
 
 	if (unlikely(retry < 0))
 		f3fs_warn(sbi, "checkpoint=enable has some unwritten data.");
+  {
+    ktime_t gc_lock_time[2];
+    ktget(&gc_lock_time[0]);
+    f3fs_down_write(&sbi->gc_lock);
+    ktget(&gc_lock_time[1]);
+    ktcond_print(gc_lock_time);
+  }
 
-	f3fs_down_write(&sbi->gc_lock);
 	f3fs_dirty_to_prefree(sbi);
 
 	clear_sbi_flag(sbi, SBI_CP_DISABLED);
