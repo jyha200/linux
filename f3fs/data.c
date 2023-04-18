@@ -28,6 +28,8 @@
 #include "iostat.h"
 #include <trace/events/f3fs.h>
 
+#include "calclock.h"
+
 #define NUM_PREALLOC_POST_READ_CTXS	128
 
 static struct kmem_cache *bio_post_read_ctx_cache;
@@ -487,27 +489,48 @@ static bool f3fs_crypt_mergeable_bio(struct bio *bio, const struct inode *inode,
 
 	return fscrypt_mergeable_bio(bio, inode, next_idx);
 }
+#define PROF12_1 (0)
 
 static inline void __submit_bio(struct f3fs_sb_info *sbi,
 				struct bio *bio, enum page_type type)
 {
+#if PROF12_1
+  ktime_t ttt[15];
+  unsigned int sectors;
+  ttt[0] = ktime_get_raw();
+#endif
+
 	if (!is_read_io(bio_op(bio))) {
 		unsigned int start;
 
-		if (type != DATA && type != NODE)
+		if (type != DATA && type != NODE) {
+#if PROF12_1
+      ttt[1] = ktime_get_raw();
+#endif
+
 			goto submit_io;
+    }
 
 		if (f3fs_lfs_mode(sbi) && current->plug)
 			blk_finish_plug(current->plug);
 
-		if (!F3FS_IO_ALIGNED(sbi))
+		if (!F3FS_IO_ALIGNED(sbi)) {
+#if PROF12_1
+      ttt[1] = ktime_get_raw();
+#endif
+
 			goto submit_io;
+    }
 
 		start = bio->bi_iter.bi_size >> F3FS_BLKSIZE_BITS;
 		start %= F3FS_IO_SIZE(sbi);
 
-		if (start == 0)
+		if (start == 0) {
+#if PROF12_1
+      ttt[1] = ktime_get_raw();
+#endif
 			goto submit_io;
+    }
 
 		/* fill dummy pages */
 		for (; start < F3FS_IO_SIZE(sbi); start++) {
@@ -531,14 +554,36 @@ static inline void __submit_bio(struct f3fs_sb_info *sbi,
 		if (type == NODE)
 			set_sbi_flag(sbi, SBI_NEED_CP);
 	}
+#if PROF12_1
+  ttt[1] = ktime_get_raw();
+#endif
+
 submit_io:
+#if PROF12_1
+  ttt[2] = ktime_get_raw();
+#endif
+
 	if (is_read_io(bio_op(bio)))
 		trace_f3fs_submit_read_bio(sbi->sb, type, bio);
 	else
 		trace_f3fs_submit_write_bio(sbi->sb, type, bio);
+#if PROF12_1
+  ttt[3] = ktime_get_raw();
+#endif
 
 	iostat_update_submit_ctx(bio, type);
+#if PROF12_1
+  ttt[4] = ktime_get_raw();
+  sectors = bio_sectors(bio);
+#endif
+
 	submit_bio(bio);
+#if PROF12_1
+  ttt[5] = ktime_get_raw();
+  ttt[6] = ttt[5] + sectors;
+  ktcond_print2(ttt, 13, 7);
+#endif
+
 }
 
 void f3fs_submit_bio(struct f3fs_sb_info *sbi,
@@ -935,21 +980,57 @@ alloc_new:
 	return 0;
 }
 
+#define PROF9_1 (0)
+#define PROF10_1 (0)
+#define PROF11_1 (0)
 void f3fs_submit_page_write(struct f3fs_io_info *fio)
 {
 	struct f3fs_sb_info *sbi = fio->sbi;
 	enum page_type btype = PAGE_TYPE_OF_BIO(fio->type);
 	struct f3fs_bio_info *io = sbi->write_io[btype] + fio->temp;
 	struct page *bio_page;
+#if PROF9_1
+  ktime_t ttt[15];
+  ttt[0] = ktime_get_raw();
+#endif
+#if PROF10_1
+  ktime_t ttt[15];
+#endif
 
 	f3fs_bug_on(sbi, is_read_io(fio->op));
 
 	f3fs_down_write(&io->io_rwsem);
+#if PROF9_1
+  ttt[1] = ktime_get_raw();
+#endif
+
 next:
+#if PROF9_1
+  ttt[2] = ktime_get_raw();
+#endif
+#if PROF10_1
+  ttt[0] = ktime_get_raw();
+#endif
+
 	if (fio->in_list) {
 		spin_lock(&io->io_lock);
 		if (list_empty(&io->io_list)) {
 			spin_unlock(&io->io_lock);
+#if PROF9_1
+      ttt[3] = ktime_get_raw();
+      ttt[4] = ttt[3];
+      ttt[5] = ttt[4];
+      ttt[6] = ttt[5];
+      ttt[7] = ttt[6];
+#endif
+ #if PROF10_1
+      ttt[1] = ktime_get_raw();
+      ttt[2] = ttt[1];
+      ttt[3] = ttt[2];
+      ttt[4] = ttt[3];
+      ktcond_print2(ttt, 11, 5);
+#endif
+    
 			goto out;
 		}
 		fio = list_first_entry(&io->io_list,
@@ -957,8 +1038,14 @@ next:
 		list_del(&fio->list);
 		spin_unlock(&io->io_lock);
 	}
+#if PROF10_1
+  ttt[1] = ktime_get_raw();
+#endif
 
 	verify_fio_blkaddr(fio);
+#if PROF10_1
+  ttt[2] = ktime_get_raw();
+#endif
 
 	if (fio->encrypted_page)
 		bio_page = fio->encrypted_page;
@@ -971,20 +1058,62 @@ next:
 	fio->submitted = true;
 
 	inc_page_count(sbi, WB_DATA_TYPE(bio_page));
+#if PROF10_1
+  ttt[3] = ktime_get_raw();
+#endif
+  {
+#if PROF11_1
+    ktime_t ttt[15];
+    ttt[0] = ktime_get_raw();
+#endif
 
-	if (io->bio &&
-	    (!io_is_mergeable(sbi, io->bio, io, fio, io->last_block_in_bio,
-			      fio->new_blkaddr) ||
-	     !f3fs_crypt_mergeable_bio(io->bio, fio->page->mapping->host,
-				       bio_page->index, fio)))
-		__submit_merged_bio(io);
+    if (io->bio &&
+        (!io_is_mergeable(sbi, io->bio, io, fio, io->last_block_in_bio,
+                          fio->new_blkaddr) ||
+         !f3fs_crypt_mergeable_bio(io->bio, fio->page->mapping->host,
+           bio_page->index, fio))) {
+#if PROF11_1
+      ttt[1] = ktime_get_raw();
+#endif
+
+      __submit_merged_bio(io);
+#if PROF11_1
+      ttt[2] = ktime_get_raw();
+      ktcond_print2(ttt, 12, 3);
+#endif
+    } else {
+#if PROF11_1
+      ttt[1] = ktime_get_raw();
+      ttt[2] = ttt[1];
+      ktcond_print2(ttt, 12, 3);
+#endif
+    }
+  }
+#if PROF9_1
+  ttt[3] = ktime_get_raw();
+#endif
+#if PROF10_1
+  ttt[4] = ktime_get_raw();
+  ktcond_print2(ttt, 11, 5);
+#endif
+
 alloc_new:
+#if PROF9_1
+  ttt[4] = ktime_get_raw();
+#endif
+
 	if (io->bio == NULL) {
 		if (F3FS_IO_ALIGNED(sbi) &&
 				(fio->type == DATA || fio->type == NODE) &&
 				fio->new_blkaddr & F3FS_IO_SIZE_MASK(sbi)) {
 			dec_page_count(sbi, WB_DATA_TYPE(bio_page));
 			fio->retry = true;
+#if PROF9_1
+      ttt[5] = ktime_get_raw();
+      ttt[6] = ttt[5];
+      ttt[7] = ttt[6];
+#endif
+
 			goto skip;
 		}
 		io->bio = __bio_alloc(fio, BIO_MAX_VECS);
@@ -995,6 +1124,13 @@ alloc_new:
 
 	if (bio_add_page(io->bio, bio_page, PAGE_SIZE, 0) < PAGE_SIZE) {
 		__submit_merged_bio(io);
+#if PROF9_1
+      ttt[5] = ktime_get_raw();
+      ttt[6] = ttt[5];
+      ttt[7] = ttt[6];
+      ktcond_print2(ttt, 10, 8);
+#endif
+
 		goto alloc_new;
 	}
 
@@ -1004,14 +1140,33 @@ alloc_new:
 	io->last_block_in_bio = fio->new_blkaddr;
 
 	trace_f3fs_submit_page_write(fio->page, fio);
+#if PROF9_1
+  ttt[5] = ktime_get_raw();
+#endif
+
 skip:
-	if (fio->in_list)
-		goto next;
+	if (fio->in_list) {
+#if PROF9_1
+    ttt[6] = ktime_get_raw();
+    ttt[7] = ttt[6];
+    ktcond_print2(ttt, 10, 8);
+#endif
+    goto next;
+  }
 out:
+#if PROF9_1
+  ttt[6] = ktime_get_raw();
+#endif
+
 	if (is_sbi_flag_set(sbi, SBI_IS_SHUTDOWN) ||
 				!f3fs_is_checkpoint_ready(sbi))
 		__submit_merged_bio(io);
 	f3fs_up_write(&io->io_rwsem);
+#if PROF9_1
+  ttt[7] = ktime_get_raw();
+  ktcond_print2(ttt, 10, 8);
+#endif
+
 }
 
 static struct bio *f3fs_grab_read_bio(struct inode *inode, block_t blkaddr,
@@ -2596,6 +2751,8 @@ static inline bool need_inplace_update(struct f3fs_io_info *fio)
 	return f3fs_should_update_inplace(inode, fio);
 }
 
+#define PROF6 (0)
+
 int f3fs_do_write_data_page(struct f3fs_io_info *fio)
 {
 	struct page *page = fio->page;
@@ -2605,12 +2762,19 @@ int f3fs_do_write_data_page(struct f3fs_io_info *fio)
 	struct node_info ni;
 	bool ipu_force = false;
 	int err = 0;
+#if PROF6
+  ktime_t ttt[15];
+  ttt[0] = ktime_get_raw();
+#endif
 
 	/* Use COW inode to make dnode_of_data for atomic write */
 	if (f3fs_is_atomic_file(inode))
 		set_new_dnode(&dn, F3FS_I(inode)->cow_inode, NULL, NULL, 0);
 	else
 		set_new_dnode(&dn, inode, NULL, NULL, 0);
+#if PROF6
+  ttt[1] = ktime_get_raw();
+#endif
 
 	if (need_inplace_update(fio) &&
 			f3fs_lookup_extent_cache(inode, page->index, &ei)) {
@@ -2622,16 +2786,39 @@ int f3fs_do_write_data_page(struct f3fs_io_info *fio)
 
 		ipu_force = true;
 		fio->need_lock = LOCK_DONE;
+#if PROF6
+    ttt[2] = ktime_get_raw();
+    ttt[3] = ttt[2];
+    ttt[4] = ttt[3];
+    ttt[5] = ttt[4];
+    ttt[6] = ttt[5];
+    ttt[7] = ttt[6];
+#endif
 		goto got_it;
 	}
+#if PROF6
+  ttt[2] = ktime_get_raw();
+#endif
 
 	/* Deadlock due to between page->lock and f3fs_lock_op */
 	if (fio->need_lock == LOCK_REQ && !f3fs_trylock_op(fio->sbi))
 		return -EAGAIN;
 
 	err = f3fs_get_dnode_of_data(&dn, page->index, LOOKUP_NODE);
-	if (err)
+	if (err) {
+#if PROF6
+    ttt[3] = ktime_get_raw();
+    ttt[4] = ttt[3];
+    ttt[5] = ttt[4];
+    ttt[6] = ttt[5];
+    ttt[7] = ttt[6];
+#endif
+
 		goto out;
+  }
+#if PROF6
+  ttt[3] = ktime_get_raw();
+#endif
 
 	fio->old_blkaddr = dn.data_blkaddr;
 
@@ -2639,13 +2826,30 @@ int f3fs_do_write_data_page(struct f3fs_io_info *fio)
 	if (fio->old_blkaddr == NULL_ADDR) {
 		ClearPageUptodate(page);
 		clear_page_private_gcing(page);
+#if PROF6
+    ttt[4] = ktime_get_raw();
+    ttt[5] = ttt[4];
+    ttt[6] = ttt[5];
+    ttt[7] = ttt[6];
+#endif
+
 		goto out_writepage;
 	}
 got_it:
+#if PROF6
+  ttt[4] = ktime_get_raw();
+#endif
+
 	if (__is_valid_data_blkaddr(fio->old_blkaddr) &&
 		!f3fs_is_valid_blkaddr(fio->sbi, fio->old_blkaddr,
 						DATA_GENERIC_ENHANCE)) {
 		err = -EFSCORRUPTED;
+#if PROF6
+    ttt[5] = ktime_get_raw();
+    ttt[6] = ttt[5];
+    ttt[7] = ttt[6];
+#endif
+
 		goto out_writepage;
 	}
 
@@ -2657,8 +2861,15 @@ got_it:
 		(__is_valid_data_blkaddr(fio->old_blkaddr) &&
 					need_inplace_update(fio))) {
 		err = f3fs_encrypt_one_page(fio);
-		if (err)
+		if (err) {
+#if PROF6
+    ttt[5] = ktime_get_raw();
+    ttt[6] = ttt[5];
+    ttt[7] = ttt[6];
+#endif
+
 			goto out_writepage;
+    }
 
 		set_page_writeback(page);
 		ClearPageError(page);
@@ -2677,24 +2888,44 @@ got_it:
 		trace_f3fs_do_write_data_page(fio->page, IPU);
 		return err;
 	}
+#if PROF6
+  ttt[5] = ktime_get_raw();
+#endif
 
 	if (fio->need_lock == LOCK_RETRY) {
 		if (!f3fs_trylock_op(fio->sbi)) {
 			err = -EAGAIN;
+#if PROF6
+    ttt[6] = ktime_get_raw();
+    ttt[7] = ttt[6];
+#endif
+
 			goto out_writepage;
 		}
 		fio->need_lock = LOCK_REQ;
 	}
 
 	err = f3fs_get_node_info(fio->sbi, dn.nid, &ni, false);
-	if (err)
+	if (err) {
+#if PROF6
+    ttt[6] = ktime_get_raw();
+    ttt[7] = ttt[6];
+#endif
+
 		goto out_writepage;
+  }
 
 	fio->version = ni.version;
 
 	err = f3fs_encrypt_one_page(fio);
-	if (err)
+	if (err) {
+#if PROF6
+    ttt[6] = ktime_get_raw();
+    ttt[7] = ttt[6];
+#endif
+
 		goto out_writepage;
+  }
 
 	set_page_writeback(page);
 	ClearPageError(page);
@@ -2703,7 +2934,13 @@ got_it:
 		f3fs_i_compr_blocks_update(inode, fio->compr_blocks - 1, false);
 
 	/* LFS mode write path */
+#if PROF6
+  ttt[6] = ktime_get_raw();
+#endif
 	f3fs_outplace_write_data(&dn, fio);
+#if PROF6
+  ttt[7] = ktime_get_raw();
+#endif
 	trace_f3fs_do_write_data_page(page, OPU);
 	set_inode_flag(inode, FI_APPEND_WRITE);
 	if (page->index == 0)
@@ -2713,8 +2950,15 @@ out_writepage:
 out:
 	if (fio->need_lock == LOCK_REQ)
 		f3fs_unlock_op(fio->sbi);
+#if PROF6
+  ttt[8] = ktime_get_raw();
+  ktcond_print2(ttt, 7, 9);
+#endif
+
 	return err;
 }
+
+#define PROF5 (0)
 
 int f3fs_write_single_data_page(struct page *page, int *submitted,
 				struct bio **bio,
@@ -2752,6 +2996,10 @@ int f3fs_write_single_data_page(struct page *page, int *submitted,
 		.last_block = last_block,
     .dst_hint = -1,
 	};
+#if PROF5
+  ktime_t ttt[15];
+  ttt[0] = ktime_get_raw();
+#endif
 
 	trace_f3fs_writepage(page, DATA);
 
@@ -2770,23 +3018,66 @@ int f3fs_write_single_data_page(struct page *page, int *submitted,
 	if (unlikely(is_sbi_flag_set(sbi, SBI_POR_DOING)))
 		goto redirty_out;
 
+#if PROF5
+  ttt[1] = ktime_get_raw();
+#endif
+
 	if (page->index < end_index ||
 			f3fs_verity_in_progress(inode) ||
 			compr_blocks)
 		goto write;
-
 	/*
 	 * If the offset is out-of-range of file size,
 	 * this page does not have to be written to disk.
 	 */
 	offset = i_size & (PAGE_SIZE - 1);
-	if ((page->index >= end_index + 1) || !offset)
+	if ((page->index >= end_index + 1) || !offset) {
+#if PROF5
+    ttt[2] = ktime_get_raw();
+    ttt[3] = ttt[2];
+    ttt[4] = ttt[3];
+    ttt[5] = ttt[4];
+    ttt[6] = ttt[5];
+    ttt[7] = ttt[6];
+    ttt[8] = ttt[7];
+    ttt[9] = ttt[8];
+    ttt[10] = ttt[9];
+    ttt[11] = ttt[10];
+    ttt[12] = ttt[11];
+    ttt[13] = ttt[12];
+    ttt[14] = ttt[13];
+#endif
+
 		goto out;
+  }
 
 	zero_user_segment(page, offset, PAGE_SIZE);
 write:
-	if (f3fs_is_drop_cache(inode))
+#if PROF5
+  ttt[2] = ktime_get_raw();
+#endif
+
+	if (f3fs_is_drop_cache(inode)) {
+#if PROF5
+  ttt[3] = ktime_get_raw();
+  ttt[4] = ttt[3];
+  ttt[5] = ttt[4];
+  ttt[6] = ttt[5];
+  ttt[7] = ttt[6];
+  ttt[8] = ttt[7];
+  ttt[9] = ttt[8];
+  ttt[10] = ttt[9];
+    ttt[11] = ttt[10];
+    ttt[12] = ttt[11];
+    ttt[13] = ttt[12];
+    ttt[14] = ttt[13];
+
+#endif
 		goto out;
+  }
+#if PROF5
+  ttt[3] = ktime_get_raw();
+#endif
 
 	/* Dentry/quota blocks are controlled by checkpoint */
 	if (S_ISDIR(inode->i_mode) || IS_NOQUOTA(inode)) {
@@ -2804,22 +3095,74 @@ write:
 		if (IS_NOQUOTA(inode))
 			f3fs_up_read(&sbi->node_write);
 
-		goto done;
+#if PROF5
+    ttt[4] = ktime_get_raw();
+    ttt[5] = ttt[4];
+    ttt[6] = ttt[5];
+    ttt[7] = ttt[6];
+    ttt[8] = ttt[7];
+    ttt[9] = ttt[8];
+    ttt[10] = ttt[9];
+    ttt[11] = ttt[10];
+    ttt[12] = ttt[11];
+    ttt[13] = ttt[12];
+    ttt[14] = ttt[13];
+
+#endif
+
+    goto done;
 	}
+#if PROF5
+  ttt[4] = ktime_get_raw();
+#endif
 
 	if (!wbc->for_reclaim)
 		need_balance_fs = true;
-	else if (has_not_enough_free_secs(sbi, 0, 0))
+	else if (has_not_enough_free_secs(sbi, 0, 0)) {
+#if PROF5
+    ttt[5] = ktime_get_raw();
+    ttt[6] = ttt[5];
+    ttt[7] = ttt[6];
+    ttt[8] = ttt[7];
+    ttt[9] = ttt[8];
+    ttt[10] = ttt[9];
+    ttt[11] = ttt[10];
+    ttt[12] = ttt[11];
+    ttt[13] = ttt[12];
+    ttt[14] = ttt[13];
+
+#endif
 		goto redirty_out;
+  }
 	else
 		set_inode_flag(inode, FI_HOT_DATA);
 
 	err = -EAGAIN;
+#if PROF5
+  ttt[5] = ktime_get_raw();
+#endif
+
 	if (f3fs_has_inline_data(inode)) {
 		err = f3fs_write_inline_data(inode, page);
-		if (!err)
+		if (!err) {
+#if PROF5
+    ttt[6] = ktime_get_raw();
+    ttt[7] = ttt[6];
+    ttt[8] = ttt[7];
+    ttt[9] = ttt[8];
+    ttt[10] = ttt[9];
+    ttt[11] = ttt[10];
+    ttt[12] = ttt[11];
+    ttt[13] = ttt[12];
+    ttt[14] = ttt[13];
+
+#endif
 			goto out;
+    }
 	}
+#if PROF5
+  ttt[6] = ktime_get_raw();
+#endif
 
 	if (err == -EAGAIN) {
 		err = f3fs_do_write_data_page(&fio);
@@ -2828,6 +3171,9 @@ write:
 			err = f3fs_do_write_data_page(&fio);
 		}
 	}
+#if PROF5
+  ttt[7] = ktime_get_raw();
+#endif
 
 	if (err) {
 		file_set_keep_isize(inode);
@@ -2837,6 +3183,9 @@ write:
 			F3FS_I(inode)->last_disk_size = psize;
 		spin_unlock(&F3FS_I(inode)->i_size_lock);
 	}
+#if PROF5
+  ttt[8] = ktime_get_raw();
+#endif
 
 done:
 	if (err && err != -ENOENT)
@@ -2848,6 +3197,9 @@ out:
 		ClearPageUptodate(page);
 		clear_page_private_gcing(page);
 	}
+#if PROF5
+  ttt[9] = ktime_get_raw();
+#endif
 
 	if (wbc->for_reclaim) {
 		f3fs_submit_merged_write_cond(sbi, NULL, page, 0, DATA);
@@ -2855,19 +3207,33 @@ out:
 		f3fs_remove_dirty_inode(inode);
 		submitted = NULL;
 	}
+#if PROF5
+  ttt[10] = ktime_get_raw();
+#endif
+
 	unlock_page(page);
 	if (!S_ISDIR(inode->i_mode) && !IS_NOQUOTA(inode) &&
 			!F3FS_I(inode)->cp_task && allow_balance)
-		f3fs_balance_fs(sbi, need_balance_fs);
+		f3fs_balance_fs2(sbi, need_balance_fs);
+#if PROF5
+  ttt[11] = ktime_get_raw();
+#endif
 
 	if (unlikely(f3fs_cp_error(sbi))) {
 		f3fs_submit_merged_write(sbi, DATA);
 		f3fs_submit_merged_ipu_write(sbi, bio, NULL);
 		submitted = NULL;
 	}
+#if PROF5
+  ttt[12] = ktime_get_raw();
+#endif
 
 	if (submitted)
 		*submitted = fio.submitted ? 1 : 0;
+#if PROF5
+  ttt[13] = ktime_get_raw();
+  ktcond_print2(ttt, 6, 14);
+#endif
 
 	return 0;
 
@@ -2906,7 +3272,9 @@ out:
 	return f3fs_write_single_data_page(page, NULL, NULL, NULL,
 						wbc, FS_DATA_IO, 0, true);
 }
-
+#define PROF2 (0)
+#define PROF3 (0)
+#define PROF4 (0)
 /*
  * This function was copied from write_cche_pages from mm/page-writeback.c.
  * The major change is making write step of cold data page separately from
@@ -2948,6 +3316,10 @@ static int f3fs_write_cache_pages(struct address_space *mapping,
 	int nwritten = 0;
 	int submitted = 0;
 	int i;
+#if PROF2
+  ktime_t ttt[8];
+  ttt[0] = ktime_get_raw();
+#endif
 
 	if (get_dirty_pages(mapping->host) <=
 				SM_I(F3FS_M_SB(mapping))->min_hot_blocks)
@@ -2968,20 +3340,37 @@ static int f3fs_write_cache_pages(struct address_space *mapping,
 		tag = PAGECACHE_TAG_TOWRITE;
 	else
 		tag = PAGECACHE_TAG_DIRTY;
+#if PROF2
+  ttt[1] = ktime_get_raw();
+#endif
 retry:
+#if PROF2
+  ttt[2] = ktime_get_raw();
+#endif
 	retry = 0;
 	if (wbc->sync_mode == WB_SYNC_ALL || wbc->tagged_writepages)
 		tag_pages_for_writeback(mapping, index, end);
 	done_index = index;
 	while (!done && !retry && (index <= end)) {
+#if PROF3
+    ktime_t ttt[8];
+    ttt[0] = ktime_get_raw();
+#endif
 		nr_pages = find_get_pages_range_tag(mapping, &index, end,
 				tag, F3FS_ONSTACK_PAGES, pages);
 		if (nr_pages == 0)
 			break;
-
+#if PROF3
+    ttt[1] = ktime_get_raw();
+#endif
 		for (i = 0; i < nr_pages; i++) {
 			struct page *page = pages[i];
 			bool need_readd;
+#if PROF4
+      ktime_t ttt[8];
+      ttt[0] = ktime_get_raw();
+#endif
+
 readd:
 			need_readd = false;
 #ifdef CONFIG_F3FS_FS_COMPRESSION
@@ -3043,7 +3432,13 @@ lock_page:
 #endif
 			done_index = page->index;
 retry_write:
+#if PROF4
+    ttt[1] = ktime_get_raw();
+#endif
 			lock_page(page);
+#if PROF4
+    ttt[2] = ktime_get_raw();
+#endif
 
 			if (unlikely(page->mapping != mapping)) {
 continue_unlock:
@@ -3053,19 +3448,41 @@ continue_unlock:
 
 			if (!PageDirty(page)) {
 				/* someone wrote it for us */
+#if PROF4
+        ttt[3] = ttt[2];
+        ttt[4] = ttt[2];
+        ttt[5] = ttt[2];
+        ktcond_print2(ttt, 5, 6);
+#endif
 				goto continue_unlock;
 			}
 
+#if PROF4
+    ttt[3] = ktime_get_raw();
+#endif
 			if (PageWriteback(page)) {
 				if (wbc->sync_mode != WB_SYNC_NONE)
 					f3fs_wait_on_page_writeback(page,
 							DATA, true, true);
-				else
-					goto continue_unlock;
+				else{
+#if PROF4
+          ttt[4] = ttt[3];
+          ttt[5] = ttt[3];
+          ktcond_print2(ttt, 5, 6);
+#endif
+          goto continue_unlock;
+        }
 			}
-
-			if (!clear_page_dirty_for_io(page))
-				goto continue_unlock;
+#if PROF4
+    ttt[4] = ktime_get_raw();
+#endif
+			if (!clear_page_dirty_for_io(page)) {
+#if PROF4
+        ttt[5] = ttt[4];
+        ktcond_print2(ttt, 5, 6);
+#endif
+        goto continue_unlock;
+      }
 
 #ifdef CONFIG_F3FS_FS_COMPRESSION
 			if (f3fs_compressed_file(inode)) {
@@ -3077,6 +3494,10 @@ continue_unlock:
 			ret = f3fs_write_single_data_page(page, &submitted,
 					&bio, &last_block, wbc, io_type,
 					0, true);
+#if PROF4
+    ttt[5] = ktime_get_raw();
+    ktcond_print2(ttt, 5, 6);
+#endif
 			if (ret == AOP_WRITEPAGE_ACTIVATE)
 				unlock_page(page);
 #ifdef CONFIG_F3FS_FS_COMPRESSION
@@ -3116,9 +3537,22 @@ next:
 			if (need_readd)
 				goto readd;
 		}
+#if PROF3
+    ttt[2] = ktime_get_raw();
+#endif
 		release_pages(pages, nr_pages);
 		cond_resched();
+#if PROF3
+    ttt[3] = ktime_get_raw();
+    ttt[4] = nr_pages;
+    ktcond_print2(ttt, 4, 4);
+#endif
+
 	}
+#if PROF2
+  ttt[3] = ktime_get_raw();
+#endif
+
 #ifdef CONFIG_F3FS_FS_COMPRESSION
 	/* flush remained pages in compress cluster */
 	if (f3fs_compressed_file(inode) && !f3fs_cluster_is_empty(&cc)) {
@@ -3136,6 +3570,10 @@ next:
 	if (retry) {
 		index = 0;
 		end = -1;
+#if PROF2
+  ttt[4] = ktime_get_raw();
+  ktcond_print2(ttt, 3, 5);
+#endif
 		goto retry;
 	}
 	if (wbc->range_cyclic && !done)
@@ -3149,6 +3587,10 @@ next:
 	/* submit cached bio of IPU write */
 	if (bio)
 		f3fs_submit_merged_ipu_write(sbi, &bio, NULL);
+#if PROF2
+  ttt[4] = ktime_get_raw();
+  ktcond_print2(ttt, 3, 5);
+#endif
 
 	return ret;
 }
@@ -3173,6 +3615,7 @@ static inline bool __should_serialize_io(struct inode *inode,
 		return true;
 	return false;
 }
+#define PROF1 (0)
 
 static int __f3fs_write_data_pages(struct address_space *mapping,
 						struct writeback_control *wbc,
@@ -3183,6 +3626,10 @@ static int __f3fs_write_data_pages(struct address_space *mapping,
 	struct blk_plug plug;
 	int ret;
 	bool locked = false;
+#if PROF1
+  ktime_t ttt[8];
+  ttt[0] = ktime_get_raw();
+#endif
 
 	/* deal with chardevs and other special file */
 	if (!mapping->a_ops->writepage)
@@ -3217,15 +3664,24 @@ static int __f3fs_write_data_pages(struct address_space *mapping,
 			blk_finish_plug(current->plug);
 		goto skip_write;
 	}
+#if PROF1
+  ttt[1] = ktime_get_raw();
+#endif
 
 	if (__should_serialize_io(inode, wbc)) {
 		mutex_lock(&sbi->writepages);
 		locked = true;
 	}
+#if PROF1
+  ttt[2] = ktime_get_raw();
+#endif
 
 	blk_start_plug(&plug);
 	ret = f3fs_write_cache_pages(mapping, wbc, io_type);
 	blk_finish_plug(&plug);
+#if PROF1
+  ttt[3] = ktime_get_raw();
+#endif
 
 	if (locked)
 		mutex_unlock(&sbi->writepages);
@@ -3238,6 +3694,11 @@ static int __f3fs_write_data_pages(struct address_space *mapping,
 	 */
 
 	f3fs_remove_dirty_inode(inode);
+#if PROF1
+  ttt[4] = ktime_get_raw();
+  ktcond_print2(ttt, 2, 5);
+#endif
+
 	return ret;
 
 skip_write:
@@ -3590,7 +4051,6 @@ static int f3fs_write_end(struct file *file,
 			struct page *page, void *fsdata)
 {
 	struct inode *inode = page->mapping->host;
-
 	trace_f3fs_write_end(inode, pos, len, copied);
 
 	/*
