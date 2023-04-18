@@ -18,6 +18,8 @@ struct lock_class_key {
 };
 #endif
 
+#include "calclock.h"
+
 struct f3fs_rwsem2 {
   my_lock_t range_lock;
 #if IN_KERNEL
@@ -204,13 +206,27 @@ static inline bool check_totally_overlapped(
   return range->size <= size && range->start == start;
 }
 
+#define PROF_RANGE_1 (0)
+
 static inline void f3fs_up_range(
   struct f3fs_rwsem2 *sem, unsigned start, unsigned size, bool is_write)
 {
   struct f3fs_range* min_range;
+#if PROF_RANGE_1
+  ktime_t ttt[15];
+  ttt[0] = ktime_get_raw();
+#endif
+
   //print("%s %d %p %u %u\n", __func__, __LINE__, sem, start, size);
   _down_lock(&sem->range_lock, true);
+#if PROF_RANGE_1
+  ttt[1] = ktime_get_raw();
+#endif
   min_range = get_min_locked_range(sem, start);
+#if PROF_RANGE_1
+  ttt[2] = ktime_get_raw();
+#endif
+
   if (min_range == NULL) {
     print("error! %s %d\n", __func__, __LINE__);
     return;
@@ -241,11 +257,26 @@ static inline void f3fs_up_range(
       f3fs_remove_range(sem, min_range);
     }
   }
+#if PROF_RANGE_1
+    ttt[3] = ktime_get_raw();
+#endif
+
   _up_lock(&sem->range_lock, true);
+#if PROF_RANGE_1
+    ttt[4] = ktime_get_raw();
+#endif
+
   if (size > 0) {
     f3fs_up_range(sem, start, size, is_write);
   }
+#if PROF_RANGE_1
+  ttt[5] = ktime_get_raw();
+  ktcond_print2(ttt, 13, 6);
+#endif
+
 }
+
+#define PROF_RANGE_2 (0)
 
 static inline int f3fs_down_range_trylock(
   struct f3fs_rwsem2 *sem, unsigned start, unsigned size, bool is_write)
@@ -259,10 +290,21 @@ static inline int f3fs_down_range_trylock(
   unsigned orig_start = start;
   unsigned locked_size = 0;
 //  print("%s %d %p %u %u\n", __func__, __LINE__, sem, start, size);
+#if PROF_RANGE_2
+  ktime_t ttt[15];
+  ttt[0] = ktime_get_raw();
+#endif
 
   _down_lock(&sem->range_lock, true);
+#if PROF_RANGE_2
+  ttt[1] = ktime_get_raw();
+#endif
+
   min_range = get_min_locked_range(sem, start);
- 
+ #if PROF_RANGE_2
+  ttt[2] = ktime_get_raw();
+#endif
+
   not_overlapped = min_range == NULL || min_range->start > start; 
   if (not_overlapped) {
     unsigned lock_size = size;
@@ -280,6 +322,9 @@ static inline int f3fs_down_range_trylock(
     size -= lock_size;
     locked_size += lock_size;
   }
+#if PROF_RANGE_2
+  ttt[3] = ktime_get_raw();
+#endif
 
   if (size > 0) {
       unsigned min_range_end = min_range->start + min_range->size;
@@ -304,8 +349,14 @@ static inline int f3fs_down_range_trylock(
     }
   }
   //print("%s %d %p %u %u\n", __func__, __LINE__, sem, start, size);
+#if PROF_RANGE_2
+  ttt[4] = ktime_get_raw();
+#endif
 
   _up_lock(&sem->range_lock, true);
+#if PROF_RANGE_2
+  ttt[5] = ktime_get_raw();
+#endif
 
   if (overlapped) {
     if (totally_overlapped) {
@@ -315,6 +366,12 @@ static inline int f3fs_down_range_trylock(
           f3fs_up_range(sem, orig_start, locked_size, is_write);
         }
       //  print("%s %d %p %u %u\n", __func__, __LINE__, sem, start, size);
+#if PROF_RANGE_2
+        ttt[6] = ktime_get_raw();
+        ttt[7] = ttt[6];
+        ktcond_print2(ttt, 14, 8);
+#endif
+
         return false;
       }
     } else {
@@ -325,6 +382,12 @@ static inline int f3fs_down_range_trylock(
           f3fs_up_range(sem, orig_start, locked_size, is_write);
         }
     //    print("%s %d %p %u %u\n", __func__, __LINE__, sem, start, size);
+#if PROF_RANGE_2
+        ttt[6] = ktime_get_raw();
+        ttt[7] = ttt[6];
+        ktcond_print2(ttt, 14, 8);
+#endif
+
         return false;
       }
       locked = f3fs_down_range_trylock(
@@ -335,12 +398,21 @@ static inline int f3fs_down_range_trylock(
           f3fs_up_range(sem, orig_start, locked_size, is_write);
         }
   //      print("%s %d %p %u %u\n", __func__, __LINE__, sem, start, size);
+#if PROF_RANGE_2
+        ttt[6] = ktime_get_raw();
+        ttt[7] = ttt[6];
+        ktcond_print2(ttt, 14, 8);
+#endif
+
         return false;
       }
     }
 
     locked_size += nested_size;
   }
+#if PROF_RANGE_2
+  ttt[6] = ktime_get_raw();
+#endif
 
   if (size > 0) {
     locked = f3fs_down_range_trylock(sem, start, size, is_write);
@@ -348,6 +420,11 @@ static inline int f3fs_down_range_trylock(
       f3fs_up_range(sem, orig_start, locked_size, is_write);
     }
   }
+#if PROF_RANGE_2
+  ttt[7] = ktime_get_raw();
+  ktcond_print2(ttt, 14, 8);
+#endif
+
 //  print("%p locked %d\n", sem, locked);
   return locked;
 }

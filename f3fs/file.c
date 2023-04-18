@@ -36,6 +36,8 @@
 #include <trace/events/f3fs.h>
 #include <uapi/linux/f3fs.h>
 
+#include "calclock.h"
+
 static vm_fault_t f3fs_filemap_fault(struct vm_fault *vmf)
 {
 	struct inode *inode = file_inode(vmf->vma->vm_file);
@@ -4417,24 +4419,42 @@ static int f3fs_preallocate_blocks(struct kiocb *iocb, struct iov_iter *iter,
 	return map.m_len;
 }
 
+#define PROF16_3 (0)
 static ssize_t f3fs_buffered_write_iter(struct kiocb *iocb,
 					struct iov_iter *from)
 {
 	struct file *file = iocb->ki_filp;
 	struct inode *inode = file_inode(file);
 	ssize_t ret;
+#if PROF16_3
+  ktime_t ttt[15];
+  ttt[0] = ktime_get_raw();
+#endif
 
 	if (iocb->ki_flags & IOCB_NOWAIT)
 		return -EOPNOTSUPP;
 
 	current->backing_dev_info = inode_to_bdi(inode);
+#if PROF16_3
+  ttt[1] = ktime_get_raw();
+#endif
+
 	ret = generic_perform_write(iocb, from);
+#if PROF16_3
+  ttt[2] = ktime_get_raw();
+#endif
+
 	current->backing_dev_info = NULL;
 
 	if (ret > 0) {
 		iocb->ki_pos += ret;
 		f3fs_update_iostat(F3FS_I_SB(inode), APP_BUFFERED_IO, ret);
 	}
+#if PROF16_3
+  ttt[3] = ktime_get_raw();
+  ktcond_print2(ttt, 1, 4);
+#endif
+
 	return ret;
 }
 
