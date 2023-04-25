@@ -1487,24 +1487,52 @@ out:
 	return err;
 }
 
+#define PROF14_1 (0)
+#define PROF14_2 (0)
 static int move_data_page(struct inode *inode, block_t bidx, int gc_type,
 							unsigned int segno, int off)
 {
 	struct page *page;
 	int err = 0;
+#if PROF14_1
+  ktime_t ttt[15];
+  ttt[0] = ktime_get_raw();
+#endif
 
 	page = f3fs_get_lock_data_page(inode, bidx, true);
-	if (IS_ERR(page))
+	if (IS_ERR(page)) {
+#if PROF14_1
+    ttt[1] = ktime_get_raw();
+    ttt[2] = ttt[1];
+    ttt[3] = ttt[2];
+#endif
 		return PTR_ERR(page);
+  }
 
 	if (!check_valid_map(F3FS_I_SB(inode), segno, off)) {
 		err = -ENOENT;
+#if PROF14_1
+    ttt[1] = ktime_get_raw();
+    ttt[2] = ttt[1];
+    ttt[3] = ttt[2];
+#endif
+
 		goto out;
 	}
 
 	err = f3fs_gc_pinned_control(inode, gc_type, segno);
-	if (err)
+	if (err) {
+#if PROF14_1
+    ttt[1] = ktime_get_raw();
+    ttt[2] = ttt[1];
+    ttt[3] = ttt[2];
+#endif
+
 		goto out;
+  }
+#if PROF14_1
+  ttt[1] = ktime_get_raw();
+#endif
 
 	if (gc_type == BG_GC) {
 		if (PageWriteback(page)) {
@@ -1528,34 +1556,68 @@ static int move_data_page(struct inode *inode, block_t bidx, int gc_type,
 			.io_type = FS_GC_DATA_IO,
 		};
 		bool is_dirty = PageDirty(page);
+#if PROF14_2
+    ktime_t ttt[15];
+#endif
 
 retry:
-		f3fs_wait_on_page_writeback(page, DATA, true, true);
+#if PROF14_2
+    ttt[0] = ktime_get_raw();
+#endif
 
-		set_page_dirty(page);
-		if (clear_page_dirty_for_io(page)) {
-			inode_dec_dirty_pages(inode);
-			f3fs_remove_dirty_inode(inode);
-		}
+    f3fs_wait_on_page_writeback(page, DATA, true, true);
+#if PROF14_2
+    ttt[1] = ktime_get_raw();
+#endif
 
-		set_page_private_gcing(page);
+    set_page_dirty(page);
+    if (clear_page_dirty_for_io(page)) {
+      inode_dec_dirty_pages(inode);
+      f3fs_remove_dirty_inode(inode);
+    }
 
-		err = f3fs_do_write_data_page(&fio);
-		if (err) {
-			clear_page_private_gcing(page);
-			if (err == -ENOMEM) {
-				memalloc_retry_wait(GFP_NOFS);
-				goto retry;
-			}
-			if (is_dirty)
-				set_page_dirty(page);
-		}
+    set_page_private_gcing(page);
+#if PROF14_2
+    ttt[2] = ktime_get_raw();
+#endif
+
+    err = f3fs_do_write_data_page(&fio);
+#if PROF14_2
+    ttt[3] = ktime_get_raw();
+#endif
+
+    if (err) {
+      clear_page_private_gcing(page);
+      if (err == -ENOMEM) {
+        memalloc_retry_wait(GFP_NOFS);
+#if PROF14_2
+        ttt[4] = ktime_get_raw();
+        ktcond_print2(ttt, 16, 5);
+#endif
+        goto retry;
+      }
+      if (is_dirty)
+        set_page_dirty(page);
+    }
+#if PROF14_2
+    ttt[4] = ktime_get_raw();
+    ktcond_print2(ttt, 16, 5);
+#endif
 	}
 out:
+#if PROF14_1
+  ttt[2] = ktime_get_raw();
+#endif
 	f3fs_put_page(page, 1);
+
+#if PROF14_1
+  ttt[3] = ktime_get_raw();
+  ktcond_print2(ttt, gc_type == BG_GC?14:15, 4);
+#endif
 	return err;
 }
-
+#define PROF13_1 (1)
+#define PROF13_2 (0)
 /*
  * This function tries to get parent node of victim data block, and identifies
  * data block validity. If the block is valid, copy that with cold status and
@@ -1574,6 +1636,11 @@ static int gc_data_segment(struct f3fs_sb_info *sbi, struct f3fs_summary *sum,
 	int phase = 0;
 	int submitted = 0;
 	unsigned int usable_blks_in_seg = f3fs_usable_blks_in_seg(sbi, segno);
+  int count = 0;
+#if PROF13_1
+  ktime_t ttt[15];
+  ttt[0] = ktime_get_raw();
+#endif
 
 	start_addr = START_BLOCK(sbi, segno);
 
@@ -1671,55 +1738,108 @@ next_step:
 			add_gc_inode(gc_list, inode);
 			continue;
 		}
+    {
+#if PROF13_2
+      ktime_t ttt[15];
+      ttt[0] = ktime_get_raw();
+#endif
 
-		/* phase 4 */
-		inode = find_gc_inode(gc_list, dni.ino);
-		if (inode) {
-			struct f3fs_inode_info *fi = F3FS_I(inode);
-			bool locked = false;
-			int err;
+      /* phase 4 */
+      inode = find_gc_inode(gc_list, dni.ino);
+      count++;
+#if PROF13_2
+      ttt[1] = ktime_get_raw();
+#endif
 
-			if (S_ISREG(inode->i_mode)) {
-				if (!f3fs_down_write_trylock(&fi->i_gc_rwsem[READ])) {
-					sbi->skipped_gc_rwsem++;
-					continue;
-				}
-				if (!f3fs_down_write_trylock(
-						&fi->i_gc_rwsem[WRITE])) {
-					sbi->skipped_gc_rwsem++;
-					f3fs_up_write(&fi->i_gc_rwsem[READ]);
-					continue;
-				}
-				locked = true;
+      if (inode) {
+        struct f3fs_inode_info *fi = F3FS_I(inode);
+        bool locked = false;
+        int err;
 
-				/* wait for all inflight aio data */
-				inode_dio_wait(inode);
-			}
+        if (S_ISREG(inode->i_mode)) {
+          if (!f3fs_down_write_trylock(&fi->i_gc_rwsem[READ])) {
+            sbi->skipped_gc_rwsem++;
+#if PROF13_2
+            ttt[2] = ktime_get_raw();
+            ttt[3] = ttt[2];
+            ttt[4] = ttt[3];
+            ttt[5] = ttt[4];
+            ktcond_print2(ttt, 13, 5);
+#endif
 
-			start_bidx = f3fs_start_bidx_of_node(nofs, inode)
-								+ ofs_in_node;
-			if (f3fs_post_read_required(inode))
-				err = move_data_block(inode, start_bidx,
-							gc_type, segno, off);
-			else
-				err = move_data_page(inode, start_bidx, gc_type,
-								segno, off);
+            continue;
+          }
+          if (!f3fs_down_write_trylock(
+                &fi->i_gc_rwsem[WRITE])) {
+            sbi->skipped_gc_rwsem++;
+            f3fs_up_write(&fi->i_gc_rwsem[READ]);
+#if PROF13_2
+        ttt[2] = ktime_get_raw();
+        ttt[3] = ttt[2];
+        ttt[4] = ttt[3];
+        ttt[5] = ttt[4];
+        ktcond_print2(ttt, 13, 5);
+#endif
 
-			if (!err && (gc_type == FG_GC ||
-					f3fs_post_read_required(inode)))
-				submitted++;
+            continue;
+          }
+          locked = true;
 
-			if (locked) {
-				f3fs_up_write(&fi->i_gc_rwsem[WRITE]);
-				f3fs_up_write(&fi->i_gc_rwsem[READ]);
-			}
+          /* wait for all inflight aio data */
+          inode_dio_wait(inode);
+        }
 
-			stat_inc_data_blk_count(sbi, 1, gc_type);
-		}
+        start_bidx = f3fs_start_bidx_of_node(nofs, inode)
+          + ofs_in_node;
+#if PROF13_2
+        ttt[2] = ktime_get_raw();
+#endif
+        if (f3fs_post_read_required(inode))
+          err = move_data_block(inode, start_bidx,
+              gc_type, segno, off);
+        else
+          err = move_data_page(inode, start_bidx, gc_type,
+              segno, off);
+#if PROF13_2
+        ttt[3] = ktime_get_raw();
+#endif
+
+        if (!err && (gc_type == FG_GC ||
+              f3fs_post_read_required(inode)))
+          submitted++;
+
+        if (locked) {
+          f3fs_up_write(&fi->i_gc_rwsem[WRITE]);
+          f3fs_up_write(&fi->i_gc_rwsem[READ]);
+        }
+
+        stat_inc_data_blk_count(sbi, 1, gc_type);
+#if PROF13_2
+        ttt[4] = ktime_get_raw();
+        ktcond_print2(ttt, f3fs_post_read_required(inode)?13:14, 5);
+#endif
+      } else {
+#if PROF13_2
+        ttt[2] = ktime_get_raw();
+        ttt[3] = ttt[2];
+        ttt[4] = ttt[3];
+        ttt[5] = ttt[4];
+        ktcond_print2(ttt, 13, 5);
+#endif
+
+      }
+    }
 	}
+#if PROF13_1
+  ttt[phase + 1] = ktime_get_raw();
+#endif
 
 	if (++phase < 5)
 		goto next_step;
+#if PROF13_1
+  ttt[6] = ttt[5] + count;
+  ktcond_print2(ttt, 13, 7);
+#endif
 
 	return submitted;
 }
@@ -1736,7 +1856,8 @@ static int __get_victim(struct f3fs_sb_info *sbi, unsigned int *victim,
 	up_write(&sit_i->sentry_lock);
 	return ret;
 }
-#define PROF0 (0)
+#define PROF12_1 (0)
+#define PROF12_2 (0)
 
 static int do_garbage_collect(struct f3fs_sb_info *sbi,
 				unsigned int start_segno,
@@ -1752,9 +1873,9 @@ static int do_garbage_collect(struct f3fs_sb_info *sbi,
 	unsigned char type = IS_DATASEG(get_seg_entry(sbi, segno)->type) ?
 						SUM_TYPE_DATA : SUM_TYPE_NODE;
 	int submitted = 0;
-#if PROF0
-  ktime_t gc_lock_time[8];
-  gc_lock_time[0] = ktime_get_raw();
+#if PROF12_1
+  ktime_t ttt[15];
+  ttt[0] = ktime_get_raw();
 #endif
 
 	if (__is_large_section(sbi))
@@ -1776,9 +1897,6 @@ static int do_garbage_collect(struct f3fs_sb_info *sbi,
 		f3fs_ra_meta_pages(sbi, GET_SUM_BLOCK(sbi, segno),
 					end_segno - segno, META_SSA, true);
 
-#if PROF0
-  gc_lock_time[1] = ktime_get_raw();
-#endif
 	/* reference all summary page */
 	while (segno < end_segno) {
 		sum_page = f3fs_get_sum_page(sbi, segno++);
@@ -1796,26 +1914,48 @@ static int do_garbage_collect(struct f3fs_sb_info *sbi,
 		}
 		unlock_page(sum_page);
 	}
-#if PROF0
-  gc_lock_time[2] = ktime_get_raw();
-#endif
 
 	blk_start_plug(&plug);
+#if PROF12_1
+  ttt[1] = ktime_get_raw();
+#endif
 
 	for (segno = start_segno; segno < end_segno; segno++) {
+#if PROF12_2
+  ktime_t ttt[15];
+  ttt[0] = ktime_get_raw();
+#endif
 
 		/* find segment summary of victim */
 		sum_page = find_get_page(META_MAPPING(sbi),
 					GET_SUM_BLOCK(sbi, segno));
 		f3fs_put_page(sum_page, 0);
 
-		if (get_valid_blocks(sbi, segno, false) == 0)
+		if (get_valid_blocks(sbi, segno, false) == 0) {
+#if PROF12_2
+      ttt[1] = ktime_get_raw();
+      ttt[2] = ttt[1];
+      ttt[3] = ttt[2];
+#endif
 			goto freed;
+    }
 		if (gc_type == BG_GC && __is_large_section(sbi) &&
-				migrated >= sbi->migration_granularity)
+				migrated >= sbi->migration_granularity) {
+#if PROF12_2
+      ttt[1] = ktime_get_raw();
+      ttt[2] = ttt[1];
+      ttt[3] = ttt[2];
+#endif
 			goto skip;
-		if (!PageUptodate(sum_page) || unlikely(f3fs_cp_error(sbi)))
+    }
+		if (!PageUptodate(sum_page) || unlikely(f3fs_cp_error(sbi))) {
+#if PROF12_2
+      ttt[1] = ktime_get_raw();
+      ttt[2] = ttt[1];
+      ttt[3] = ttt[2];
+#endif
 			goto skip;
+    }
 
 		sum = page_address(sum_page);
 		if (type != GET_SUM_TYPE((&sum->footer))) {
@@ -1823,6 +1963,11 @@ static int do_garbage_collect(struct f3fs_sb_info *sbi,
 				 segno, type, GET_SUM_TYPE((&sum->footer)));
 			set_sbi_flag(sbi, SBI_NEED_FSCK);
 			f3fs_stop_checkpoint(sbi, false);
+#if PROF12_2
+      ttt[1] = ktime_get_raw();
+      ttt[2] = ttt[1];
+      ttt[3] = ttt[2];
+#endif
 			goto skip;
 		}
 
@@ -1833,6 +1978,10 @@ static int do_garbage_collect(struct f3fs_sb_info *sbi,
 		 *   - down_read(sentry_lock)     - change_curseg()
 		 *                                  - lock_page(sum_page)
 		 */
+#if PROF12_2
+  ttt[1] = ktime_get_raw();
+#endif
+
 		if (type == SUM_TYPE_NODE)
 			submitted += gc_node_segment(sbi, sum->entries, segno,
 								gc_type);
@@ -1840,6 +1989,9 @@ static int do_garbage_collect(struct f3fs_sb_info *sbi,
 			submitted += gc_data_segment(sbi, sum->entries, gc_list,
 							segno, gc_type,
 							force_migrate);
+#if PROF12_2
+  ttt[2] = ktime_get_raw();
+#endif
 
 		stat_inc_seg_count(sbi, type, gc_type);
 		sbi->gc_reclaimed_segs[sbi->gc_mode]++;
@@ -1854,28 +2006,32 @@ freed:
 			sbi->next_victim_seg[gc_type] = segno + 1;
 skip:
 		f3fs_put_page(sum_page, 0);
+#if PROF12_2
+  ttt[3] = ktime_get_raw();
+  ktcond_print2(ttt, type==SUM_TYPE_NODE? 12:13, 4);
+#endif
 	}
-#if PROF0
-  gc_lock_time[3] = ktime_get_raw();
+#if PROF12_1
+  ttt[2] = ktime_get_raw();
 #endif
 
 	if (submitted)
 		f3fs_submit_merged_write(sbi,
 				(type == SUM_TYPE_NODE) ? NODE : DATA);
-#if PROF0
-  gc_lock_time[4] = ktime_get_raw();
-#endif
 
 	blk_finish_plug(&plug);
 
 	stat_inc_call_count(sbi->stat_info);
-#if PROF0
-  gc_lock_time[5] = ktime_get_raw();
-  ktcond_print2(gc_lock_time, 1, 6);
+#if PROF12_1
+  ttt[3] = ktime_get_raw();
+  ktcond_print2(ttt, 12, 4);
 #endif
 
 	return seg_freed;
 }
+
+#define PROF11_1 (0)
+#define PROF11_2 (0)
 
 int f3fs_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control)
 {
@@ -1889,7 +2045,13 @@ int f3fs_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control)
 		.iroot = RADIX_TREE_INIT(gc_list.iroot, GFP_NOFS),
 	};
 	unsigned int skipped_round = 0, round = 0;
-  //ktime_t gc_lock_time[8] = {0,};
+#if PROF11_1
+  ktime_t ttt[15];
+  ttt[0] = ktime_get_raw();
+#endif
+#if PROF11_2
+  ktime_t ttt[15];
+#endif
 
 	trace_f3fs_gc_begin(sbi->sb, gc_type, gc_control->no_bg_gc,
 				gc_control->nr_free_secs,
@@ -1903,55 +2065,154 @@ int f3fs_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control)
 
 	cpc.reason = __get_cp_reason(sbi);
 	sbi->skipped_gc_rwsem = 0;
+#if PROF11_1
+  ttt[1] = ktime_get_raw();
+#endif
+
 gc_more:
+#if PROF11_2
+  ttt[0] = ktime_get_raw();
+#endif
+
 	if (unlikely(!(sbi->sb->s_flags & SB_ACTIVE))) {
 		ret = -EINVAL;
+#if PROF11_2
+  ttt[1] = ktime_get_raw();
+  ttt[2] = ttt[1];
+  ttt[3] = ttt[2];
+  ttt[4] = ttt[3];
+  ttt[5] = ttt[4];
+  ttt[6] = ttt[5];
+  ttt[7] = ttt[6];
+  ttt[8] = ttt[7];
+  ttt[9] = ttt[8];
+  ktcond_print2(ttt, 11, 10);
+#endif
 		goto stop;
 	}
 	if (unlikely(f3fs_cp_error(sbi))) {
+#if PROF11_2
+  ttt[1] = ktime_get_raw();
+  ttt[2] = ttt[1];
+  ttt[3] = ttt[2];
+  ttt[4] = ttt[3];
+  ttt[5] = ttt[4];
+  ttt[6] = ttt[5];
+  ttt[7] = ttt[6];
+  ttt[8] = ttt[7];
+  ttt[9] = ttt[8];
+  ktcond_print2(ttt, 11, 10);
+#endif
+
 		ret = -EIO;
 		goto stop;
 	}
+#if PROF11_2
+  ttt[1] = ktime_get_raw();
+#endif
 
+//  printk("free sections %d ", free_sections(sbi));
 	if (gc_type == BG_GC && has_not_enough_free_secs(sbi, 0, 0)) {
+    int prefree = 0;
 		/*
 		 * For example, if there are many prefree_segments below given
 		 * threshold, we can make them free by checkpoint. Then, we
 		 * secure free segments which doesn't need fggc any more.
 		 */
-		if (prefree_segments(sbi)) {
+		prefree = prefree_segments(sbi);
+		if (prefree) {
+  //    printk("%s %d prefree %d",__func__, __LINE__, prefree);
 			ret = f3fs_write_checkpoint(sbi, &cpc);
-			if (ret)
+			if (ret) {
+#if PROF11_2
+        ttt[2] = ktime_get_raw();
+        ttt[3] = ttt[2];
+        ttt[4] = ttt[3];
+        ttt[5] = ttt[4];
+        ttt[6] = ttt[5];
+        ttt[7] = ttt[6];
+        ttt[8] = ttt[7];
+        ttt[9] = ttt[8];
+  ktcond_print2(ttt, 11, 10);
+#endif
 				goto stop;
+      }
 		}
-		if (has_not_enough_free_secs(sbi, 0, 0))
+
+		if (has_not_enough_free_secs2(sbi, 0, 0)) {
+   // printk("changed to foreground ");
 			gc_type = FG_GC;
-	}
+    }
+	} else {
+  }
+#if PROF11_2
+  ttt[2] = ktime_get_raw();
+#endif
 
 	/* f3fs_balance_fs doesn't need to do BG_GC in critical path. */
 	if (gc_type == BG_GC && gc_control->no_bg_gc) {
 		ret = -EINVAL;
-		goto stop;
+    //printk("%s %d",__func__, __LINE__);
+#if PROF11_2
+    ttt[3] = ktime_get_raw();
+    ttt[4] = ttt[3];
+    ttt[5] = ttt[4];
+    ttt[6] = ttt[5];
+    ttt[7] = ttt[6];
+    ttt[8] = ttt[7];
+    ttt[9] = ttt[8];
+    ktcond_print2(ttt, 11, 10);
+#endif
+    goto stop;
 	}
+#if PROF11_2
+  ttt[3] = ktime_get_raw();
+#endif
+
 retry:
+#if PROF11_2
+  ttt[4] = ktime_get_raw();
+#endif
+
 	ret = __get_victim(sbi, &segno, gc_type);
+#if PROF11_2
+  ttt[5] = ktime_get_raw();
+#endif
+
 	if (ret) {
 		/* allow to search victim from sections has pinned data */
 		if (ret == -ENODATA && gc_type == FG_GC &&
 				f3fs_pinned_section_exists(DIRTY_I(sbi))) {
-      printk("retry select gc victim");
 			f3fs_unpin_all_sections(sbi, false);
-			goto retry;
-		}
+#if PROF11_2
+      ttt[6] = ktime_get_raw();
+      ttt[7] = ttt[6];
+      ttt[8] = ttt[7];
+      ttt[9] = ttt[8];
+      ktcond_print2(ttt, 11, 10);
+#endif
+      goto retry;
+    }
+#if PROF11_2
+    ttt[6] = ktime_get_raw();
+    ttt[7] = ttt[6];
+    ttt[8] = ttt[7];
+    ttt[9] = ttt[8];
+    ktcond_print2(ttt, 11, 10);
+#endif
 		goto stop;
 	}
 //  printk("start gc %s", current->comm);
-  //ktget(&gc_lock_time[0]);
+#if PROF11_2
+  ttt[6] = ktime_get_raw();
+#endif
 
 	seg_freed = do_garbage_collect(sbi, segno, &gc_list, gc_type,
 				gc_control->should_migrate_blocks);
 	total_freed += seg_freed;
-  //ktget(&gc_lock_time[1]);
+#if PROF11_2
+  ttt[7] = ktime_get_raw();
+#endif
 
 	if (seg_freed == f3fs_usable_segs_in_sec(sbi, segno))
 		sec_freed++;
@@ -1962,15 +2223,24 @@ retry:
 	if (gc_control->init_gc_type == FG_GC ||
 	    !has_not_enough_free_secs(sbi,
 				(gc_type == FG_GC) ? sec_freed : 0, 0)) {
-    //gc_lock_time[2] = gc_lock_time[1];
-    //gc_lock_time[3] = gc_lock_time[2];
-		if (gc_type == FG_GC && sec_freed < gc_control->nr_free_secs)
+		if (gc_type == FG_GC && sec_freed < gc_control->nr_free_secs) {
+#if PROF11_2
+      ttt[8] = ktime_get_raw();
+      ttt[9] = ttt[8];
+      ktcond_print2(ttt, 11, 10);
+#endif
+
 			goto go_gc_more;
-    //gc_lock_time[4] = gc_lock_time[3];
+    }
+#if PROF11_2
+      ttt[8] = ktime_get_raw();
+      ttt[9] = ttt[8];
+      ktcond_print2(ttt, 11, 10);
+#endif
+
 		goto stop;
 	}
 
-  //ktget(&gc_lock_time[2]);
 	/* FG_GC stops GC by skip_count */
 	if (gc_type == FG_GC) {
 		if (sbi->skipped_gc_rwsem)
@@ -1978,29 +2248,42 @@ retry:
 		round++;
 		if (skipped_round > MAX_SKIP_GC_COUNT &&
 				skipped_round * 2 >= round) {
-      //gc_lock_time[3] = gc_lock_time[2];
-      //gc_lock_time[4] = gc_lock_time[3];
 			ret = f3fs_write_checkpoint(sbi, &cpc);
+#if PROF11_2
+      ttt[8] = ktime_get_raw();
+      ttt[9] = ttt[8];
+      ktcond_print2(ttt, 11, 10);
+#endif
+
 			goto stop;
 		}
 	}
+#if PROF11_2
+  ttt[8] = ktime_get_raw();
+#endif
 
-  //ktget(&gc_lock_time[3]);
 	/* Write checkpoint to reclaim prefree segments */
 	if (free_sections(sbi) < NR_CURSEG_PERSIST_TYPE &&
 				prefree_segments(sbi)) {
 		ret = f3fs_write_checkpoint(sbi, &cpc);
-		if (ret)
+		if (ret) {
+      //printk("%s %d",__func__, __LINE__);
 			goto stop;
+    }
 	}
+#if PROF11_2
+  ttt[9] = ktime_get_raw();
+  ktcond_print2(ttt, 11, 10);
+#endif
+
 go_gc_more:
-  //ktget(&gc_lock_time[4]);
-  //ktcond_print2(gc_lock_time, 0);
 	segno = NULL_SEGNO;
 	goto gc_more;
 
 stop:
-  //ktcond_print2(gc_lock_time, 0);
+#if PROF11_1
+  ttt[2] = ktime_get_raw();
+#endif
 
 	SIT_I(sbi)->last_victim[ALLOC_NEXT] = 0;
 	SIT_I(sbi)->last_victim[FLUSH_DEVICE] = gc_control->victim_segno;
@@ -2017,9 +2300,18 @@ stop:
 				reserved_segments(sbi),
 				prefree_segments(sbi));
 
+  if (sec_freed > 0) {
+//		ret = f3fs_write_checkpoint(sbi, &cpc);
+  }
+
 	f3fs_up_write(&sbi->gc_lock);
 
 	put_gc_inode(&gc_list);
+#if PROF11_1
+  ttt[3] = ktime_get_raw();
+  ttt[4] = ttt[3] + total_freed;
+  ktcond_print2(ttt, 12, 5);
+#endif
 
 	if (gc_control->err_gc_skipped && !ret)
 		ret = sec_freed ? 0 : -EAGAIN;
@@ -2268,14 +2560,8 @@ out_unlock:
 
 	set_sbi_flag(sbi, SBI_IS_RESIZEFS);
 
-	freeze_super(sbi->sb);
-  {
-    //ktime_t gc_lock_time[2];
-    //ktget(&gc_lock_time[0]);
-    f3fs_down_write(&sbi->gc_lock);
-    //ktget(&gc_lock_time[1]);
-    //ktcond_print(gc_lock_time);
-  }
+  freeze_super(sbi->sb);
+  f3fs_down_write(&sbi->gc_lock);
 	f3fs_down_write(&sbi->cp_global_sem);
 
 	spin_lock(&sbi->stat_lock);

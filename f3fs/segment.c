@@ -369,7 +369,6 @@ int f3fs_commit_atomic_write(struct inode *inode)
 
 	return err;
 }
-
 /*
  * This function balances dirty node and dentry pages.
  * In addition, it controls garbage collection.
@@ -409,17 +408,92 @@ void f3fs_balance_fs(struct f3fs_sb_info *sbi, bool need)
 				.no_bg_gc = true,
 				.should_migrate_blocks = false,
 				.err_gc_skipped = false,
-				.nr_free_secs = 1 };
-      {
-        ktime_t gc_lock_time[2];
-        ktget(&gc_lock_time[0]);
-        f3fs_down_write(&sbi->gc_lock);
-        ktget(&gc_lock_time[1]);
-        ktcond_print(gc_lock_time);
-      }
-			f3fs_gc(sbi, &gc_control);
+        .nr_free_secs = 1 };
+
+      f3fs_down_write(&sbi->gc_lock);
+      f3fs_gc(sbi, &gc_control);
 		}
 	}
+}
+#define PROF6_1 (0)
+/*
+ * This function balances dirty node and dentry pages.
+ * In addition, it controls garbage collection.
+ */
+void f3fs_balance_fs2(struct f3fs_sb_info *sbi, bool need)
+{
+#if PROF6_1
+  ktime_t ttt[15];
+  ttt[0] = ktime_get_raw();
+#endif
+
+	if (time_to_inject(sbi, FAULT_CHECKPOINT)) {
+		f3fs_show_injection_info(sbi, FAULT_CHECKPOINT);
+		f3fs_stop_checkpoint(sbi, false);
+	}
+
+	/* balance_fs_bg is able to be pending */
+	if (need && excess_cached_nats(sbi))
+		f3fs_balance_fs_bg(sbi, false);
+
+	if (!f3fs_is_checkpoint_ready(sbi)) {
+#if PROF6_1
+  ttt[1] = ktime_get_raw();
+  ttt[2] = ttt[1];
+  ttt[3] = ttt[2];
+  ktcond_print2(ttt, 7, 4);
+#endif
+		return;
+  }
+
+	/*
+	 * We should do GC or end up with checkpoint, if there are so many dirty
+	 * dir/node pages without enough free segments.
+	 */
+	if (has_not_enough_free_secs(sbi, 0, 0)) {
+		if (test_opt(sbi, GC_MERGE) && sbi->gc_thread &&
+					sbi->gc_thread->f3fs_gc_task) {
+			DEFINE_WAIT(wait);
+
+			prepare_to_wait(&sbi->gc_thread->fggc_wq, &wait,
+						TASK_UNINTERRUPTIBLE);
+			wake_up(&sbi->gc_thread->gc_wait_queue_head);
+			io_schedule();
+			finish_wait(&sbi->gc_thread->fggc_wq, &wait);
+#if PROF6_1
+      ttt[1] = ktime_get_raw();
+      ttt[2] = ttt[1];
+      ttt[3] = ttt[2];
+#endif
+		} else {
+			struct f3fs_gc_control gc_control = {
+				.victim_segno = NULL_SEGNO,
+				.init_gc_type = BG_GC,
+				.no_bg_gc = true,
+				.should_migrate_blocks = false,
+				.err_gc_skipped = false,
+        .nr_free_secs = 1 };
+#if PROF6_1
+      ttt[1] = ktime_get_raw();
+#endif
+
+      f3fs_down_write(&sbi->gc_lock);
+#if PROF6_1
+      ttt[2] = ktime_get_raw();
+#endif
+      f3fs_gc(sbi, &gc_control);
+		}
+	} else {
+#if PROF6_1
+    ttt[1] = ktime_get_raw();
+    ttt[2] = ttt[1];
+    ttt[3] = ttt[2];
+#endif
+  }
+#if PROF6_1
+  ttt[3] = ktime_get_raw();
+  ktcond_print2(ttt, 7, 4);
+#endif
 }
 
 static inline bool excess_dirty_threshold(struct f3fs_sb_info *sbi)

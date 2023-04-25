@@ -3041,6 +3041,10 @@ int f3fs_write_single_data_page(struct page *page, int *submitted,
     ttt[8] = ttt[7];
     ttt[9] = ttt[8];
     ttt[10] = ttt[9];
+    ttt[11] = ttt[10];
+    ttt[12] = ttt[11];
+    ttt[13] = ttt[12];
+    ttt[14] = ttt[13];
 #endif
 
 		goto out;
@@ -3062,6 +3066,11 @@ write:
   ttt[8] = ttt[7];
   ttt[9] = ttt[8];
   ttt[10] = ttt[9];
+    ttt[11] = ttt[10];
+    ttt[12] = ttt[11];
+    ttt[13] = ttt[12];
+    ttt[14] = ttt[13];
+
 #endif
 		goto out;
   }
@@ -3093,6 +3102,11 @@ write:
     ttt[8] = ttt[7];
     ttt[9] = ttt[8];
     ttt[10] = ttt[9];
+    ttt[11] = ttt[10];
+    ttt[12] = ttt[11];
+    ttt[13] = ttt[12];
+    ttt[14] = ttt[13];
+
 #endif
 
     goto done;
@@ -3111,6 +3125,11 @@ write:
     ttt[8] = ttt[7];
     ttt[9] = ttt[8];
     ttt[10] = ttt[9];
+    ttt[11] = ttt[10];
+    ttt[12] = ttt[11];
+    ttt[13] = ttt[12];
+    ttt[14] = ttt[13];
+
 #endif
 		goto redirty_out;
   }
@@ -3131,6 +3150,11 @@ write:
     ttt[8] = ttt[7];
     ttt[9] = ttt[8];
     ttt[10] = ttt[9];
+    ttt[11] = ttt[10];
+    ttt[12] = ttt[11];
+    ttt[13] = ttt[12];
+    ttt[14] = ttt[13];
+
 #endif
 			goto out;
     }
@@ -3182,22 +3206,32 @@ out:
 		f3fs_remove_dirty_inode(inode);
 		submitted = NULL;
 	}
+#if PROF5
+  ttt[10] = ktime_get_raw();
+#endif
+
 	unlock_page(page);
 	if (!S_ISDIR(inode->i_mode) && !IS_NOQUOTA(inode) &&
 			!F3FS_I(inode)->cp_task && allow_balance)
-		f3fs_balance_fs(sbi, need_balance_fs);
+		f3fs_balance_fs2(sbi, need_balance_fs);
+#if PROF5
+  ttt[11] = ktime_get_raw();
+#endif
 
 	if (unlikely(f3fs_cp_error(sbi))) {
 		f3fs_submit_merged_write(sbi, DATA);
 		f3fs_submit_merged_ipu_write(sbi, bio, NULL);
 		submitted = NULL;
 	}
+#if PROF5
+  ttt[12] = ktime_get_raw();
+#endif
 
 	if (submitted)
 		*submitted = fio.submitted ? 1 : 0;
 #if PROF5
-  ttt[10] = ktime_get_raw();
-  ktcond_print2(ttt, 6, 11);
+  ttt[13] = ktime_get_raw();
+  ktcond_print2(ttt, 6, 14);
 #endif
 
 	return 0;
