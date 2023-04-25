@@ -489,27 +489,48 @@ static bool f3fs_crypt_mergeable_bio(struct bio *bio, const struct inode *inode,
 
 	return fscrypt_mergeable_bio(bio, inode, next_idx);
 }
+#define PROF12_1 (0)
 
 static inline void __submit_bio(struct f3fs_sb_info *sbi,
 				struct bio *bio, enum page_type type)
 {
+#if PROF12_1
+  ktime_t ttt[15];
+  unsigned int sectors;
+  ttt[0] = ktime_get_raw();
+#endif
+
 	if (!is_read_io(bio_op(bio))) {
 		unsigned int start;
 
-		if (type != DATA && type != NODE)
+		if (type != DATA && type != NODE) {
+#if PROF12_1
+      ttt[1] = ktime_get_raw();
+#endif
+
 			goto submit_io;
+    }
 
 		if (f3fs_lfs_mode(sbi) && current->plug)
 			blk_finish_plug(current->plug);
 
-		if (!F3FS_IO_ALIGNED(sbi))
+		if (!F3FS_IO_ALIGNED(sbi)) {
+#if PROF12_1
+      ttt[1] = ktime_get_raw();
+#endif
+
 			goto submit_io;
+    }
 
 		start = bio->bi_iter.bi_size >> F3FS_BLKSIZE_BITS;
 		start %= F3FS_IO_SIZE(sbi);
 
-		if (start == 0)
+		if (start == 0) {
+#if PROF12_1
+      ttt[1] = ktime_get_raw();
+#endif
 			goto submit_io;
+    }
 
 		/* fill dummy pages */
 		for (; start < F3FS_IO_SIZE(sbi); start++) {
@@ -533,14 +554,36 @@ static inline void __submit_bio(struct f3fs_sb_info *sbi,
 		if (type == NODE)
 			set_sbi_flag(sbi, SBI_NEED_CP);
 	}
+#if PROF12_1
+  ttt[1] = ktime_get_raw();
+#endif
+
 submit_io:
+#if PROF12_1
+  ttt[2] = ktime_get_raw();
+#endif
+
 	if (is_read_io(bio_op(bio)))
 		trace_f3fs_submit_read_bio(sbi->sb, type, bio);
 	else
 		trace_f3fs_submit_write_bio(sbi->sb, type, bio);
+#if PROF12_1
+  ttt[3] = ktime_get_raw();
+#endif
 
 	iostat_update_submit_ctx(bio, type);
+#if PROF12_1
+  ttt[4] = ktime_get_raw();
+  sectors = bio_sectors(bio);
+#endif
+
 	submit_bio(bio);
+#if PROF12_1
+  ttt[5] = ktime_get_raw();
+  ttt[6] = ttt[5] + sectors;
+  ktcond_print2(ttt, 13, 7);
+#endif
+
 }
 
 void f3fs_submit_bio(struct f3fs_sb_info *sbi,
@@ -937,21 +980,57 @@ alloc_new:
 	return 0;
 }
 
+#define PROF9_1 (0)
+#define PROF10_1 (0)
+#define PROF11_1 (0)
 void f3fs_submit_page_write(struct f3fs_io_info *fio)
 {
 	struct f3fs_sb_info *sbi = fio->sbi;
 	enum page_type btype = PAGE_TYPE_OF_BIO(fio->type);
 	struct f3fs_bio_info *io = sbi->write_io[btype] + fio->temp;
 	struct page *bio_page;
+#if PROF9_1
+  ktime_t ttt[15];
+  ttt[0] = ktime_get_raw();
+#endif
+#if PROF10_1
+  ktime_t ttt[15];
+#endif
 
 	f3fs_bug_on(sbi, is_read_io(fio->op));
 
 	f3fs_down_write(&io->io_rwsem);
+#if PROF9_1
+  ttt[1] = ktime_get_raw();
+#endif
+
 next:
+#if PROF9_1
+  ttt[2] = ktime_get_raw();
+#endif
+#if PROF10_1
+  ttt[0] = ktime_get_raw();
+#endif
+
 	if (fio->in_list) {
 		spin_lock(&io->io_lock);
 		if (list_empty(&io->io_list)) {
 			spin_unlock(&io->io_lock);
+#if PROF9_1
+      ttt[3] = ktime_get_raw();
+      ttt[4] = ttt[3];
+      ttt[5] = ttt[4];
+      ttt[6] = ttt[5];
+      ttt[7] = ttt[6];
+#endif
+ #if PROF10_1
+      ttt[1] = ktime_get_raw();
+      ttt[2] = ttt[1];
+      ttt[3] = ttt[2];
+      ttt[4] = ttt[3];
+      ktcond_print2(ttt, 11, 5);
+#endif
+    
 			goto out;
 		}
 		fio = list_first_entry(&io->io_list,
@@ -959,8 +1038,14 @@ next:
 		list_del(&fio->list);
 		spin_unlock(&io->io_lock);
 	}
+#if PROF10_1
+  ttt[1] = ktime_get_raw();
+#endif
 
 	verify_fio_blkaddr(fio);
+#if PROF10_1
+  ttt[2] = ktime_get_raw();
+#endif
 
 	if (fio->encrypted_page)
 		bio_page = fio->encrypted_page;
@@ -973,20 +1058,62 @@ next:
 	fio->submitted = true;
 
 	inc_page_count(sbi, WB_DATA_TYPE(bio_page));
+#if PROF10_1
+  ttt[3] = ktime_get_raw();
+#endif
+  {
+#if PROF11_1
+    ktime_t ttt[15];
+    ttt[0] = ktime_get_raw();
+#endif
 
-	if (io->bio &&
-	    (!io_is_mergeable(sbi, io->bio, io, fio, io->last_block_in_bio,
-			      fio->new_blkaddr) ||
-	     !f3fs_crypt_mergeable_bio(io->bio, fio->page->mapping->host,
-				       bio_page->index, fio)))
-		__submit_merged_bio(io);
+    if (io->bio &&
+        (!io_is_mergeable(sbi, io->bio, io, fio, io->last_block_in_bio,
+                          fio->new_blkaddr) ||
+         !f3fs_crypt_mergeable_bio(io->bio, fio->page->mapping->host,
+           bio_page->index, fio))) {
+#if PROF11_1
+      ttt[1] = ktime_get_raw();
+#endif
+
+      __submit_merged_bio(io);
+#if PROF11_1
+      ttt[2] = ktime_get_raw();
+      ktcond_print2(ttt, 12, 3);
+#endif
+    } else {
+#if PROF11_1
+      ttt[1] = ktime_get_raw();
+      ttt[2] = ttt[1];
+      ktcond_print2(ttt, 12, 3);
+#endif
+    }
+  }
+#if PROF9_1
+  ttt[3] = ktime_get_raw();
+#endif
+#if PROF10_1
+  ttt[4] = ktime_get_raw();
+  ktcond_print2(ttt, 11, 5);
+#endif
+
 alloc_new:
+#if PROF9_1
+  ttt[4] = ktime_get_raw();
+#endif
+
 	if (io->bio == NULL) {
 		if (F3FS_IO_ALIGNED(sbi) &&
 				(fio->type == DATA || fio->type == NODE) &&
 				fio->new_blkaddr & F3FS_IO_SIZE_MASK(sbi)) {
 			dec_page_count(sbi, WB_DATA_TYPE(bio_page));
 			fio->retry = true;
+#if PROF9_1
+      ttt[5] = ktime_get_raw();
+      ttt[6] = ttt[5];
+      ttt[7] = ttt[6];
+#endif
+
 			goto skip;
 		}
 		io->bio = __bio_alloc(fio, BIO_MAX_VECS);
@@ -997,6 +1124,13 @@ alloc_new:
 
 	if (bio_add_page(io->bio, bio_page, PAGE_SIZE, 0) < PAGE_SIZE) {
 		__submit_merged_bio(io);
+#if PROF9_1
+      ttt[5] = ktime_get_raw();
+      ttt[6] = ttt[5];
+      ttt[7] = ttt[6];
+      ktcond_print2(ttt, 10, 8);
+#endif
+
 		goto alloc_new;
 	}
 
@@ -1006,14 +1140,33 @@ alloc_new:
 	io->last_block_in_bio = fio->new_blkaddr;
 
 	trace_f3fs_submit_page_write(fio->page, fio);
+#if PROF9_1
+  ttt[5] = ktime_get_raw();
+#endif
+
 skip:
-	if (fio->in_list)
-		goto next;
+	if (fio->in_list) {
+#if PROF9_1
+    ttt[6] = ktime_get_raw();
+    ttt[7] = ttt[6];
+    ktcond_print2(ttt, 10, 8);
+#endif
+    goto next;
+  }
 out:
+#if PROF9_1
+  ttt[6] = ktime_get_raw();
+#endif
+
 	if (is_sbi_flag_set(sbi, SBI_IS_SHUTDOWN) ||
 				!f3fs_is_checkpoint_ready(sbi))
 		__submit_merged_bio(io);
 	f3fs_up_write(&io->io_rwsem);
+#if PROF9_1
+  ttt[7] = ktime_get_raw();
+  ktcond_print2(ttt, 10, 8);
+#endif
+
 }
 
 static struct bio *f3fs_grab_read_bio(struct inode *inode, block_t blkaddr,
