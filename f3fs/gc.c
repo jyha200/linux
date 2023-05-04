@@ -1751,7 +1751,7 @@ skip:
 	return seg_freed;
 }
 
-int f3fs_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control)
+int do_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control)
 {
 	int gc_type = gc_control->init_gc_type;
 	unsigned int segno = gc_control->victim_segno;
@@ -1763,7 +1763,7 @@ int f3fs_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control)
 		.iroot = RADIX_TREE_INIT(gc_list.iroot, GFP_NOFS),
 	};
 	unsigned int skipped_round = 0, round = 0;
-
+  
 	trace_f3fs_gc_begin(sbi->sb, gc_type, gc_control->no_bg_gc,
 				gc_control->nr_free_secs,
 				get_pages(sbi, F3FS_DIRTY_NODES),
@@ -1875,12 +1875,20 @@ stop:
 				reserved_segments(sbi),
 				prefree_segments(sbi));
 
-	f3fs_up_write(&sbi->gc_lock);
-
 	put_gc_inode(&gc_list);
 
 	if (gc_control->err_gc_skipped && !ret)
 		ret = sec_freed ? 0 : -EAGAIN;
+	return ret;
+
+}
+
+int f3fs_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control)
+{
+  int ret = 0;
+
+  ret = do_gc(sbi, gc_control);
+  f3fs_up_write(&sbi->gc_lock);
 	return ret;
 }
 
