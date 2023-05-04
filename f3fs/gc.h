@@ -30,6 +30,17 @@
 /* Search max. number of dirty segments to select a victim segment */
 #define DEF_MAX_VICTIM_SEARCH 4096 /* covers 8GB */
 
+#define NUM_GC_WORKER (27)
+
+struct worker_arg {
+  struct f3fs_sb_info* sbi;
+  struct f3fs_gc_control* gc_control;
+  int ret;
+  bool state;
+	wait_queue_head_t wq;
+  wait_queue_head_t caller_wq;
+};
+
 struct f3fs_gc_kthread {
 	struct task_struct *f3fs_gc_task;
 	wait_queue_head_t gc_wait_queue_head;
@@ -48,6 +59,8 @@ struct f3fs_gc_kthread {
 						 * caller of f3fs_balance_fs()
 						 * will wait on this wait queue.
 						 */
+  struct worker_arg worker_args[NUM_GC_WORKER];
+  struct task_struct* gc_workers[NUM_GC_WORKER];
 };
 
 struct gc_inode_list {
@@ -174,3 +187,5 @@ static inline bool has_enough_invalid_blocks(struct f3fs_sb_info *sbi)
 		free_user_blocks(sbi) <
 			limit_free_user_blocks(invalid_user_blocks));
 }
+
+int do_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control);
