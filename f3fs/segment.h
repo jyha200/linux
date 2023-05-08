@@ -623,7 +623,7 @@ static inline bool has_not_enough_free_secs(struct f3fs_sb_info *sbi,
 		return false;
 
 	free = free_sections(sbi) + freed;
-	need_lower = node_secs + dent_secs + reserved_sections(sbi) + needed;
+	need_lower = node_secs + dent_secs + reserved_sections(sbi) + needed + 40;
 	need_upper = need_lower + (node_blocks ? 1 : 0) + (dent_blocks ? 1 : 0);
 
 	if (free > need_upper)

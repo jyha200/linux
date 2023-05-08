@@ -1279,6 +1279,7 @@ struct f3fs_gc_control {
 	bool err_gc_skipped;		/* return EAGAIN if GC skipped */
 	unsigned int nr_free_secs;	/* # of free sections to do GC */
   int intensity;
+  atomic_t freed;
 };
 
 /* For s_flag in struct f3fs_sb_info */
@@ -1856,6 +1857,7 @@ struct f3fs_sb_info {
 	struct iostat_lat_info *iostat_io_lat;
 #endif
   int num_gc_thread;
+	struct mutex gc_internal_cp;		/* lock for segment bitmaps */
 };
 
 #ifdef CONFIG_F3FS_FAULT_INJECTION
