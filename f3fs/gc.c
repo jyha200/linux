@@ -237,8 +237,7 @@ int f3fs_start_gc_thread(struct f3fs_sb_info *sbi)
     sbi->gc_thread->gc_workers[i] = kthread_run(
       gc_worker_func,
       &sbi->gc_thread->worker_args[i],
-      "gc worker %d", i);
-    printk("gc worker: %p",sbi->gc_thread->gc_workers[i]);
+      "gc_worker_%d", i);
   }
 	sbi->gc_thread->f3fs_gc_task = kthread_run(gc_thread_func, sbi,
 			"f3fs_gc-%u:%u", MAJOR(dev), MINOR(dev));
@@ -367,6 +366,7 @@ static unsigned int get_max_cost(struct f3fs_sb_info *sbi,
 		return 0;
 }
 
+#if 0
 static unsigned int check_bg_victims(struct f3fs_sb_info *sbi)
 {
 	struct dirty_seglist_info *dirty_i = DIRTY_I(sbi);
@@ -385,6 +385,7 @@ static unsigned int check_bg_victims(struct f3fs_sb_info *sbi)
 	}
 	return NULL_SEGNO;
 }
+#endif
 
 static unsigned int get_cb_cost(struct f3fs_sb_info *sbi, unsigned int segno)
 {
@@ -833,11 +834,11 @@ retry:
 	}
 
 	last_victim = sm->last_victim[p.gc_mode];
-	if (p.alloc_mode == LFS && gc_type == FG_GC) {
+/*	if (p.alloc_mode == LFS && gc_type == FG_GC) {
 		p.min_segno = check_bg_victims(sbi);
 		if (p.min_segno != NULL_SEGNO)
 			goto got_it;
-	}
+	}*/
 
 	while (1) {
 		unsigned long cost, *dirty_bitmap;
@@ -897,7 +898,8 @@ retry:
 			}
 		}
 
-		if (gc_type == BG_GC && test_bit(secno, dirty_i->victim_secmap))
+//		if (gc_type == BG_GC && test_bit(secno, dirty_i->victim_secmap))
+		if (test_bit(secno, dirty_i->victim_secmap))
 			goto next;
 
 		if (gc_type == FG_GC && f3fs_section_is_pinned(dirty_i, secno))
@@ -940,9 +942,12 @@ next:
 	}
 
 	if (p.min_segno != NULL_SEGNO) {
-got_it:
+//got_it:
 		*result = (p.min_segno / p.ofs_unit) * p.ofs_unit;
 got_result:
+		secno = GET_SEC_FROM_SEG(sbi, p.min_segno);
+		set_bit(secno, dirty_i->victim_secmap);
+
 		if (p.alloc_mode == LFS) {
 			secno = GET_SEC_FROM_SEG(sbi, p.min_segno);
 			if (gc_type == FG_GC)
@@ -1632,6 +1637,7 @@ next_step:
 			if (S_ISREG(inode->i_mode)) {
 				if (!f3fs_down_write_trylock(&fi->i_gc_rwsem[READ])) {
 					sbi->skipped_gc_rwsem++;
+        //count[6]++;
 					continue;
 				}
 				if (!f3fs_down_write_trylock(
@@ -1665,7 +1671,7 @@ next_step:
 			}
 
 			stat_inc_data_blk_count(sbi, 1, gc_type);
-		}
+    }
 	}
 
 	if (++phase < 5)
@@ -1847,11 +1853,13 @@ gc_more:
 		 * threshold, we can make them free by checkpoint. Then, we
 		 * secure free segments which doesn't need fggc any more.
 		 */
-		if (prefree_segments(sbi)) {
-			ret = f3fs_write_checkpoint(sbi, &cpc);
-			if (ret)
-				goto stop;
-		}
+    if (prefree_segments(sbi)) {
+      mutex_lock(&sbi->gc_internal_cp);
+      ret = f3fs_write_checkpoint(sbi, &cpc);
+      mutex_unlock(&sbi->gc_internal_cp);
+      if (ret)
+        goto stop;
+    }
 		if (has_not_enough_free_secs(sbi, 0, 0))
 			gc_type = FG_GC;
 	}
@@ -1877,17 +1885,23 @@ retry:
 				gc_control->should_migrate_blocks);
 	total_freed += seg_freed;
 
-	if (seg_freed == f3fs_usable_segs_in_sec(sbi, segno))
-		sec_freed++;
+	if (seg_freed == f3fs_usable_segs_in_sec(sbi, segno)) {
+		atomic_inc(&gc_control->freed);
+  } else {
+    if (get_valid_blocks(sbi, segno, false) > 0) {
+      clear_bit(GET_SEC_FROM_SEG(sbi, segno), DIRTY_I(sbi)->victim_secmap);
+    }
+  }
 
 	if (gc_type == FG_GC)
 		sbi->cur_victim_sec = NULL_SEGNO;
 
 	if (gc_control->init_gc_type == FG_GC ||
 	    !has_not_enough_free_secs(sbi,
-				(gc_type == FG_GC) ? sec_freed : 0, 0)) {
-		if (gc_type == FG_GC && sec_freed < gc_control->nr_free_secs)
+				(gc_type == FG_GC) ? atomic_read(&gc_control->freed) : 0, 0)) {
+		if (gc_type == FG_GC && atomic_read(&gc_control->freed) < gc_control->nr_free_secs) {
 			goto go_gc_more;
+    }
 		goto stop;
 	}
 
@@ -1898,7 +1912,10 @@ retry:
 		round++;
 		if (skipped_round > MAX_SKIP_GC_COUNT &&
 				skipped_round * 2 >= round) {
+      mutex_lock(&sbi->gc_internal_cp);
 			ret = f3fs_write_checkpoint(sbi, &cpc);
+      mutex_unlock(&sbi->gc_internal_cp);
+      //printk("%s %d\n", __func__, __LINE__);
 			goto stop;
 		}
 	}
@@ -1906,9 +1923,15 @@ retry:
 	/* Write checkpoint to reclaim prefree segments */
 	if (free_sections(sbi) < NR_CURSEG_PERSIST_TYPE &&
 				prefree_segments(sbi)) {
-		ret = f3fs_write_checkpoint(sbi, &cpc);
-		if (ret)
-			goto stop;
+    mutex_lock(&sbi->gc_internal_cp);
+    if (free_sections(sbi) < NR_CURSEG_PERSIST_TYPE &&
+        prefree_segments(sbi)) {
+      ret = f3fs_write_checkpoint(sbi, &cpc);
+      if (ret) {
+        goto stop;
+      }
+    }
+    mutex_unlock(&sbi->gc_internal_cp);
 	}
 go_gc_more:
 	segno = NULL_SEGNO;
@@ -1921,7 +1944,7 @@ stop:
 	if (gc_type == FG_GC)
 		f3fs_unpin_all_sections(sbi, true);
 
-	trace_f3fs_gc_end(sbi->sb, ret, total_freed, sec_freed,
+	trace_f3fs_gc_end(sbi->sb, ret, total_freed, atomic_read(&gc_control->freed),
 				get_pages(sbi, F3FS_DIRTY_NODES),
 				get_pages(sbi, F3FS_DIRTY_DENTS),
 				get_pages(sbi, F3FS_DIRTY_IMETA),
@@ -1933,7 +1956,7 @@ stop:
 	put_gc_inode(&gc_list);
 
 	if (gc_control->err_gc_skipped && !ret)
-		ret = sec_freed ? 0 : -EAGAIN;
+		ret = atomic_read(&gc_control->freed) ? 0 : -EAGAIN;
 	return ret;
 
 }
@@ -1942,9 +1965,9 @@ int f3fs_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control)
 {
   int ret = 0;
 
-  ret = do_gc(sbi, gc_control);
   if (sbi->gc_thread) {
     for (int i = 0 ; i < sbi->num_gc_thread ; i++) {
+      atomic_set(&gc_control->freed, 0);
       sbi->gc_thread->worker_args[i].gc_control = gc_control;
       sbi->gc_thread->worker_args[i].state = 1;
       wake_up(&sbi->gc_thread->worker_args[i].wq);
@@ -1956,16 +1979,19 @@ int f3fs_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control)
             sbi->gc_thread->worker_args[i].state == 0, msecs_to_jiffies(300));
       }
       local_ret = sbi->gc_thread->worker_args[i].ret;
-      if (ret < 0) {
+      if (ret >= 0) {
         if (local_ret < 0) {
           ret = local_ret;
-        } else {
-          ret += local_ret;
         }
       }
     }
+    if (ret >= 0) {
+      ret = atomic_read(&gc_control->freed);
+    }
+  } else {
+    ret = do_gc(sbi, gc_control);
   }
-//  ret = do_gc(sbi, gc_control);
+
   f3fs_up_write(&sbi->gc_lock);
 	return ret;
 }
