@@ -763,6 +763,7 @@ static void __remove_dirty_segment(struct f3fs_sb_info *sbi, unsigned int segno,
 		if (valid_blocks == 0) {
 			clear_bit(GET_SEC_FROM_SEG(sbi, segno),
 						dirty_i->victim_secmap);
+//      printk("victim_secmap cleared %d", segno);
 #ifdef CONFIG_F3FS_CHECK_FS
 			clear_bit(segno, SIT_I(sbi)->invalid_segmap);
 #endif
@@ -2583,7 +2584,9 @@ static void new_curseg(struct f3fs_sb_info *sbi, int type, bool new_sec)
 		dir = ALLOC_RIGHT;
 
 	segno = __get_next_segno(sbi, type);
+//  printk("%s %d",__func__, __LINE__);
 	get_new_segment(sbi, &segno, new_sec, dir);
+//  printk("%s %d",__func__, __LINE__);
 	curseg->next_segno = segno;
 	reset_curseg(sbi, type, 1);
 	curseg->alloc_type = LFS;
