@@ -342,6 +342,7 @@ static unsigned int get_max_cost(struct f3fs_sb_info *sbi,
 		return 0;
 }
 
+#if 0
 static unsigned int check_bg_victims(struct f3fs_sb_info *sbi)
 {
 	struct dirty_seglist_info *dirty_i = DIRTY_I(sbi);
@@ -360,6 +361,7 @@ static unsigned int check_bg_victims(struct f3fs_sb_info *sbi)
 	}
 	return NULL_SEGNO;
 }
+#endif
 
 static unsigned int get_cb_cost(struct f3fs_sb_info *sbi, unsigned int segno)
 {
@@ -808,11 +810,11 @@ retry:
 	}
 
 	last_victim = sm->last_victim[p.gc_mode];
-	if (p.alloc_mode == LFS && gc_type == FG_GC) {
+/*	if (p.alloc_mode == LFS && gc_type == FG_GC) {
 		p.min_segno = check_bg_victims(sbi);
 		if (p.min_segno != NULL_SEGNO)
 			goto got_it;
-	}
+	}*/
 
 	while (1) {
 		unsigned long cost, *dirty_bitmap;
@@ -872,7 +874,8 @@ retry:
 			}
 		}
 
-		if (gc_type == BG_GC && test_bit(secno, dirty_i->victim_secmap))
+		//if (gc_type == BG_GC && test_bit(secno, dirty_i->victim_secmap))
+		if (test_bit(secno, dirty_i->victim_secmap))
 			goto next;
 
 		if (gc_type == FG_GC && f3fs_section_is_pinned(dirty_i, secno))
@@ -915,11 +918,12 @@ next:
 	}
 
 	if (p.min_segno != NULL_SEGNO) {
-got_it:
+//got_it:
 		*result = (p.min_segno / p.ofs_unit) * p.ofs_unit;
 got_result:
 		if (p.alloc_mode == LFS) {
 			secno = GET_SEC_FROM_SEG(sbi, p.min_segno);
+			set_bit(secno, dirty_i->victim_secmap);
 			if (gc_type == FG_GC)
 				sbi->cur_victim_sec = secno;
 			else
@@ -1821,11 +1825,11 @@ gc_more:
 		 * threshold, we can make them free by checkpoint. Then, we
 		 * secure free segments which doesn't need fggc any more.
 		 */
-		if (prefree_segments(sbi)) {
-			ret = f3fs_write_checkpoint(sbi, &cpc);
-			if (ret)
-				goto stop;
-		}
+    /*if (prefree_segments(sbi)) {
+      ret = f3fs_write_checkpoint(sbi, &cpc);
+      if (ret)
+        goto stop;
+    }*/
 		if (has_not_enough_free_secs(sbi, 0, 0))
 			gc_type = FG_GC;
 	}
@@ -1847,12 +1851,17 @@ retry:
 		goto stop;
 	}
 
+//  printk("%s victim %d", current->comm, segno);
 	seg_freed = do_garbage_collect(sbi, segno, &gc_list, gc_type,
 				gc_control->should_migrate_blocks);
 	total_freed += seg_freed;
 
-	if (seg_freed == f3fs_usable_segs_in_sec(sbi, segno))
+	if (seg_freed == f3fs_usable_segs_in_sec(sbi, segno)) {
 		sec_freed++;
+  } else {
+ //   printk("not freed and clear %d", segno);
+    clear_bit(GET_SEC_FROM_SEG(sbi, segno), DIRTY_I(sbi)->victim_secmap);
+  }
 
 	if (gc_type == FG_GC)
 		sbi->cur_victim_sec = NULL_SEGNO;
@@ -1872,7 +1881,7 @@ retry:
 		round++;
 		if (skipped_round > MAX_SKIP_GC_COUNT &&
 				skipped_round * 2 >= round) {
-			ret = f3fs_write_checkpoint(sbi, &cpc);
+			//ret = f3fs_write_checkpoint(sbi, &cpc);
 			goto stop;
 		}
 	}
@@ -1880,9 +1889,10 @@ retry:
 	/* Write checkpoint to reclaim prefree segments */
 	if (free_sections(sbi) < NR_CURSEG_PERSIST_TYPE &&
 				prefree_segments(sbi)) {
+/*
 		ret = f3fs_write_checkpoint(sbi, &cpc);
 		if (ret)
-			goto stop;
+			goto stop;*/
 	}
 go_gc_more:
 	segno = NULL_SEGNO;
@@ -1908,6 +1918,7 @@ stop:
 
 	if (gc_control->err_gc_skipped && !ret)
 		ret = sec_freed ? 0 : -EAGAIN;
+//  printk("%s sec_freed %d", current->comm, sec_freed);
 	return ret;
 
 }
@@ -1916,7 +1927,6 @@ int f3fs_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control)
 {
   int ret = 0;
 
-  ret = do_gc(sbi, gc_control);
   if (sbi->gc_thread) {
     for (int i = 0 ; i < NUM_GC_WORKER ; i++) {
       sbi->gc_thread->worker_args[i].gc_control = gc_control;
@@ -1936,8 +1946,15 @@ int f3fs_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control)
         }
       }
     }
+  } else {
+    ret = do_gc(sbi, gc_control);
   }
-//  ret = do_gc(sbi, gc_control);
+  if (prefree_segments(sbi)) {
+    struct cp_control cpc;
+    cpc.reason = __get_cp_reason(sbi);
+    ret = f3fs_write_checkpoint(sbi, &cpc);
+  }
+
   f3fs_up_write(&sbi->gc_lock);
 	return ret;
 }
