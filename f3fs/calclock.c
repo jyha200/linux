@@ -55,19 +55,22 @@ void ktcond_print2(ktime_t* time_, int idx, int count) {
   }
   count_global[idx]++;
   if (ktime_to_ms(diff2) >= 1000) {
-    last_print2[idx] = time_[count - 1];
-    printk(KERN_CONT "%d : %d times",idx, count_global[idx]);
-    for (int i = 0 ; i < count - 1 ; i++) {
-      printk(KERN_CONT " %llu",
-        (u64)ktime_to_ns(ktime_global[idx][i])/count_global[idx]);
+    int local_count = count_global[idx];
+    if (local_count > 0) {
+      count_global[idx] = 0;
+      last_print2[idx] = time_[count - 1];
+      printk(KERN_CONT "%d : %d times",idx, local_count);
+      for (int i = 0 ; i < count - 1 ; i++) {
+        printk(KERN_CONT " %llu",
+            (u64)ktime_to_ns(ktime_global[idx][i])/local_count);
+      }
+      if (idx == 4) {
+        printk(KERN_CONT " %llu", (u64)(time_[count]));
+      }
+      printk(KERN_CONT "\n");
+      for (int i = 0 ; i < count - 1 ; i++) {
+        ktime_global[idx][i] = 0;
+      }
     }
-    if (idx == 4) {
-      printk(KERN_CONT " %llu", (u64)(time_[count]));
-    }
-    printk(KERN_CONT "\n");
-    for (int i = 0 ; i < count - 1 ; i++) {
-      ktime_global[idx][i] = 0;
-    }
-    count_global[idx] = 0;
   }
 }
