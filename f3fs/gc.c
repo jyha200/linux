@@ -1789,6 +1789,8 @@ skip:
 	return seg_freed;
 }
 
+#define NUM_SKIPPED_SEG (64)
+
 int do_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control)
 {
 	int gc_type = gc_control->init_gc_type;
@@ -1801,6 +1803,8 @@ int do_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control)
 		.iroot = RADIX_TREE_INIT(gc_list.iroot, GFP_NOFS),
 	};
 	unsigned int skipped_round = 0, round = 0;
+  unsigned int skipped_segs[NUM_SKIPPED_SEG];
+  int skipped_seg_count = 0;
   
 	trace_f3fs_gc_begin(sbi->sb, gc_type, gc_control->no_bg_gc,
 				gc_control->nr_free_secs,
@@ -1864,8 +1868,17 @@ retry:
 	if (seg_freed == f3fs_usable_segs_in_sec(sbi, segno)) {
 		sec_freed++;
   } else {
- //   printk("not freed and clear %d", segno);
+    if (skipped_seg_count < NUM_SKIPPED_SEG) {
+      skipped_segs[skipped_seg_count] = segno;
+      skipped_seg_count++;
+    } else {
+	  struct sit_info *sit_i = SIT_I(sbi);
+
+    printk("warning!! skipped buffer explosed.  not freed and clear %d", segno);
+    down_write(&sit_i->sentry_lock);
     clear_bit(GET_SEC_FROM_SEG(sbi, segno), DIRTY_I(sbi)->victim_secmap);
+    up_write(&sit_i->sentry_lock);
+    }
   }
 
 	if (gc_type == FG_GC)
@@ -1920,6 +1933,15 @@ stop:
 				prefree_segments(sbi));
 
 	put_gc_inode(&gc_list);
+  {
+    struct sit_info *sit_i = SIT_I(sbi);
+
+    down_write(&sit_i->sentry_lock);
+    for (int i = 0 ; i < skipped_seg_count; i++) {
+      clear_bit(GET_SEC_FROM_SEG(sbi, skipped_segs[i]), DIRTY_I(sbi)->victim_secmap);
+    }
+    up_write(&sit_i->sentry_lock);
+  }
 
 	if (gc_control->err_gc_skipped && !ret)
 		ret = sec_freed ? 0 : -EAGAIN;
