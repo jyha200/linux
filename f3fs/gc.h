@@ -30,13 +30,15 @@
 /* Search max. number of dirty segments to select a victim segment */
 #define DEF_MAX_VICTIM_SEARCH 4096 /* covers 8GB */
 
-#define NUM_GC_WORKER (1)
+#define NUM_GC_WORKER (16)
 
 struct worker_arg {
   struct f3fs_sb_info* sbi;
   struct f3fs_gc_control* gc_control;
   int ret;
-  atomic_t state;
+  bool state;
+	wait_queue_head_t wq;
+  wait_queue_head_t caller_wq;
 };
 
 struct f3fs_gc_kthread {
