@@ -3716,6 +3716,8 @@ bool f3fs_is_valid_blkaddr(struct f3fs_sb_info *sbi,
 					block_t blkaddr, int type);
 int f3fs_ra_meta_pages(struct f3fs_sb_info *sbi, block_t start, int nrpages,
 			int type, bool sync);
+int f3fs_ra_meta_pages2(struct f3fs_sb_info *sbi, block_t start, int nrpages,
+			int type, bool sync);
 void f3fs_ra_meta_pages_cond(struct f3fs_sb_info *sbi, pgoff_t index,
 							unsigned int ra_blocks);
 long f3fs_sync_meta_pages(struct f3fs_sb_info *sbi, enum page_type type,

@@ -1089,17 +1089,39 @@ static void put_gc_inode(struct gc_inode_list *gc_list)
 	}
 }
 
+#define PROF13_3_1 (0)
 static int check_valid_map(struct f3fs_sb_info *sbi,
 				unsigned int segno, int offset)
 {
 	struct sit_info *sit_i = SIT_I(sbi);
 	struct seg_entry *sentry;
 	int ret;
+#if PROF13_3_1
+      ktime_t ttt[15];
+      ttt[0] = ktime_get_raw();
+#endif
 
 	down_read(&sit_i->sentry_lock);
+#if PROF13_3_1
+      ttt[1] = ktime_get_raw();
+#endif
+
 	sentry = get_seg_entry(sbi, segno);
+#if PROF13_3_1
+      ttt[2] = ktime_get_raw();
+#endif
+
 	ret = f3fs_test_bit(offset, sentry->cur_valid_map);
+#if PROF13_3_1
+      ttt[3] = ktime_get_raw();
+#endif
+
 	up_read(&sit_i->sentry_lock);
+#if PROF13_3_1
+      ttt[4] = ktime_get_raw();
+      ktcond_print2(ttt, 13, 5);
+#endif
+
 	return ret;
 }
 
@@ -1141,7 +1163,7 @@ next_step:
 			continue;
 
 		if (phase == 0) {
-			f3fs_ra_meta_pages(sbi, NAT_BLOCK_OFFSET(nid), 1,
+			f3fs_ra_meta_pages2(sbi, NAT_BLOCK_OFFSET(nid), 1,
 							META_NAT, true);
 			continue;
 		}
@@ -1651,6 +1673,7 @@ out:
 }
 #define PROF13_1 (0)
 #define PROF13_2 (0)
+#define PROF13_3 (0)
 /*
  * This function tries to get parent node of victim data block, and identifies
  * data block validity. If the block is valid, copy that with cold status and
@@ -1697,12 +1720,28 @@ next_step:
 			(!force_migrate && get_valid_blocks(sbi, segno, true) ==
 							CAP_BLKS_PER_SEC(sbi)))
 			return submitted;
+    if (phase == 0) {
+      int result;
+#if PROF13_3
+      ktime_t ttt[15];
+      ttt[0] = ktime_get_raw();
+#endif
+      result = check_valid_map(sbi, segno, off);
+#if PROF13_3
+      ttt[1] = ktime_get_raw();
+      ktcond_print2(ttt, 13, 2);
+#endif
 
-		if (check_valid_map(sbi, segno, off) == 0)
-			continue;
+      if (result == 0)
+        continue;
+
+    } else {
+      if (check_valid_map(sbi, segno, off) == 0)
+        continue;
+    }
 
 		if (phase == 0) {
-			f3fs_ra_meta_pages(sbi, NAT_BLOCK_OFFSET(nid), 1,
+			f3fs_ra_meta_pages2(sbi, NAT_BLOCK_OFFSET(nid), 1,
 							META_NAT, true);
 			continue;
 		}

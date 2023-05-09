@@ -209,6 +209,88 @@ bool f3fs_is_valid_blkaddr(struct f3fs_sb_info *sbi,
 
 	return true;
 }
+#define PROF13_1_1 (0)
+int f3fs_ra_meta_pages2(struct f3fs_sb_info *sbi, block_t start, int nrpages,
+							int type, bool sync)
+{
+	struct page *page;
+	block_t blkno = start;
+	struct f3fs_io_info fio = {
+		.sbi = sbi,
+		.type = META,
+		.op = REQ_OP_READ,
+		.op_flags = sync ? (REQ_META | REQ_PRIO) : REQ_RAHEAD,
+		.encrypted_page = NULL,
+		.in_list = false,
+		.is_por = (type == META_POR),
+	};
+	struct blk_plug plug;
+	int err;
+#if PROF13_1_1
+  ktime_t ttt[15];
+  ttt[0] = ktime_get_raw();
+#endif
+
+	if (unlikely(type == META_POR))
+		fio.op_flags &= ~REQ_META;
+
+	blk_start_plug(&plug);
+	for (; nrpages-- > 0; blkno++) {
+
+		if (!f3fs_is_valid_blkaddr(sbi, blkno, type))
+			goto out;
+
+		switch (type) {
+		case META_NAT:
+			if (unlikely(blkno >=
+					NAT_BLOCK_OFFSET(NM_I(sbi)->max_nid)))
+				blkno = 0;
+			/* get nat block addr */
+			fio.new_blkaddr = current_nat_addr(sbi,
+					blkno * NAT_ENTRY_PER_BLOCK);
+			break;
+		case META_SIT:
+			if (unlikely(blkno >= TOTAL_SEGS(sbi)))
+				goto out;
+			/* get sit block addr */
+			fio.new_blkaddr = current_sit_addr(sbi,
+					blkno * SIT_ENTRY_PER_BLOCK);
+			break;
+		case META_SSA:
+		case META_CP:
+		case META_POR:
+			fio.new_blkaddr = blkno;
+			break;
+		default:
+			BUG();
+		}
+
+		page = f3fs_grab_cache_page(META_MAPPING(sbi),
+						fio.new_blkaddr, false);
+		if (!page)
+			continue;
+		if (PageUptodate(page)) {
+			f3fs_put_page(page, 1);
+			continue;
+		}
+
+		fio.page = page;
+		err = f3fs_submit_page_bio(&fio);
+		f3fs_put_page(page, err ? 1 : 0);
+
+		if (!err)
+			f3fs_update_iostat(sbi, FS_META_READ_IO, F3FS_BLKSIZE);
+	}
+
+out:
+	blk_finish_plug(&plug);
+#if PROF13_1_1
+  ttt[1] = ktime_get_raw();
+  ktcond_print2(ttt, 13, 2);
+#endif
+
+	return blkno - start;
+}
 
 /*
  * Readahead CP/NAT/SIT/SSA/POR pages
