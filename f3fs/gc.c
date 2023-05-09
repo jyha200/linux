@@ -1864,8 +1864,11 @@ retry:
 	if (seg_freed == f3fs_usable_segs_in_sec(sbi, segno)) {
 		sec_freed++;
   } else {
+	  struct sit_info *sit_i = SIT_I(sbi);
  //   printk("not freed and clear %d", segno);
+	  down_write(&sit_i->sentry_lock);
     clear_bit(GET_SEC_FROM_SEG(sbi, segno), DIRTY_I(sbi)->victim_secmap);
+	  up_write(&sit_i->sentry_lock);
   }
 
 	if (gc_type == FG_GC)
