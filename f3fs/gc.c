@@ -1081,14 +1081,14 @@ static void put_gc_inode(struct gc_inode_list *gc_list)
 static int check_valid_map(struct f3fs_sb_info *sbi,
 				unsigned int segno, int offset)
 {
-	struct sit_info *sit_i = SIT_I(sbi);
+//	struct sit_info *sit_i = SIT_I(sbi);
 	struct seg_entry *sentry;
 	int ret;
 
-	down_read(&sit_i->sentry_lock);
 	sentry = get_seg_entry(sbi, segno);
+  down_read(&sentry->cur_valmap_lock);
 	ret = f3fs_test_bit(offset, sentry->cur_valid_map);
-	up_read(&sit_i->sentry_lock);
+  up_read(&sentry->cur_valmap_lock);
 	return ret;
 }
 
