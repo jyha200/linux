@@ -37,6 +37,8 @@ struct worker_arg {
   struct f3fs_gc_control* gc_control;
   int ret;
   bool state;
+	wait_queue_head_t wq;
+  wait_queue_head_t caller_wq;
 };
 
 struct f3fs_gc_kthread {
