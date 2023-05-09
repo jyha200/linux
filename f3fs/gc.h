@@ -36,7 +36,7 @@ struct worker_arg {
   struct f3fs_sb_info* sbi;
   struct f3fs_gc_control* gc_control;
   int ret;
-  atomic_t state;
+  bool state;
 };
 
 struct f3fs_gc_kthread {

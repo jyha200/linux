@@ -175,9 +175,9 @@ static int gc_worker_func(void* data)
 {
   struct worker_arg* worker_arg = (struct worker_arg*)data;
   while (!kthread_should_stop()) {
-    if (atomic_read(&worker_arg->state) == 1) {
+    if (worker_arg->state == 1) {
       worker_arg->ret = do_gc(worker_arg->sbi, worker_arg->gc_control);
-      atomic_set(&worker_arg->state, 0);
+      worker_arg->state = 0;
     } else {
       msleep(1);
     }
@@ -208,7 +208,7 @@ int f3fs_start_gc_thread(struct f3fs_sb_info *sbi)
 	init_waitqueue_head(&sbi->gc_thread->gc_wait_queue_head);
 	init_waitqueue_head(&sbi->gc_thread->fggc_wq);
   for (int i = 0 ; i < NUM_GC_WORKER ; i++) {
-    atomic_set(&sbi->gc_thread->worker_args[i].state, 0);
+    sbi->gc_thread->worker_args[i].state = 0;
     sbi->gc_thread->worker_args[i].sbi = sbi;
     sbi->gc_thread->worker_args[i].gc_control = NULL;
     sbi->gc_thread->gc_workers[i] = kthread_run(
@@ -1930,11 +1930,11 @@ int f3fs_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control)
   if (sbi->gc_thread) {
     for (int i = 0 ; i < NUM_GC_WORKER ; i++) {
       sbi->gc_thread->worker_args[i].gc_control = gc_control;
-      atomic_set(&sbi->gc_thread->worker_args[i].state, 1);
+      sbi->gc_thread->worker_args[i].state = 1;
     }
     for (int i = 0 ; i < NUM_GC_WORKER ; i++) {
       int local_ret;
-      while (atomic_read(&sbi->gc_thread->worker_args[i].state) == 1) {
+      while (sbi->gc_thread->worker_args[i].state == 1) {
         msleep(1);
       }
       local_ret = sbi->gc_thread->worker_args[i].ret;
