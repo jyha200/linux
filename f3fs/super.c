@@ -1374,8 +1374,8 @@ static struct inode *f3fs_alloc_inode(struct super_block *sb)
 	spin_lock_init(&fi->i_size_lock);
 	INIT_LIST_HEAD(&fi->dirty_list);
 	INIT_LIST_HEAD(&fi->gdirty_list);
-	init_f3fs_rwsem(&fi->i_gc_rwsem[READ]);
-	init_f3fs_rwsem(&fi->i_gc_rwsem[WRITE]);
+	init_f3fs_rwsem2(&fi->i_gc_rwsem[READ]);
+	init_f3fs_rwsem2(&fi->i_gc_rwsem[WRITE]);
 	init_f3fs_rwsem(&fi->i_xattr_sem);
 
 	/* Will be used by directory only */
