@@ -16,4 +16,9 @@ default:
 
 clean:
 	$(MAKE) -C /lib/modules/$(shell uname -r)/build M=$(shell pwd) clean
-	
+
+lock_test: rm_lock_test
+	$(CC) range_lock_test.c -o lock_test -lpthread $(shell pkg-config --cflags --libs glib-2.0) -g
+
+rm_lock_test:
+	rm -f lock_test
