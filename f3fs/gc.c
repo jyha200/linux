@@ -1592,20 +1592,20 @@ next_step:
 				return submitted;
 			}
 
-			if (!f3fs_down_write_trylock(
-				&F3FS_I(inode)->i_gc_rwsem[WRITE])) {
+			start_bidx = f3fs_start_bidx_of_node(nofs, inode) +
+								ofs_in_node;
+
+			if (!f3fs_down_write_range_trylock2(
+				&F3FS_I(inode)->i_gc_rwsem[WRITE], start_bidx, 1)) {
 				iput(inode);
 				sbi->skipped_gc_rwsem++;
 				continue;
 			}
 
-			start_bidx = f3fs_start_bidx_of_node(nofs, inode) +
-								ofs_in_node;
-
 			if (f3fs_post_read_required(inode)) {
 				int err = ra_data_block(inode, start_bidx);
 
-				f3fs_up_write(&F3FS_I(inode)->i_gc_rwsem[WRITE]);
+				f3fs_up_write_range2(&F3FS_I(inode)->i_gc_rwsem[WRITE], start_bidx, 1);
 				if (err) {
 					iput(inode);
 					continue;
@@ -1616,7 +1616,7 @@ next_step:
 
 			data_page = f3fs_get_read_data_page(inode,
 						start_bidx, REQ_RAHEAD, true);
-			f3fs_up_write(&F3FS_I(inode)->i_gc_rwsem[WRITE]);
+			f3fs_up_write_range2(&F3FS_I(inode)->i_gc_rwsem[WRITE], start_bidx, 1);
 			if (IS_ERR(data_page)) {
 				iput(inode);
 				continue;
@@ -1634,16 +1634,20 @@ next_step:
 			bool locked = false;
 			int err;
 
+			start_bidx = f3fs_start_bidx_of_node(nofs, inode)
+								+ ofs_in_node;
+
 			if (S_ISREG(inode->i_mode)) {
-				if (!f3fs_down_write_trylock(&fi->i_gc_rwsem[READ])) {
+				if (!f3fs_down_write_range_trylock2(
+          &fi->i_gc_rwsem[READ], start_bidx, 1)) {
 					sbi->skipped_gc_rwsem++;
         //count[6]++;
 					continue;
 				}
-				if (!f3fs_down_write_trylock(
-						&fi->i_gc_rwsem[WRITE])) {
+				if (!f3fs_down_write_range_trylock2(
+						&fi->i_gc_rwsem[WRITE], start_bidx, 1)) {
 					sbi->skipped_gc_rwsem++;
-					f3fs_up_write(&fi->i_gc_rwsem[READ]);
+					f3fs_up_write_range2(&fi->i_gc_rwsem[READ], start_bidx, 1);
 					continue;
 				}
 				locked = true;
@@ -1651,9 +1655,6 @@ next_step:
 				/* wait for all inflight aio data */
 				inode_dio_wait(inode);
 			}
-
-			start_bidx = f3fs_start_bidx_of_node(nofs, inode)
-								+ ofs_in_node;
 			if (f3fs_post_read_required(inode))
 				err = move_data_block(inode, start_bidx,
 							gc_type, segno, off);
@@ -1666,8 +1667,8 @@ next_step:
 				submitted++;
 
 			if (locked) {
-				f3fs_up_write(&fi->i_gc_rwsem[WRITE]);
-				f3fs_up_write(&fi->i_gc_rwsem[READ]);
+				f3fs_up_write_range2(&fi->i_gc_rwsem[WRITE], start_bidx, 1);
+				f3fs_up_write_range2(&fi->i_gc_rwsem[READ], start_bidx, 1);
 			}
 
 			stat_inc_data_blk_count(sbi, 1, gc_type);
@@ -1883,6 +1884,7 @@ retry:
 
 	seg_freed = do_garbage_collect(sbi, segno, &gc_list, gc_type,
 				gc_control->should_migrate_blocks);
+  //printk("%s victim cleand? %d %d", current->comm, segno, get_valid_blocks(sbi, segno, false));
 	total_freed += seg_freed;
 
 	if (seg_freed == f3fs_usable_segs_in_sec(sbi, segno)) {
@@ -1915,7 +1917,6 @@ retry:
       mutex_lock(&sbi->gc_internal_cp);
 			ret = f3fs_write_checkpoint(sbi, &cpc);
       mutex_unlock(&sbi->gc_internal_cp);
-      //printk("%s %d\n", __func__, __LINE__);
 			goto stop;
 		}
 	}
