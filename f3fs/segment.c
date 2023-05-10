@@ -357,13 +357,13 @@ int f3fs_commit_atomic_write(struct inode *inode)
 	if (err)
 		return err;
 
-	f3fs_down_write(&fi->i_gc_rwsem[WRITE]);
+	f3fs_down_write2(&fi->i_gc_rwsem[WRITE]);
 	f3fs_lock_op(sbi);
 
 	err = __f3fs_commit_atomic_write(inode);
 
 	f3fs_unlock_op(sbi);
-	f3fs_up_write(&fi->i_gc_rwsem[WRITE]);
+	f3fs_up_write2(&fi->i_gc_rwsem[WRITE]);
 
 	return err;
 }
