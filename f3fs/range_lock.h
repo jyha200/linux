@@ -157,11 +157,11 @@ struct f3fs_range* f3fs_alloc_range(unsigned start, unsigned size)
   return ret;
 }
 
-static inline void f3fs_insert_range(
+static inline void f3fs_insert_range2(
   struct f3fs_rwsem2* head, struct f3fs_range* new_range)
 {
 #if IN_KERNEL
-  list_add_tail(&new_range->list_elem, head->locked_ranges);
+  list_add_tail(&new_range->list_elem, &head->locked_ranges);
 #else
   head->locked_ranges = g_list_append(head->locked_ranges, (gpointer) new_range);
 #endif
@@ -173,6 +173,7 @@ static inline void f3fs_remove_range(
 {
 #if IN_KERNEL
   list_del(&del_range->list_elem);
+  kfree(del_range);
 #else
   head->locked_ranges = g_list_remove(head->locked_ranges, (gpointer) del_range);
 #endif
@@ -251,7 +252,7 @@ static inline int f3fs_down_range_trylock(
       }
     }
     new_range = f3fs_alloc_range(start, lock_size);
-    f3fs_insert_range(sem, new_range);
+    f3fs_insert_range2(sem, new_range);
     // new write should be acquired
     _down_lock(&new_range->internal_lock, is_write);
     start += lock_size;
@@ -347,7 +348,7 @@ static inline void f3fs_down_range(
       }
     }
     new_range = f3fs_alloc_range(start, lock_size);
-    f3fs_insert_range(sem, new_range);
+    f3fs_insert_range2(sem, new_range);
     _down_lock(&new_range->internal_lock, is_write);
     start += lock_size;
     size -= lock_size;
