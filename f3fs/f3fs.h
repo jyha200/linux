@@ -29,6 +29,8 @@
 #include <linux/fscrypt.h>
 #include <linux/fsverity.h>
 
+#include "range_lock.h"
+
 struct pagevec;
 
 #ifdef CONFIG_F3FS_CHECK_FS
@@ -136,11 +138,6 @@ struct f3fs_rwsem {
 #ifdef CONFIG_F3FS_UNFAIR_RWSEM
         wait_queue_head_t read_waiters;
 #endif
-};
-
-struct f3fs_rwsem2 {
-        struct rw_semaphore internal_rwsem;
-        struct list_head ranges;
 };
 
 struct f3fs_mount_info {
@@ -2138,25 +2135,12 @@ static inline void clear_ckpt_flags(struct f3fs_sb_info *sbi, unsigned int f)
 	spin_unlock_irqrestore(&sbi->cp_lock, flags);
 }
 
-#define init_f3fs_rwsem2(sem)					\
-do {								\
-	static struct lock_class_key __key;			\
-								\
-	__init_f3fs_rwsem2((sem), #sem, &__key);			\
-} while (0)
-
 #define init_f3fs_rwsem(sem)					\
 do {								\
 	static struct lock_class_key __key;			\
 								\
 	__init_f3fs_rwsem((sem), #sem, &__key);			\
 } while (0)
-
-static inline void __init_f3fs_rwsem2(struct f3fs_rwsem2 *sem,
-		const char *sem_name, struct lock_class_key *key)
-{
-	__init_rwsem(&sem->internal_rwsem, sem_name, key);
-}
 
 static inline void __init_f3fs_rwsem(struct f3fs_rwsem *sem,
 		const char *sem_name, struct lock_class_key *key)
@@ -2176,9 +2160,10 @@ static inline int f3fs_rwsem_is_contended(struct f3fs_rwsem *sem)
 {
 	return rwsem_is_contended(&sem->internal_rwsem);
 }
+
 static inline void f3fs_down_read2(struct f3fs_rwsem2 *sem)
 {
-	down_read(&sem->internal_rwsem);
+  f3fs_down_range(sem, 0, 0xFFFFFFFF, false);
 }
 static inline void f3fs_down_read(struct f3fs_rwsem *sem)
 {
@@ -2190,7 +2175,7 @@ static inline void f3fs_down_read(struct f3fs_rwsem *sem)
 }
 static inline int f3fs_down_read_trylock2(struct f3fs_rwsem2 *sem)
 {
-	return down_read_trylock(&sem->internal_rwsem);
+	return f3fs_down_range_trylock(sem, 0, 0xFFFFFFFF, false);
 }
 static inline int f3fs_down_read_trylock(struct f3fs_rwsem *sem)
 {
@@ -2207,7 +2192,7 @@ static inline void f3fs_down_read_nested(struct f3fs_rwsem *sem, int subclass)
 #endif
 static inline void f3fs_up_read2(struct f3fs_rwsem2 *sem)
 {
-	up_read(&sem->internal_rwsem);
+  f3fs_up_range(sem, 0, 0xFFFFFFFF, false);
 }
 
 static inline void f3fs_up_read(struct f3fs_rwsem *sem)
@@ -2217,7 +2202,7 @@ static inline void f3fs_up_read(struct f3fs_rwsem *sem)
 
 static inline void f3fs_down_write2(struct f3fs_rwsem2 *sem)
 {
-	down_write(&sem->internal_rwsem);
+  f3fs_down_range(sem, 0, 0xFFFFFFFF, true);
 }
 
 static inline void f3fs_down_write(struct f3fs_rwsem *sem)
@@ -2227,7 +2212,7 @@ static inline void f3fs_down_write(struct f3fs_rwsem *sem)
 
 static inline int f3fs_down_write_trylock2(struct f3fs_rwsem2 *sem)
 {
-	return down_write_trylock(&sem->internal_rwsem);
+	return f3fs_down_range_trylock(sem, 0, 0xFFFFFFFF, true);
 }
 
 static inline int f3fs_down_write_trylock(struct f3fs_rwsem *sem)
@@ -2237,7 +2222,7 @@ static inline int f3fs_down_write_trylock(struct f3fs_rwsem *sem)
 
 static inline void f3fs_up_write2(struct f3fs_rwsem2 *sem)
 {
-	up_write(&sem->internal_rwsem);
+  f3fs_up_range(sem, 0, 0xFFFFFFFF, true);
 }
 
 static inline void f3fs_up_write(struct f3fs_rwsem *sem)
