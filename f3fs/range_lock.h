@@ -94,7 +94,7 @@ static inline void __init_f3fs_rwsem2(struct f3fs_rwsem2 *sem,
 {
 #if IN_KERNEL
 	__init_rwsem(&sem->range_lock, sem_name, key);
-  list_del_init(&sem->locked_ranges);
+  INIT_LIST_HEAD(&sem->locked_ranges);
 #else
   pthread_rwlock_init(&sem->range_lock, NULL);
   sem->locked_ranges = NULL;
@@ -144,7 +144,7 @@ struct f3fs_range* f3fs_alloc_range(unsigned start, unsigned size)
   static struct lock_class_key __key;
 
 	__init_rwsem(&ret->internal_lock, "f3fs_range_internal" , &__key);
-  list_del_init(&ret->list_elem);
+  INIT_LIST_HEAD(&ret->list_elem);
 #else
   struct f3fs_range* ret = malloc(sizeof(struct f3fs_range));
 
@@ -188,7 +188,7 @@ static inline void f3fs_up_range(
   struct f3fs_rwsem2 *sem, unsigned start, unsigned size, bool is_write)
 {
   struct f3fs_range* min_range;
-//  printf("%s %d %p %u %u\n", __func__, __LINE__, sem, start, size);
+  //print("%s %d %p %u %u\n", __func__, __LINE__, sem, start, size);
   _down_lock(&sem->range_lock, true);
   min_range = get_min_locked_range(sem, start);
   if (min_range == NULL) {
@@ -238,6 +238,7 @@ static inline int f3fs_down_range_trylock(
   bool locked = true;
   unsigned orig_start = start;
   unsigned locked_size = 0;
+//  print("%s %d %p %u %u\n", __func__, __LINE__, sem, start, size);
 
   _down_lock(&sem->range_lock, true);
   min_range = get_min_locked_range(sem, start);
@@ -262,6 +263,7 @@ static inline int f3fs_down_range_trylock(
 
   if (size > 0) {
       unsigned min_range_end = min_range->start + min_range->size;
+   //   print("%s %d %p %u %u\n", __func__, __LINE__, sem, start, size);
       overlapped = start >= min_range->start && min_range_end > start;
       if (overlapped) {
         nested_size = size;
@@ -281,6 +283,7 @@ static inline int f3fs_down_range_trylock(
         size -= nested_size;
     }
   }
+  //print("%s %d %p %u %u\n", __func__, __LINE__, sem, start, size);
 
   _up_lock(&sem->range_lock, true);
 
@@ -291,6 +294,7 @@ static inline int f3fs_down_range_trylock(
         if (locked_size > 0) {
           f3fs_up_range(sem, orig_start, locked_size, is_write);
         }
+      //  print("%s %d %p %u %u\n", __func__, __LINE__, sem, start, size);
         return false;
       }
     } else {
@@ -300,6 +304,7 @@ static inline int f3fs_down_range_trylock(
         if (locked_size > 0) {
           f3fs_up_range(sem, orig_start, locked_size, is_write);
         }
+    //    print("%s %d %p %u %u\n", __func__, __LINE__, sem, start, size);
         return false;
       }
       locked = f3fs_down_range_trylock(
@@ -309,6 +314,7 @@ static inline int f3fs_down_range_trylock(
         if (locked_size > 0) {
           f3fs_up_range(sem, orig_start, locked_size, is_write);
         }
+  //      print("%s %d %p %u %u\n", __func__, __LINE__, sem, start, size);
         return false;
       }
     }
@@ -322,6 +328,7 @@ static inline int f3fs_down_range_trylock(
       f3fs_up_range(sem, orig_start, locked_size, is_write);
     }
   }
+//  print("%p locked %d\n", sem, locked);
   return locked;
 }
 
@@ -334,7 +341,7 @@ static inline void f3fs_down_range(
   unsigned nested_start, nested_size;
   bool not_overlapped = true;
 
-  //printf("%s %d %p %u %u\n", __func__, __LINE__, sem, start, size);
+//  print("%s %d %p %u %u\n", __func__, __LINE__, sem, start, size);
   _down_lock(&sem->range_lock, true);
   min_range = get_min_locked_range(sem, start);
  
