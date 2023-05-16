@@ -1607,6 +1607,7 @@ int f3fs_write_checkpoint(struct f3fs_sb_info *sbi, struct cp_control *cpc)
 	struct f3fs_checkpoint *ckpt = F3FS_CKPT(sbi);
 	unsigned long long ckpt_ver;
 	int err = 0;
+//  printk("%s %d\n", __func__, __LINE__);
 
 	if (f3fs_readonly(sbi->sb) || f3fs_hw_is_readonly(sbi))
 		return -EROFS;
@@ -1699,6 +1700,7 @@ stop:
 out:
 	if (cpc->reason != CP_RESIZE)
 		f3fs_up_write(&sbi->cp_global_sem);
+  //printk("%s %d\n", __func__, __LINE__);
 	return err;
 }
 
