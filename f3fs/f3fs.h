@@ -2210,6 +2210,12 @@ static inline void f3fs_down_write(struct f3fs_rwsem *sem)
 	down_write(&sem->internal_rwsem);
 }
 
+static inline int f3fs_down_write_range_trylock2(
+  struct f3fs_rwsem2 *sem, unsigned start, unsigned size)
+{
+	return f3fs_down_range_trylock(sem, start, size, true);
+}
+
 static inline int f3fs_down_write_trylock2(struct f3fs_rwsem2 *sem)
 {
 	return f3fs_down_range_trylock(sem, 0, 0xFFFFFFFF, true);
@@ -2219,6 +2225,12 @@ static inline int f3fs_down_write_trylock(struct f3fs_rwsem *sem)
 {
 	return down_write_trylock(&sem->internal_rwsem);
 }
+static inline void f3fs_up_write_range2(
+  struct f3fs_rwsem2 *sem, unsigned start, unsigned size)
+{
+  f3fs_up_range(sem, start, size, true);
+}
+
 
 static inline void f3fs_up_write2(struct f3fs_rwsem2 *sem)
 {
