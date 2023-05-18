@@ -2321,7 +2321,7 @@ static void __add_sum_entry(struct f3fs_sb_info *sbi, int type,
 	struct curseg_info *curseg = CURSEG_I(sbi, type);
 	void *addr = curseg->sum_blk;
 
-	addr += curseg->next_blkoff * sizeof(struct f3fs_summary);
+	addr += atomic_read(&curseg->next_blkoff) * sizeof(struct f3fs_summary);
 	memcpy(addr, sum, sizeof(struct f3fs_summary));
 }
 
@@ -2518,7 +2518,7 @@ static void reset_curseg(struct f3fs_sb_info *sbi, int type, int modified)
 	curseg->inited = true;
 	curseg->segno = curseg->next_segno;
 	curseg->zone = GET_ZONE_FROM_SEG(sbi, curseg->segno);
-	curseg->next_blkoff = 0;
+	atomic_set(&curseg->next_blkoff, 0);
 	curseg->next_segno = NULL_SEGNO;
 
 	sum_footer = &(curseg->sum_blk->footer);
@@ -2624,18 +2624,17 @@ static void __refresh_next_blkoff(struct f3fs_sb_info *sbi,
 				struct curseg_info *seg)
 {
 	if (seg->alloc_type == SSR) {
-		seg->next_blkoff =
-			__next_free_blkoff(sbi, seg->segno,
-						seg->next_blkoff + 1);
+    int blkoff = atomic_read(&seg->next_blkoff);
+		atomic_set(&seg->next_blkoff, __next_free_blkoff(sbi, seg->segno,
+		  blkoff + 1));
 	} else {
-		seg->next_blkoff++;
+		atomic_fetch_inc(&seg->next_blkoff);
 		if (F3FS_OPTION(sbi).fs_mode == FS_MODE_FRAGMENT_BLK) {
 			/* To allocate block chunks in different sizes, use random number */
 			if (--seg->fragment_remained_chunk <= 0) {
 				seg->fragment_remained_chunk =
 				   prandom_u32() % sbi->max_fragment_chunk + 1;
-				seg->next_blkoff +=
-				   prandom_u32() % sbi->max_fragment_hole + 1;
+        atomic_fetch_add(prandom_u32() % sbi->max_fragment_hole + 1, &seg->next_blkoff);
 			}
 		}
 	}
@@ -2671,7 +2670,7 @@ static void change_curseg(struct f3fs_sb_info *sbi, int type, bool flush)
 
 	reset_curseg(sbi, type, 1);
 	curseg->alloc_type = SSR;
-	curseg->next_blkoff = __next_free_blkoff(sbi, curseg->segno, 0);
+	atomic_set(&curseg->next_blkoff, __next_free_blkoff(sbi, curseg->segno, 0));
 
 	sum_page = f3fs_get_sum_page(sbi, new_segno);
 	if (IS_ERR(sum_page)) {
@@ -2912,7 +2911,7 @@ static void __allocate_new_segment(struct f3fs_sb_info *sbi, int type,
 	if (!curseg->inited)
 		goto alloc;
 
-	if (force || curseg->next_blkoff ||
+	if (force || atomic_read(&curseg->next_blkoff) ||
 		get_valid_blocks(sbi, curseg->segno, new_sec))
 		goto alloc;
 
@@ -3119,7 +3118,7 @@ out:
 static bool __has_curseg_space(struct f3fs_sb_info *sbi,
 					struct curseg_info *curseg)
 {
-	return curseg->next_blkoff < f3fs_usable_blks_in_seg(sbi,
+	return atomic_read(&curseg->next_blkoff) < f3fs_usable_blks_in_seg(sbi,
 							curseg->segno);
 }
 
@@ -3242,7 +3241,7 @@ void f3fs_allocate_data_block(struct f3fs_sb_info *sbi, struct page *page,
 	}
 	*new_blkaddr = NEXT_FREE_BLKADDR(sbi, curseg);
 
-	f3fs_bug_on(sbi, curseg->next_blkoff >= sbi->blocks_per_seg);
+	f3fs_bug_on(sbi, atomic_read(&curseg->next_blkoff) >= sbi->blocks_per_seg);
 
 	f3fs_wait_discard_bio(sbi, *new_blkaddr);
 
@@ -3531,7 +3530,7 @@ void f3fs_do_replace_block(struct f3fs_sb_info *sbi, struct f3fs_summary *sum,
 	down_write(&sit_i->sentry_lock);
 
 	old_cursegno = curseg->segno;
-	old_blkoff = curseg->next_blkoff;
+	old_blkoff = atomic_read(&curseg->next_blkoff);
 	old_alloc_type = curseg->alloc_type;
 
 	/* change the current segment */
@@ -3540,7 +3539,7 @@ void f3fs_do_replace_block(struct f3fs_sb_info *sbi, struct f3fs_summary *sum,
 		change_curseg(sbi, type, true);
 	}
 
-	curseg->next_blkoff = GET_BLKOFF_FROM_SEG0(sbi, new_blkaddr);
+	atomic_set(&curseg->next_blkoff, GET_BLKOFF_FROM_SEG0(sbi, new_blkaddr));
 	__add_sum_entry(sbi, type, sum);
 
 	if (!recover_curseg || recover_newaddr) {
@@ -3567,7 +3566,7 @@ void f3fs_do_replace_block(struct f3fs_sb_info *sbi, struct f3fs_summary *sum,
 			curseg->next_segno = old_cursegno;
 			change_curseg(sbi, type, true);
 		}
-		curseg->next_blkoff = old_blkoff;
+		atomic_set(&curseg->next_blkoff, old_blkoff);
 		curseg->alloc_type = old_alloc_type;
 	}
 
@@ -3679,7 +3678,7 @@ static int read_compacted_summaries(struct f3fs_sb_info *sbi)
 		seg_i->next_segno = segno;
 		reset_curseg(sbi, i, 0);
 		seg_i->alloc_type = ckpt->alloc_type[i];
-		seg_i->next_blkoff = blk_off;
+		atomic_set(&seg_i->next_blkoff, blk_off);
 
 		if (seg_i->alloc_type == SSR)
 			blk_off = sbi->blocks_per_seg;
@@ -3775,7 +3774,7 @@ static int read_normal_summaries(struct f3fs_sb_info *sbi, int type)
 	curseg->next_segno = segno;
 	reset_curseg(sbi, type, 0);
 	curseg->alloc_type = ckpt->alloc_type[type];
-	curseg->next_blkoff = blk_off;
+	atomic_set(&curseg->next_blkoff, blk_off);
 	mutex_unlock(&curseg->curseg_mutex);
 out:
 	f3fs_put_page(new, 1);
@@ -4341,7 +4340,7 @@ static int build_curseg(struct f3fs_sb_info *sbi)
 		else if (i == CURSEG_ALL_DATA_ATGC)
 			array[i].seg_type = CURSEG_COLD_DATA;
 		array[i].segno = NULL_SEGNO;
-		array[i].next_blkoff = 0;
+		atomic_set(&array[i].next_blkoff, 0);
 		array[i].inited = false;
 	}
 	return restore_curseg_summaries(sbi);
@@ -4619,7 +4618,7 @@ static int sanity_check_curseg(struct f3fs_sb_info *sbi)
 	for (i = 0; i < NR_PERSISTENT_LOG; i++) {
 		struct curseg_info *curseg = CURSEG_I(sbi, i);
 		struct seg_entry *se = get_seg_entry(sbi, curseg->segno);
-		unsigned int blkofs = curseg->next_blkoff;
+		unsigned int blkofs = atomic_read(&curseg->next_blkoff);
 
 		if (f3fs_sb_has_readonly(sbi) &&
 			i != CURSEG_HOT_DATA && i != CURSEG_HOT_NODE)
@@ -4647,7 +4646,7 @@ out:
 			f3fs_err(sbi,
 				 "Current segment's next free block offset is inconsistent with bitmap, logtype:%u, segno:%u, type:%u, next_blkoff:%u, blkofs:%u",
 				 i, curseg->segno, curseg->alloc_type,
-				 curseg->next_blkoff, blkofs);
+				 atomic_read(&curseg->next_blkoff), blkofs);
 			return -EFSCORRUPTED;
 		}
 	}
@@ -4800,16 +4799,16 @@ static int fix_curseg_write_pointer(struct f3fs_sb_info *sbi, int type)
 	wp_blkoff = wp_block - START_BLOCK(sbi, wp_segno);
 	wp_sector_off = zone.wp & GENMASK(log_sectors_per_block - 1, 0);
 
-	if (cs->segno == wp_segno && cs->next_blkoff == wp_blkoff &&
+	if (cs->segno == wp_segno && atomic_read(&cs->next_blkoff) == wp_blkoff &&
 		wp_sector_off == 0)
 		return 0;
 
 	f3fs_notice(sbi, "Unaligned curseg[%d] with write pointer: "
 		    "curseg[0x%x,0x%x] wp[0x%x,0x%x]",
-		    type, cs->segno, cs->next_blkoff, wp_segno, wp_blkoff);
+		    type, cs->segno, atomic_read(&cs->next_blkoff), wp_segno, wp_blkoff);
 
 	f3fs_notice(sbi, "Assign new section to curseg[%d]: "
-		    "curseg[0x%x,0x%x]", type, cs->segno, cs->next_blkoff);
+		    "curseg[0x%x,0x%x]", type, cs->segno, atomic_read(&cs->next_blkoff));
 
 	f3fs_allocate_new_section(sbi, type, true);
 
@@ -4842,7 +4841,7 @@ static int fix_curseg_write_pointer(struct f3fs_sb_info *sbi, int type)
 		f3fs_notice(sbi,
 			    "New zone for curseg[%d] is not yet discarded. "
 			    "Reset the zone: curseg[0x%x,0x%x]",
-			    type, cs->segno, cs->next_blkoff);
+			    type, cs->segno, atomic_read(&cs->next_blkoff));
 		err = __f3fs_issue_discard_zone(sbi, zbd->bdev,
 				zone_sector >> log_sectors_per_block,
 				zone.len >> log_sectors_per_block);

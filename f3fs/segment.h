@@ -87,7 +87,7 @@ static inline void sanity_check_seg_type(struct f3fs_sb_info *sbi,
 	 (GET_R2L_SEGNO(FREE_I(sbi), segno) << (sbi)->log_blocks_per_seg))
 
 #define NEXT_FREE_BLKADDR(sbi, curseg)					\
-	(START_BLOCK(sbi, (curseg)->segno) + (curseg)->next_blkoff)
+	(START_BLOCK(sbi, (curseg)->segno) + atomic_read(&(curseg)->next_blkoff))
 
 #define GET_SEGOFF_FROM_SEG0(sbi, blk_addr)	((blk_addr) - SEG0_BLKADDR(sbi))
 #define GET_SEGNO_FROM_SEG0(sbi, blk_addr)				\
@@ -319,7 +319,8 @@ struct curseg_info {
 	unsigned char alloc_type;		/* current allocation type */
 	unsigned short seg_type;		/* segment type like CURSEG_XXX_TYPE */
 	unsigned int segno;			/* current segment number */
-	unsigned short next_blkoff;		/* next block offset to write */
+//	unsigned short next_blkoff;		/* next block offset to write */
+  atomic_t next_blkoff;
 	unsigned int zone;			/* current zone number */
 	unsigned int next_segno;		/* preallocated segment */
 	int fragment_remained_chunk;		/* remained block size in a chunk for block fragmentation mode */
@@ -705,7 +706,7 @@ static inline unsigned char curseg_alloc_type(struct f3fs_sb_info *sbi,
 static inline unsigned short curseg_blkoff(struct f3fs_sb_info *sbi, int type)
 {
 	struct curseg_info *curseg = CURSEG_I(sbi, type);
-	return curseg->next_blkoff;
+	return atomic_read(&curseg->next_blkoff);
 }
 
 static inline void check_seg_range(struct f3fs_sb_info *sbi, unsigned int segno)
