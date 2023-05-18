@@ -17,6 +17,8 @@
 #include <linux/freezer.h>
 #include <linux/sched/signal.h>
 #include <linux/random.h>
+#include <linux/time.h>
+#include <linux/delay.h>
 
 #include "f3fs.h"
 #include "segment.h"
@@ -2324,6 +2326,15 @@ static void __add_sum_entry(struct f3fs_sb_info *sbi, int type,
 	addr += atomic_read(&curseg->next_blkoff) * sizeof(struct f3fs_summary);
 	memcpy(addr, sum, sizeof(struct f3fs_summary));
 }
+static void __add_sum_entry2(struct f3fs_sb_info *sbi, int type,
+					struct f3fs_summary *sum, int blkoff)
+{
+	struct curseg_info *curseg = CURSEG_I(sbi, type);
+	void *addr = curseg->sum_blk;
+
+	addr += blkoff * sizeof(struct f3fs_summary);
+	memcpy(addr, sum, sizeof(struct f3fs_summary));
+}
 
 /*
  * Calculate the number of current summary pages for writing
@@ -2519,6 +2530,7 @@ static void reset_curseg(struct f3fs_sb_info *sbi, int type, int modified)
 	curseg->segno = curseg->next_segno;
 	curseg->zone = GET_ZONE_FROM_SEG(sbi, curseg->segno);
 	atomic_set(&curseg->next_blkoff, 0);
+	atomic_set(&curseg->processed_blks, 0);
 	curseg->next_segno = NULL_SEGNO;
 
 	sum_footer = &(curseg->sum_blk->footer);
@@ -2638,6 +2650,18 @@ static void __refresh_next_blkoff(struct f3fs_sb_info *sbi,
 			}
 		}
 	}
+}
+static int __refresh_next_blkoff2(struct f3fs_sb_info *sbi,
+				struct curseg_info *seg)
+{
+  int ret = 0;
+  f3fs_bug_on(sbi, F3FS_OPTION(sbi).fs_mode == FS_MODE_FRAGMENT_BLK);
+  ret = atomic_fetch_inc(&seg->next_blkoff);
+  while (ret >= f3fs_usable_blks_in_seg(sbi, seg->segno)) {
+    msleep(1);
+    ret = atomic_fetch_inc(&seg->next_blkoff);
+  }
+  return ret;
 }
 
 bool f3fs_segment_has_free_slot(struct f3fs_sb_info *sbi, int segno)
@@ -3114,6 +3138,20 @@ out:
 		range->len = F3FS_BLK_TO_BYTES(trimmed);
 	return err;
 }
+static bool __has_curseg_space2(struct f3fs_sb_info *sbi,
+					struct curseg_info *curseg, int blkoff)
+{
+	return blkoff + 1 < f3fs_usable_blks_in_seg(sbi,
+							curseg->segno);
+}
+
+static void wait_all_block_processed(struct f3fs_sb_info* sbi,
+  struct curseg_info* curseg) {
+  while(
+    atomic_read(&curseg->processed_blks) < f3fs_usable_blks_in_seg(sbi, curseg->segno)) {
+    msleep(1);
+  }
+}
 
 static bool __has_curseg_space(struct f3fs_sb_info *sbi,
 					struct curseg_info *curseg)
@@ -3215,6 +3253,84 @@ static int __get_segment_type(struct f3fs_io_info *fio)
 	else
 		fio->temp = COLD;
 	return type;
+}
+
+void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
+		block_t old_blkaddr, block_t *new_blkaddr,
+		struct f3fs_summary *sum, int type,
+		struct f3fs_io_info *fio)
+{
+	struct sit_info *sit_i = SIT_I(sbi);
+	struct curseg_info *curseg = CURSEG_I(sbi, type);
+	unsigned long long old_mtime;
+  int blkoff;
+  f3fs_bug_on(sbi, type != CURSEG_COLD_DATA);
+  f3fs_bug_on(sbi, curseg->alloc_type != LFS);
+
+	f3fs_down_read(&SM_I(sbi)->curseg_lock);
+
+	mutex_lock(&curseg->curseg_mutex);
+
+	blkoff = __refresh_next_blkoff2(sbi, curseg);
+	f3fs_bug_on(sbi, blkoff >= sbi->blocks_per_seg);
+	*new_blkaddr = blkoff + START_BLOCK(sbi, curseg->segno);
+
+	f3fs_wait_discard_bio(sbi, *new_blkaddr);
+
+	/*
+	 * __add_sum_entry should be resided under the curseg_mutex
+	 * because, this function updates a summary entry in the
+	 * current summary block.
+	 */
+	__add_sum_entry2(sbi, type, sum, blkoff);
+
+	stat_inc_block_count(sbi, curseg);
+
+  update_segment_mtime(sbi, old_blkaddr, 0);
+  old_mtime = 0;
+  update_segment_mtime(sbi, *new_blkaddr, old_mtime);
+
+	down_write(&sit_i->sentry_lock);
+	/*
+	 * SIT information should be updated before segment allocation,
+	 * since SSR needs latest valid block information.
+	 */
+	update_sit_entry(sbi, *new_blkaddr, 1);
+	if (GET_SEGNO(sbi, old_blkaddr) != NULL_SEGNO)
+		update_sit_entry(sbi, old_blkaddr, -1);
+  atomic_inc(&curseg->processed_blks);
+
+	if (!__has_curseg_space2(sbi, curseg, blkoff)) {
+    wait_all_block_processed(sbi, curseg);
+    sit_i->s_ops->allocate_segment(sbi, type, false);
+  }
+	/*
+	 * segment dirty status should be updated after segment allocation,
+	 * so we just need to update status only one time after previous
+	 * segment being closed.
+	 */
+	locate_dirty_segment(sbi, GET_SEGNO(sbi, old_blkaddr));
+	locate_dirty_segment(sbi, GET_SEGNO(sbi, *new_blkaddr));
+
+	up_write(&sit_i->sentry_lock);
+
+	if (fio) {
+		struct f3fs_bio_info *io;
+
+		if (F3FS_IO_ALIGNED(sbi))
+			fio->retry = false;
+
+		INIT_LIST_HEAD(&fio->list);
+		fio->in_list = true;
+		io = sbi->write_io[fio->type] + fio->temp;
+		spin_lock(&io->io_lock);
+		list_add_tail(&fio->list, &io->io_list);
+		spin_unlock(&io->io_lock);
+	}
+
+	mutex_unlock(&curseg->curseg_mutex);
+
+	f3fs_up_read(&SM_I(sbi)->curseg_lock);
 }
 
 void f3fs_allocate_data_block(struct f3fs_sb_info *sbi, struct page *page,
@@ -3349,8 +3465,13 @@ static void do_write_page(struct f3fs_summary *sum, struct f3fs_io_info *fio)
 	if (keep_order)
 		f3fs_down_read(&fio->sbi->io_order_lock);
 reallocate:
-	f3fs_allocate_data_block(fio->sbi, fio->page, fio->old_blkaddr,
-			&fio->new_blkaddr, sum, type, fio);
+  if (type == CURSEG_COLD_DATA) {
+    f3fs_allocate_data_block2(fio->sbi, fio->page, fio->old_blkaddr,
+        &fio->new_blkaddr, sum, type, fio);
+  } else {
+    f3fs_allocate_data_block(fio->sbi, fio->page, fio->old_blkaddr,
+        &fio->new_blkaddr, sum, type, fio);
+  }
 	if (GET_SEGNO(fio->sbi, fio->old_blkaddr) != NULL_SEGNO) {
 		invalidate_mapping_pages(META_MAPPING(fio->sbi),
 					fio->old_blkaddr, fio->old_blkaddr);
@@ -4341,6 +4462,7 @@ static int build_curseg(struct f3fs_sb_info *sbi)
 			array[i].seg_type = CURSEG_COLD_DATA;
 		array[i].segno = NULL_SEGNO;
 		atomic_set(&array[i].next_blkoff, 0);
+		atomic_set(&array[i].processed_blks, 0);
 		array[i].inited = false;
 	}
 	return restore_curseg_summaries(sbi);

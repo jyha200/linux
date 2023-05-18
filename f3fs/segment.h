@@ -321,6 +321,7 @@ struct curseg_info {
 	unsigned int segno;			/* current segment number */
 //	unsigned short next_blkoff;		/* next block offset to write */
   atomic_t next_blkoff;
+  atomic_t processed_blks;
 	unsigned int zone;			/* current zone number */
 	unsigned int next_segno;		/* preallocated segment */
 	int fragment_remained_chunk;		/* remained block size in a chunk for block fragmentation mode */
