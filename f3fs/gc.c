@@ -1903,7 +1903,8 @@ next_step:
 		goto next_step;
 #if PROF13_1
   ttt[6] = ttt[5] + count;
-  ktcond_print2(ttt, 13, 7);
+  ttt[7] = ttt[6] + get_valid_blocks(sbi, segno, false);
+  ktcond_print2(ttt, 13, 8);
 #endif
 
 //  printk("%s %d : %d %d %d %d %d %d %d %d\n", __func__, __LINE__, count[0], count[1], count[2], count[3], count[4], count[5], count[6], count[7]);
@@ -2397,9 +2398,16 @@ stop:
 
 }
 
+#define PROF7_1 (0)
+
 int f3fs_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control)
 {
   int ret = 0;
+#if PROF7_1
+  ktime_t ttt[15];
+  ttt[0] = ktime_get_raw();
+#endif
+
   //printk("%s %d\n", __func__, __LINE__);
 
   if (sbi->gc_thread) {
@@ -2408,6 +2416,9 @@ int f3fs_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control)
       cpc.reason = __get_cp_reason(sbi);
       ret = f3fs_write_checkpoint(sbi, &cpc);
     }
+#if PROF7_1
+  ttt[1] = ktime_get_raw();
+#endif
 
     atomic_set(&gc_control->freed, 0);
     for (int i = 0 ; i < NUM_GC_WORKER ; i++) {
@@ -2415,6 +2426,10 @@ int f3fs_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control)
       sbi->gc_thread->worker_args[i].state = 1;
       wake_up(&sbi->gc_thread->worker_args[i].wq);
     }
+#if PROF7_1
+  ttt[2] = ktime_get_raw();
+#endif
+
     for (int i = 0 ; i < NUM_GC_WORKER ; i++) {
       int local_ret;
       while (sbi->gc_thread->worker_args[i].state == 1) {
@@ -2428,9 +2443,18 @@ int f3fs_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control)
         }
       }
     }
+#if PROF7_1
+  ttt[3] = ktime_get_raw();
+#endif
+
     if (ret >= 0) {
       ret = atomic_read(&gc_control->freed);
     }
+#if PROF7_1
+  ttt[4] = ktime_get_raw();
+  ktcond_print2(ttt, 8, 5);
+#endif
+
   } else {
     ret = do_gc(sbi, gc_control);
   }

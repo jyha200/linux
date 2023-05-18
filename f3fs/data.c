@@ -2952,7 +2952,9 @@ out:
 		f3fs_unlock_op(fio->sbi);
 #if PROF6
   ttt[8] = ktime_get_raw();
-  ktcond_print2(ttt, 7, 9);
+  if (fio->io_type == FS_GC_DATA_IO) {
+    ktcond_print2(ttt, 7, 9);
+  }
 #endif
 
 	return err;

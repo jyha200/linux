@@ -3464,6 +3464,8 @@ static int __get_segment_type(struct f3fs_io_info *fio)
 	return type;
 }
 
+#define PROF9_1 (0)
+
 void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 		block_t old_blkaddr, block_t *new_blkaddr,
 		struct f3fs_summary *sum, int type,
@@ -3473,10 +3475,19 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 	struct curseg_info *curseg = CURSEG_I(sbi, type);
 	unsigned long long old_mtime;
   int blkoff;
+#if PROF9_1
+  ktime_t ttt[15];
+
+  ttt[0] = ktime_get_raw();
+#endif
+
   f3fs_bug_on(sbi, type != CURSEG_COLD_DATA);
   f3fs_bug_on(sbi, curseg->alloc_type != LFS);
 
 	f3fs_down_read(&SM_I(sbi)->curseg_lock);
+#if PROF9_1
+  ttt[1] = ktime_get_raw();
+#endif
 
 	blkoff = __refresh_next_blkoff2(sbi, curseg);
 	f3fs_bug_on(sbi, blkoff >= sbi->blocks_per_seg);
@@ -3492,8 +3503,15 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 	__add_sum_entry2(sbi, type, sum, blkoff);
 
 	stat_inc_block_count(sbi, curseg);
+#if PROF9_1
+  ttt[2] = ktime_get_raw();
+#endif
 
 	down_write(&sit_i->sentry_lock);
+#if PROF9_1
+  ttt[3] = ktime_get_raw();
+#endif
+
   update_segment_mtime(sbi, old_blkaddr, 0);
   old_mtime = 0;
   update_segment_mtime(sbi, *new_blkaddr, old_mtime);
@@ -3516,6 +3534,9 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 	locate_dirty_segment(sbi, GET_SEGNO(sbi, *new_blkaddr));
 
 	up_write(&sit_i->sentry_lock);
+#if PROF9_1
+  ttt[4] = ktime_get_raw();
+#endif
 
 	if (!__has_curseg_space2(sbi, curseg, blkoff)) {
     wait_all_block_processed(sbi, curseg);
@@ -3525,6 +3546,9 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 	  up_write(&sit_i->sentry_lock);
     mutex_unlock(&curseg->curseg_mutex);
   }
+#if PROF9_1
+  ttt[5] = ktime_get_raw();
+#endif
 
 
 	if (fio) {
@@ -3542,6 +3566,11 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 	}
 
 	f3fs_up_read(&SM_I(sbi)->curseg_lock);
+#if PROF9_1
+  ttt[6] = ktime_get_raw();
+  ktcond_print2(ttt, 10, 7);
+#endif
+
 }
 
 #define PROF9 (0)
@@ -3558,13 +3587,32 @@ void f3fs_allocate_data_block(struct f3fs_sb_info *sbi, struct page *page,
 	struct seg_entry *se = NULL;
 #if PROF9
   ktime_t ttt[15];
-  ttt[0] = ktime_get_raw();
+
+  if (fio->io_type == FS_GC_DATA_IO) {
+    ttt[0] = ktime_get_raw();
+  }
 #endif
 
 	f3fs_down_read(&SM_I(sbi)->curseg_lock);
+#if PROF9
+  if (fio->io_type == FS_GC_DATA_IO) {
+    ttt[1] = ktime_get_raw();
+  }
+#endif
 
 	mutex_lock(&curseg->curseg_mutex);
+#if PROF9
+  if (fio->io_type == FS_GC_DATA_IO) {
+    ttt[2] = ktime_get_raw();
+  }
+#endif
+
 	down_write(&sit_i->sentry_lock);
+#if PROF9
+  if (fio->io_type == FS_GC_DATA_IO) {
+    ttt[3] = ktime_get_raw();
+  }
+#endif
 
 	if (from_gc) {
 		f3fs_bug_on(sbi, GET_SEGNO(sbi, old_blkaddr) == NULL_SEGNO);
@@ -3577,6 +3625,11 @@ void f3fs_allocate_data_block(struct f3fs_sb_info *sbi, struct page *page,
 	f3fs_bug_on(sbi, atomic_read(&curseg->next_blkoff) >= sbi->blocks_per_seg);
 
 	f3fs_wait_discard_bio(sbi, *new_blkaddr);
+#if PROF9
+  if (fio->io_type == FS_GC_DATA_IO) {
+    ttt[4] = ktime_get_raw();
+  }
+#endif
 
 	/*
 	 * __add_sum_entry should be resided under the curseg_mutex
@@ -3588,6 +3641,11 @@ void f3fs_allocate_data_block(struct f3fs_sb_info *sbi, struct page *page,
 	__refresh_next_blkoff(sbi, curseg);
 
 	stat_inc_block_count(sbi, curseg);
+#if PROF9
+  if (fio->io_type == FS_GC_DATA_IO) {
+    ttt[5] = ktime_get_raw();
+  }
+#endif
 
 	if (from_gc) {
 		old_mtime = get_segment_mtime(sbi, old_blkaddr);
@@ -3596,6 +3654,11 @@ void f3fs_allocate_data_block(struct f3fs_sb_info *sbi, struct page *page,
 		old_mtime = 0;
 	}
 	update_segment_mtime(sbi, *new_blkaddr, old_mtime);
+#if PROF9
+  if (fio->io_type == FS_GC_DATA_IO) {
+    ttt[6] = ktime_get_raw();
+  }
+#endif
 
 	/*
 	 * SIT information should be updated before segment allocation,
@@ -3605,7 +3668,9 @@ void f3fs_allocate_data_block(struct f3fs_sb_info *sbi, struct page *page,
 	if (GET_SEGNO(sbi, old_blkaddr) != NULL_SEGNO)
 		update_sit_entry(sbi, old_blkaddr, -1);
 #if PROF9
-  ttt[1] = ktime_get_raw();
+  if (fio->io_type == FS_GC_DATA_IO) {
+    ttt[7] = ktime_get_raw();
+  }
 #endif
 
 	if (!__has_curseg_space(sbi, curseg)) {
@@ -3616,7 +3681,9 @@ void f3fs_allocate_data_block(struct f3fs_sb_info *sbi, struct page *page,
 			sit_i->s_ops->allocate_segment(sbi, type, false);
 	}
 #if PROF9
-  ttt[2] = ktime_get_raw();
+  if (fio->io_type == FS_GC_DATA_IO) {
+    ttt[8] = ktime_get_raw();
+  }
 #endif
 	/*
 	 * segment dirty status should be updated after segment allocation,
@@ -3652,9 +3719,9 @@ void f3fs_allocate_data_block(struct f3fs_sb_info *sbi, struct page *page,
 
 	f3fs_up_read(&SM_I(sbi)->curseg_lock);
 #if PROF9
-  ttt[3] = ktime_get_raw();
-  if (from_gc == false) {
-    ktcond_print2(ttt, 10, 4);
+  if (fio->io_type == FS_GC_DATA_IO) {
+    ttt[9] = ktime_get_raw();
+    ktcond_print2(ttt, 10, 10);
   }
 #endif
 }
@@ -3739,9 +3806,11 @@ reallocate:
 		f3fs_up_read(&fio->sbi->io_order_lock);
 #if PROF8
   ttt[5] = ktime_get_raw();
-  ktcond_print2(ttt, 9, 6);
+  
+  if (fio->io_type == FS_GC_DATA_IO) {
+    ktcond_print2(ttt, 9, 6);
+  }
 #endif
-
 }
 
 void f3fs_do_write_meta_page(struct f3fs_sb_info *sbi, struct page *page,
@@ -3810,7 +3879,9 @@ void f3fs_outplace_write_data(struct dnode_of_data *dn,
 	f3fs_update_iostat(sbi, fio->io_type, F3FS_BLKSIZE);
 #if PROF7
   ttt[4] = ktime_get_raw();
-  ktcond_print2(ttt, 8, 5);
+  if (fio->io_type == FS_GC_DATA_IO) {
+    ktcond_print2(ttt, 8, 5);
+  }
 #endif
 
 }
