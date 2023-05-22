@@ -405,8 +405,8 @@ int f3fs_target_device_index(struct f3fs_sb_info *sbi, block_t blkaddr)
 
 static blk_opf_t f3fs_io_flags(struct f3fs_io_info *fio)
 {
-	unsigned int temp_mask = (1 << NR_TEMP_TYPE) - 1;
-	unsigned int fua_flag, meta_flag, io_flag;
+	unsigned long long temp_mask = ((unsigned long long)1 << NR_TEMP_TYPE) - 1;
+	unsigned long long fua_flag, meta_flag, io_flag;
 	blk_opf_t op_flags = 0;
 
 	if (fio->op != REQ_OP_WRITE)
@@ -2755,6 +2755,7 @@ int f3fs_write_single_data_page(struct page *page, int *submitted,
 		.io_wbc = wbc,
 		.bio = bio,
 		.last_block = last_block,
+    .dst_hint = -1,
 	};
 
 	trace_f3fs_writepage(page, DATA);

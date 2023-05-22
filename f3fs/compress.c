@@ -1222,6 +1222,7 @@ static int f3fs_write_compressed_pages(struct compress_ctx *cc,
 		.io_type = io_type,
 		.io_wbc = wbc,
 		.encrypted = fscrypt_inode_uses_fs_layer_crypto(cc->inode),
+    .dst_hint = -1,
 	};
 	struct dnode_of_data dn;
 	struct node_info ni;
