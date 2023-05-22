@@ -180,7 +180,7 @@ static int gc_worker_func(void* data)
         msecs_to_jiffies(300));
 
     if (worker_arg->state == 1) {
-      worker_arg->ret = do_gc(worker_arg->sbi, worker_arg->gc_control);
+      worker_arg->ret = do_gc(worker_arg->sbi, worker_arg->gc_control, worker_arg->idx);
       worker_arg->state = 0;
       wake_up(&worker_arg->caller_wq);
     }
@@ -232,6 +232,8 @@ int f3fs_start_gc_thread(struct f3fs_sb_info *sbi)
     sbi->gc_thread->worker_args[i].state = 0;
     sbi->gc_thread->worker_args[i].sbi = sbi;
     sbi->gc_thread->worker_args[i].gc_control = NULL;
+    sbi->gc_thread->worker_args[i].idx = i;
+
     init_waitqueue_head(&sbi->gc_thread->worker_args[i].wq);
     init_waitqueue_head(&sbi->gc_thread->worker_args[i].caller_wq);
     sbi->gc_thread->gc_workers[i] = kthread_run(
@@ -1206,6 +1208,7 @@ static int ra_data_block(struct inode *inode, pgoff_t index)
 		.encrypted_page = NULL,
 		.in_list = false,
 		.retry = false,
+    .dst_hint = -1,
 	};
 	int err;
 
@@ -1293,6 +1296,7 @@ static int move_data_block(struct inode *inode, block_t bidx,
 		.encrypted_page = NULL,
 		.in_list = false,
 		.retry = false,
+    .dst_hint = -1,
 	};
 	struct dnode_of_data dn;
 	struct f3fs_summary sum;
@@ -1442,7 +1446,7 @@ out:
 }
 
 static int move_data_page(struct inode *inode, block_t bidx, int gc_type,
-							unsigned int segno, int off)
+							unsigned int segno, int off, char dst_hint)
 {
 	struct page *page;
 	int err = 0;
@@ -1472,7 +1476,7 @@ static int move_data_page(struct inode *inode, block_t bidx, int gc_type,
 			.sbi = F3FS_I_SB(inode),
 			.ino = inode->i_ino,
 			.type = DATA,
-			.temp = COLD,
+			.temp = COLD_GC_START + dst_hint,
 			.op = REQ_OP_WRITE,
 			.op_flags = REQ_SYNC,
 			.old_blkaddr = NULL_ADDR,
@@ -1480,6 +1484,7 @@ static int move_data_page(struct inode *inode, block_t bidx, int gc_type,
 			.encrypted_page = NULL,
 			.need_lock = LOCK_REQ,
 			.io_type = FS_GC_DATA_IO,
+      .dst_hint = dst_hint,
 		};
 		bool is_dirty = PageDirty(page);
 
@@ -1520,7 +1525,7 @@ out:
  */
 static int gc_data_segment(struct f3fs_sb_info *sbi, struct f3fs_summary *sum,
 		struct gc_inode_list *gc_list, unsigned int segno, int gc_type,
-		bool force_migrate)
+		bool force_migrate, char dst_hint)
 {
 	struct super_block *sb = sbi->sb;
 	struct f3fs_summary *entry;
@@ -1670,7 +1675,7 @@ next_step:
 							gc_type, segno, off);
 			else
 				err = move_data_page(inode, start_bidx, gc_type,
-								segno, off);
+								segno, off, dst_hint);
 
 			if (!err && (gc_type == FG_GC ||
 					f3fs_post_read_required(inode)))
@@ -1707,7 +1712,7 @@ static int __get_victim(struct f3fs_sb_info *sbi, unsigned int *victim,
 static int do_garbage_collect(struct f3fs_sb_info *sbi,
 				unsigned int start_segno,
 				struct gc_inode_list *gc_list, int gc_type,
-				bool force_migrate)
+				bool force_migrate, char dst_hint)
 {
 	struct page *sum_page;
 	struct f3fs_summary_block *sum;
@@ -1795,7 +1800,7 @@ static int do_garbage_collect(struct f3fs_sb_info *sbi,
 		else
 			submitted += gc_data_segment(sbi, sum->entries, gc_list,
 							segno, gc_type,
-							force_migrate);
+							force_migrate, dst_hint);
 
 		stat_inc_seg_count(sbi, type, gc_type);
 		sbi->gc_reclaimed_segs[sbi->gc_mode]++;
@@ -1823,7 +1828,7 @@ skip:
 	return seg_freed;
 }
 
-int do_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control)
+int do_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control, char worker_idx)
 {
 	int gc_type = gc_control->init_gc_type;
 	unsigned int segno = gc_control->victim_segno;
@@ -1893,7 +1898,7 @@ retry:
 	}
 
 	seg_freed = do_garbage_collect(sbi, segno, &gc_list, gc_type,
-				gc_control->should_migrate_blocks);
+				gc_control->should_migrate_blocks, worker_idx);
   //printk("%s victim cleand? %d %d", current->comm, segno, get_valid_blocks(sbi, segno, false));
 	total_freed += seg_freed;
 
@@ -2000,7 +2005,7 @@ int f3fs_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control)
       ret = atomic_read(&gc_control->freed);
     }
   } else {
-    ret = do_gc(sbi, gc_control);
+    ret = do_gc(sbi, gc_control, 0);
   }
 
   f3fs_up_write(&sbi->gc_lock);
@@ -2088,7 +2093,7 @@ static int free_segment_range(struct f3fs_sb_info *sbi,
 			.iroot = RADIX_TREE_INIT(gc_list.iroot, GFP_NOFS),
 		};
 
-		do_garbage_collect(sbi, segno, &gc_list, FG_GC, true);
+		do_garbage_collect(sbi, segno, &gc_list, FG_GC, true, -1);
 		put_gc_inode(&gc_list);
 
 		if (!gc_only && get_valid_blocks(sbi, segno, true)) {

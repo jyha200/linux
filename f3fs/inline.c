@@ -139,6 +139,7 @@ int f3fs_convert_inline_page(struct dnode_of_data *dn, struct page *page)
 		.page = page,
 		.encrypted_page = NULL,
 		.io_type = FS_DATA_IO,
+    .dst_hint = -1,
 	};
 	struct node_info ni;
 	int dirty, err;
