@@ -1680,10 +1680,10 @@ static int __get_victim(struct f3fs_sb_info *sbi, unsigned int *victim,
 	struct sit_info *sit_i = SIT_I(sbi);
 	int ret;
 
-	down_write(&sit_i->sentry_lock);
+	f3fs_down_write2(&sit_i->sentry_lock);
 	ret = DIRTY_I(sbi)->v_ops->get_victim(sbi, victim, gc_type,
 					      NO_CHECK_TYPE, LFS, 0);
-	up_write(&sit_i->sentry_lock);
+	f3fs_up_write2(&sit_i->sentry_lock);
 	return ret;
 }
 
@@ -1895,9 +1895,9 @@ retry:
 	  struct sit_info *sit_i = SIT_I(sbi);
 
     printk("warning!! skipped buffer explosed.  not freed and clear %d", segno);
-    down_write(&sit_i->sentry_lock);
+    f3fs_down_write2(&sit_i->sentry_lock);
     clear_bit(GET_SEC_FROM_SEG(sbi, segno), DIRTY_I(sbi)->victim_secmap);
-    up_write(&sit_i->sentry_lock);
+    f3fs_up_write2(&sit_i->sentry_lock);
     }
   }
 
@@ -1965,11 +1965,11 @@ stop:
   {
     struct sit_info *sit_i = SIT_I(sbi);
 
-    down_write(&sit_i->sentry_lock);
+    f3fs_down_write2(&sit_i->sentry_lock);
     for (int i = 0 ; i < skipped_seg_count; i++) {
       clear_bit(GET_SEC_FROM_SEG(sbi, skipped_segs[i]), DIRTY_I(sbi)->victim_secmap);
     }
-    up_write(&sit_i->sentry_lock);
+    f3fs_up_write2(&sit_i->sentry_lock);
   }
 
 	if (gc_control->err_gc_skipped && !ret)
