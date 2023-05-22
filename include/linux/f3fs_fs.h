@@ -56,9 +56,9 @@
  * enoughly. The implementaion currently uses no more than 6 logs.
  * Half the logs are used for nodes, and the other half are used for data.
  */
-#define MAX_ACTIVE_LOGS	16
+#define MAX_ACTIVE_LOGS	90
 #define MAX_ACTIVE_NODE_LOGS	8
-#define MAX_ACTIVE_DATA_LOGS	8
+#define MAX_ACTIVE_DATA_LOGS	82
 
 #define VERSION_LEN	256
 #define MAX_VOLUME_NAME		512

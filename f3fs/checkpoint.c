@@ -67,6 +67,7 @@ static struct page *__get_meta_page(struct f3fs_sb_info *sbi, pgoff_t index,
 		.new_blkaddr = index,
 		.encrypted_page = NULL,
 		.is_por = !is_meta,
+    .dst_hint = -1,
 	};
 	int err;
 
@@ -224,6 +225,7 @@ int f3fs_ra_meta_pages(struct f3fs_sb_info *sbi, block_t start, int nrpages,
 		.encrypted_page = NULL,
 		.in_list = false,
 		.is_por = (type == META_POR),
+    .dst_hint = -1,
 	};
 	struct blk_plug plug;
 	int err;
