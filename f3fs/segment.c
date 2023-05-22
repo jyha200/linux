@@ -2333,7 +2333,7 @@ int f3fs_npages_for_summary_flush(struct f3fs_sb_info *sbi, bool for_ra)
 	int valid_sum_count = 0;
 	int i, sum_in_page;
 
-	for (i = CURSEG_HOT_DATA; i <= CURSEG_COLD_DATA; i++) {
+	for (i = CURSEG_HOT_DATA; i <= CURSEG_COLD_GC_DATA_END; i++) {
 		if (sbi->ckpt->alloc_type[i] == SSR)
 			valid_sum_count += sbi->blocks_per_seg;
 		else {
@@ -2520,6 +2520,7 @@ static void reset_curseg(struct f3fs_sb_info *sbi, int type, int modified)
 	curseg->zone = GET_ZONE_FROM_SEG(sbi, curseg->segno);
 	curseg->next_blkoff = 0;
 	curseg->next_segno = NULL_SEGNO;
+  get_seg_entry(sbi, curseg->segno)->curseg = 1;
 
 	sum_footer = &(curseg->sum_blk->footer);
 	memset(sum_footer, 0, sizeof(struct summary_footer));
@@ -2577,11 +2578,13 @@ static void new_curseg(struct f3fs_sb_info *sbi, int type, bool new_sec)
 	unsigned short seg_type = curseg->seg_type;
 	unsigned int segno = curseg->segno;
 	int dir = ALLOC_LEFT;
+  get_seg_entry(sbi, segno)->curseg = 0;
 
 	if (curseg->inited)
 		write_sum_page(sbi, curseg->sum_blk,
 				GET_SUM_BLOCK(sbi, segno));
-	if (seg_type == CURSEG_WARM_DATA || seg_type == CURSEG_COLD_DATA)
+	if (seg_type == CURSEG_WARM_DATA || seg_type == CURSEG_COLD_DATA ||
+    (seg_type >= CURSEG_COLD_GC_DATA_START && seg_type <= CURSEG_COLD_GC_DATA_END))
 		dir = ALLOC_RIGHT;
 
 	if (test_opt(sbi, NOHEAP))
@@ -2945,7 +2948,7 @@ void f3fs_allocate_new_segments(struct f3fs_sb_info *sbi)
 
 	f3fs_down_read(&SM_I(sbi)->curseg_lock);
 	down_write(&SIT_I(sbi)->sentry_lock);
-	for (i = CURSEG_HOT_DATA; i <= CURSEG_COLD_DATA; i++)
+	for (i = CURSEG_HOT_DATA; i <= CURSEG_COLD_GC_DATA_END; i++)
 		__allocate_new_segment(sbi, i, false, false);
 	up_write(&SIT_I(sbi)->sentry_lock);
 	f3fs_up_read(&SM_I(sbi)->curseg_lock);
@@ -3173,8 +3176,14 @@ static int __get_segment_type_6(struct f3fs_io_info *fio)
 				(fio->io_type == FS_DATA_IO) &&
 				(fio->sbi->gc_mode != GC_URGENT_HIGH))
 				return CURSEG_ALL_DATA_ATGC;
-			else
-				return CURSEG_COLD_DATA;
+			else {
+        if (fio->dst_hint == -1) {
+          return CURSEG_COLD_DATA;
+        } else {
+		      f3fs_bug_on(fio->sbi, fio->dst_hint < 0 || fio->dst_hint >= MAX_GC_WORKER);
+          return CURSEG_COLD_GC_DATA_START + fio->dst_hint;
+        }
+      }
 		}
 		if (file_is_cold(inode) || f3fs_need_compress_data(inode))
 			return CURSEG_COLD_DATA;
@@ -3202,7 +3211,7 @@ static int __get_segment_type(struct f3fs_io_info *fio)
 	case 4:
 		type = __get_segment_type_4(fio);
 		break;
-	case 6:
+	case 64:
 		type = __get_segment_type_6(fio);
 		break;
 	default:
@@ -3213,8 +3222,11 @@ static int __get_segment_type(struct f3fs_io_info *fio)
 		fio->temp = HOT;
 	else if (IS_WARM(type))
 		fio->temp = WARM;
-	else
-		fio->temp = COLD;
+  else {
+    if (fio->dst_hint == -1) {
+      fio->temp = COLD;
+    }
+  }
 	return type;
 }
 
@@ -3345,7 +3357,8 @@ void f3fs_update_device_state(struct f3fs_sb_info *sbi, nid_t ino,
 static void do_write_page(struct f3fs_summary *sum, struct f3fs_io_info *fio)
 {
 	int type = __get_segment_type(fio);
-	bool keep_order = (f3fs_lfs_mode(fio->sbi) && type == CURSEG_COLD_DATA);
+	bool keep_order = (f3fs_lfs_mode(fio->sbi) && (type == CURSEG_COLD_DATA ||
+    (type >= CURSEG_COLD_GC_DATA_START && type <= CURSEG_COLD_GC_DATA_END)));
 
 	if (keep_order)
 		f3fs_down_read(&fio->sbi->io_order_lock);
@@ -3385,6 +3398,7 @@ void f3fs_do_write_meta_page(struct f3fs_sb_info *sbi, struct page *page,
 		.page = page,
 		.encrypted_page = NULL,
 		.in_list = false,
+    .dst_hint = -1,
 	};
 
 	if (unlikely(page->index >= MAIN_BLKADDR(sbi)))
@@ -3669,7 +3683,7 @@ static int read_compacted_summaries(struct f3fs_sb_info *sbi)
 	offset = 2 * SUM_JOURNAL_SIZE;
 
 	/* Step 3: restore summary entries */
-	for (i = CURSEG_HOT_DATA; i <= CURSEG_COLD_DATA; i++) {
+	for (i = CURSEG_HOT_DATA; i <= CURSEG_COLD_GC_DATA_END; i++) {
 		unsigned short blk_off;
 		unsigned int segno;
 
@@ -3849,7 +3863,7 @@ static void write_compacted_summaries(struct f3fs_sb_info *sbi, block_t blkaddr)
 	written_size += SUM_JOURNAL_SIZE;
 
 	/* Step 3: write summary entries */
-	for (i = CURSEG_HOT_DATA; i <= CURSEG_COLD_DATA; i++) {
+	for (i = CURSEG_HOT_DATA; i <= CURSEG_COLD_GC_DATA_END; i++) {
 		unsigned short blkoff;
 
 		seg_i = CURSEG_I(sbi, i);

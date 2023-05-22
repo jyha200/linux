@@ -1,0 +1,3 @@
+[submodule "f3fs/f2fs-tools"]
+	path = f3fs/f2fs-tools
+	url = https://github.com/jyha200/f2fs-tools
