@@ -2658,7 +2658,7 @@ static int __refresh_next_blkoff2(struct f3fs_sb_info *sbi,
   f3fs_bug_on(sbi, F3FS_OPTION(sbi).fs_mode == FS_MODE_FRAGMENT_BLK);
   ret = atomic_fetch_inc(&seg->next_blkoff);
   while (ret >= f3fs_usable_blks_in_seg(sbi, seg->segno)) {
-    msleep(1);
+    //msleep(1);
     ret = atomic_fetch_inc(&seg->next_blkoff);
   }
   return ret;
@@ -3149,7 +3149,7 @@ static void wait_all_block_processed(struct f3fs_sb_info* sbi,
   struct curseg_info* curseg) {
   while(
     atomic_read(&curseg->processed_blks) < f3fs_usable_blks_in_seg(sbi, curseg->segno)) {
-    msleep(1);
+    //msleep(1);
   }
 }
 
@@ -3269,8 +3269,6 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 
 	f3fs_down_read(&SM_I(sbi)->curseg_lock);
 
-	mutex_lock(&curseg->curseg_mutex);
-
 	blkoff = __refresh_next_blkoff2(sbi, curseg);
 	f3fs_bug_on(sbi, blkoff >= sbi->blocks_per_seg);
 	*new_blkaddr = blkoff + START_BLOCK(sbi, curseg->segno);
@@ -3286,11 +3284,11 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 
 	stat_inc_block_count(sbi, curseg);
 
+	down_write(&sit_i->sentry_lock);
   update_segment_mtime(sbi, old_blkaddr, 0);
   old_mtime = 0;
   update_segment_mtime(sbi, *new_blkaddr, old_mtime);
 
-	down_write(&sit_i->sentry_lock);
 	/*
 	 * SIT information should be updated before segment allocation,
 	 * since SSR needs latest valid block information.
@@ -3300,10 +3298,6 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 		update_sit_entry(sbi, old_blkaddr, -1);
   atomic_inc(&curseg->processed_blks);
 
-	if (!__has_curseg_space2(sbi, curseg, blkoff)) {
-    wait_all_block_processed(sbi, curseg);
-    sit_i->s_ops->allocate_segment(sbi, type, false);
-  }
 	/*
 	 * segment dirty status should be updated after segment allocation,
 	 * so we just need to update status only one time after previous
@@ -3313,6 +3307,16 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 	locate_dirty_segment(sbi, GET_SEGNO(sbi, *new_blkaddr));
 
 	up_write(&sit_i->sentry_lock);
+
+	if (!__has_curseg_space2(sbi, curseg, blkoff)) {
+    wait_all_block_processed(sbi, curseg);
+	  mutex_lock(&curseg->curseg_mutex);
+	  down_write(&sit_i->sentry_lock);
+    sit_i->s_ops->allocate_segment(sbi, type, false);
+	  up_write(&sit_i->sentry_lock);
+    mutex_unlock(&curseg->curseg_mutex);
+  }
+
 
 	if (fio) {
 		struct f3fs_bio_info *io;
@@ -3327,8 +3331,6 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 		list_add_tail(&fio->list, &io->io_list);
 		spin_unlock(&io->io_lock);
 	}
-
-	mutex_unlock(&curseg->curseg_mutex);
 
 	f3fs_up_read(&SM_I(sbi)->curseg_lock);
 }
