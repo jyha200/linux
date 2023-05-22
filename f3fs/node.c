@@ -1342,6 +1342,7 @@ static int read_node_page(struct page *page, blk_opf_t op_flags)
 		.op_flags = op_flags,
 		.page = page,
 		.encrypted_page = NULL,
+    .dst_hint = -1,
 	};
 	int err;
 
@@ -1584,6 +1585,7 @@ static int __write_node_page(struct page *page, bool atomic, bool *submitted,
 		.submitted = false,
 		.io_type = io_type,
 		.io_wbc = wbc,
+    .dst_hint = -1,
 	};
 	unsigned int seq;
 
