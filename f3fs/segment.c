@@ -3264,6 +3264,7 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 	struct curseg_info *curseg = CURSEG_I(sbi, type);
 	unsigned long long old_mtime;
   int blkoff;
+  unsigned int oldsegno, newsegno;
   f3fs_bug_on(sbi, type != CURSEG_COLD_DATA);
   f3fs_bug_on(sbi, curseg->alloc_type != LFS);
 
@@ -3284,29 +3285,26 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 
 	stat_inc_block_count(sbi, curseg);
 
-	f3fs_down_write2(&sit_i->sentry_lock);
-  update_segment_mtime(sbi, old_blkaddr, 0);
+  oldsegno = GET_SEGNO(sbi, old_blkaddr);
+  newsegno = GET_SEGNO(sbi, *new_blkaddr);
+
+	f3fs_down_range(&sit_i->sentry_lock, newsegno, 1, true);
   old_mtime = 0;
   update_segment_mtime(sbi, *new_blkaddr, old_mtime);
-
-	/*
-	 * SIT information should be updated before segment allocation,
-	 * since SSR needs latest valid block information.
-	 */
 	update_sit_entry(sbi, *new_blkaddr, 1);
-	if (GET_SEGNO(sbi, old_blkaddr) != NULL_SEGNO)
-		update_sit_entry(sbi, old_blkaddr, -1);
-  atomic_inc(&curseg->processed_blks);
-
-	/*
-	 * segment dirty status should be updated after segment allocation,
-	 * so we just need to update status only one time after previous
-	 * segment being closed.
-	 */
-	locate_dirty_segment(sbi, GET_SEGNO(sbi, old_blkaddr));
 	locate_dirty_segment(sbi, GET_SEGNO(sbi, *new_blkaddr));
 
-	f3fs_up_write2(&sit_i->sentry_lock);
+	f3fs_up_range(&sit_i->sentry_lock, newsegno, 1, true);
+
+	f3fs_down_range(&sit_i->sentry_lock, oldsegno, 1, true);
+  update_segment_mtime(sbi, old_blkaddr, 0);
+  if (GET_SEGNO(sbi, old_blkaddr) != NULL_SEGNO)
+    update_sit_entry(sbi, old_blkaddr, -1);
+	locate_dirty_segment(sbi, GET_SEGNO(sbi, old_blkaddr));
+
+	f3fs_up_range(&sit_i->sentry_lock, oldsegno, 1, true);
+  atomic_inc(&curseg->processed_blks);
+
 
 	if (!__has_curseg_space2(sbi, curseg, blkoff)) {
     wait_all_block_processed(sbi, curseg);
