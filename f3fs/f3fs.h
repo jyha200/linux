@@ -1001,7 +1001,9 @@ static inline void set_new_dnode(struct dnode_of_data *dn, struct inode *inode,
  * Just in case, on-disk layout covers maximum 16 logs that consist of 8 for
  * data and 8 for node logs.
  */
-#define	NR_CURSEG_DATA_TYPE	(3)
+
+#define MAX_GC_WORKER (16)
+#define	NR_CURSEG_DATA_TYPE	(3 + MAX_GC_WORKER)
 #define NR_CURSEG_NODE_TYPE	(3)
 #define NR_CURSEG_INMEM_TYPE	(2)
 #define NR_CURSEG_RO_TYPE	(2)
@@ -1012,6 +1014,8 @@ enum {
 	CURSEG_HOT_DATA	= 0,	/* directory entry blocks */
 	CURSEG_WARM_DATA,	/* data blocks */
 	CURSEG_COLD_DATA,	/* multimedia or GCed data blocks */
+  CURSEG_COLD_GC_DATA_START,      /* multimedia or GCed data blocks */
+  CURSEG_COLD_GC_DATA_END = CURSEG_COLD_GC_DATA_START + MAX_GC_WORKER - 1,        /* multimedia or GCed data blocks */
 	CURSEG_HOT_NODE,	/* direct node blocks of directory files */
 	CURSEG_WARM_NODE,	/* direct node blocks of normal files */
 	CURSEG_COLD_NODE,	/* indirect node blocks */
@@ -1211,6 +1215,7 @@ struct f3fs_io_info {
 	struct bio **bio;		/* bio for ipu */
 	sector_t *last_block;		/* last block number in bio */
 	unsigned char version;		/* version of the node */
+  char dst_hint;
 };
 
 struct bio_entry {
