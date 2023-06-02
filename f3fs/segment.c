@@ -2333,7 +2333,7 @@ int f3fs_npages_for_summary_flush(struct f3fs_sb_info *sbi, bool for_ra)
 	int valid_sum_count = 0;
 	int i, sum_in_page;
 
-	for (i = CURSEG_HOT_DATA; i <= CURSEG_COLD_DATA; i++) {
+	for (i = CURSEG_HOT_DATA; i <= CURSEG_COLD_GC_DATA_END; i++) {
 		if (sbi->ckpt->alloc_type[i] == SSR)
 			valid_sum_count += sbi->blocks_per_seg;
 		else {
@@ -3202,7 +3202,7 @@ static int __get_segment_type(struct f3fs_io_info *fio)
 	case 4:
 		type = __get_segment_type_4(fio);
 		break;
-	case 6:
+	case 22:
 		type = __get_segment_type_6(fio);
 		break;
 	default:
@@ -3669,7 +3669,7 @@ static int read_compacted_summaries(struct f3fs_sb_info *sbi)
 	offset = 2 * SUM_JOURNAL_SIZE;
 
 	/* Step 3: restore summary entries */
-	for (i = CURSEG_HOT_DATA; i <= CURSEG_COLD_DATA; i++) {
+	for (i = CURSEG_HOT_DATA; i <= CURSEG_COLD_GC_DATA_END; i++) {
 		unsigned short blk_off;
 		unsigned int segno;
 
@@ -3849,7 +3849,7 @@ static void write_compacted_summaries(struct f3fs_sb_info *sbi, block_t blkaddr)
 	written_size += SUM_JOURNAL_SIZE;
 
 	/* Step 3: write summary entries */
-	for (i = CURSEG_HOT_DATA; i <= CURSEG_COLD_DATA; i++) {
+	for (i = CURSEG_HOT_DATA; i <= CURSEG_COLD_GC_DATA_END; i++) {
 		unsigned short blkoff;
 
 		seg_i = CURSEG_I(sbi, i);
