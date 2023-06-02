@@ -22,7 +22,7 @@
 #define GET_L2R_SEGNO(free_i, segno)	((segno) - (free_i)->start_segno)
 #define GET_R2L_SEGNO(free_i, segno)	((segno) + (free_i)->start_segno)
 
-#define IS_DATASEG(t)	((t) <= CURSEG_COLD_DATA)
+#define IS_DATASEG(t)	((t) <= CURSEG_COLD_GC_DATA_END)
 #define IS_NODESEG(t)	((t) >= CURSEG_HOT_NODE && (t) <= CURSEG_COLD_NODE)
 #define SE_PAGETYPE(se)	((IS_NODESEG((se)->type) ? NODE : DATA))
 
@@ -284,6 +284,8 @@ enum dirty_type {
 	DIRTY_HOT_DATA,		/* dirty segments assigned as hot data logs */
 	DIRTY_WARM_DATA,	/* dirty segments assigned as warm data logs */
 	DIRTY_COLD_DATA,	/* dirty segments assigned as cold data logs */
+  DIRTY_COLD_GC_DATA_START,
+  DIRTY_COLD_GC_DATA_END = DIRTY_COLD_GC_DATA_START + MAX_GC_WORKER - 1,
 	DIRTY_HOT_NODE,		/* dirty segments assigned as hot node logs */
 	DIRTY_WARM_NODE,	/* dirty segments assigned as warm node logs */
 	DIRTY_COLD_NODE,	/* dirty segments assigned as cold node logs */
