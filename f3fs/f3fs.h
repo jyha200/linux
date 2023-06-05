@@ -1216,6 +1216,7 @@ struct f3fs_io_info {
 	struct bio **bio;		/* bio for ipu */
 	sector_t *last_block;		/* last block number in bio */
 	unsigned char version;		/* version of the node */
+  char dst_hint;
 };
 
 struct bio_entry {
