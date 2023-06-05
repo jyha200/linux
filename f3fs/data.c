@@ -2750,6 +2750,7 @@ int f3fs_write_single_data_page(struct page *page, int *submitted,
 		.io_wbc = wbc,
 		.bio = bio,
 		.last_block = last_block,
+    .dst_hint = -1,
 	};
 
 	trace_f3fs_writepage(page, DATA);
