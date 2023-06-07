@@ -3233,20 +3233,15 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 	struct sit_info *sit_i = SIT_I(sbi);
 	struct curseg_info *curseg = CURSEG_I(sbi, type);
 	unsigned long long old_mtime;
-	bool from_gc = (type == CURSEG_ALL_DATA_ATGC);
-	struct seg_entry *se = NULL;
+
+  f3fs_bug_on(sbi, type == CURSEG_ALL_DATA_ATGC);
+  f3fs_bug_on(sbi, fio == NULL);
+  f3fs_bug_on(sbi, IS_NODESEG(type));
 
 	f3fs_down_read(&SM_I(sbi)->curseg_lock);
 
 	mutex_lock(&curseg->curseg_mutex);
-	down_write(&sit_i->sentry_lock);
 
-	if (from_gc) {
-		f3fs_bug_on(sbi, GET_SEGNO(sbi, old_blkaddr) == NULL_SEGNO);
-		se = get_seg_entry(sbi, GET_SEGNO(sbi, old_blkaddr));
-		sanity_check_seg_type(sbi, se->type);
-		f3fs_bug_on(sbi, IS_NODESEG(se->type));
-	}
 	*new_blkaddr = NEXT_FREE_BLKADDR(sbi, curseg);
 
 	f3fs_bug_on(sbi, curseg->next_blkoff >= sbi->blocks_per_seg);
@@ -3264,12 +3259,9 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 
 	stat_inc_block_count(sbi, curseg);
 
-	if (from_gc) {
-		old_mtime = get_segment_mtime(sbi, old_blkaddr);
-	} else {
-		update_segment_mtime(sbi, old_blkaddr, 0);
-		old_mtime = 0;
-	}
+	down_write(&sit_i->sentry_lock);
+  update_segment_mtime(sbi, old_blkaddr, 0);
+  old_mtime = 0;
 	update_segment_mtime(sbi, *new_blkaddr, old_mtime);
 
 	/*
@@ -3280,13 +3272,6 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 	if (GET_SEGNO(sbi, old_blkaddr) != NULL_SEGNO)
 		update_sit_entry(sbi, old_blkaddr, -1);
 
-	if (!__has_curseg_space(sbi, curseg)) {
-		if (from_gc)
-			get_atssr_segment(sbi, type, se->type,
-						AT_SSR, se->mtime);
-		else
-			sit_i->s_ops->allocate_segment(sbi, type, false);
-	}
 	/*
 	 * segment dirty status should be updated after segment allocation,
 	 * so we just need to update status only one time after previous
@@ -3296,14 +3281,13 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 	locate_dirty_segment(sbi, GET_SEGNO(sbi, *new_blkaddr));
 
 	up_write(&sit_i->sentry_lock);
-
-	if (page && IS_NODESEG(type)) {
-		fill_node_footer_blkaddr(page, NEXT_FREE_BLKADDR(sbi, curseg));
-
-		f3fs_inode_chksum_set(sbi, page);
+	if (!__has_curseg_space(sbi, curseg)) {
+	  down_write(&sit_i->sentry_lock);
+		sit_i->s_ops->allocate_segment(sbi, type, false);
+	  up_write(&sit_i->sentry_lock);
 	}
 
-	if (fio) {
+  {
 		struct f3fs_bio_info *io;
 
 		if (F3FS_IO_ALIGNED(sbi))
