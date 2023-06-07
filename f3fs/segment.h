@@ -237,7 +237,6 @@ struct sit_info {
 	unsigned long *dirty_sentries_bitmap;	/* bitmap for dirty sentries */
 	unsigned int dirty_sentries;		/* # of dirty sentries */
 	unsigned int sents_per_block;		/* # of SIT entries per block */
-	struct seg_entry *sentries;		/* SIT segment-level cache */
 
   struct rw_semaphore sentry_only_lock;  // sentries
   struct rw_semaphore mtime_lock;        // *_mtime
@@ -247,6 +246,7 @@ struct sit_info {
   struct rw_semaphore sit_bitmap_lock;   // sit_bitmap
   struct rw_semaphore last_victim_lock;  // last_victim
 
+	struct seg_entry **sentries;		/* SIT segment-level cache */
 	struct sec_entry *sec_entries;		/* SIT section-level cache */
 
 	/* for cost-benefit algorithm in cleaning procedure */
@@ -367,7 +367,7 @@ static inline struct seg_entry *get_seg_entry(struct f3fs_sb_info *sbi,
 						unsigned int segno)
 {
 	struct sit_info *sit_i = SIT_I(sbi);
-	return &sit_i->sentries[segno];
+	return sit_i->sentries[segno];
 }
 
 static inline struct sec_entry *get_sec_entry(struct f3fs_sb_info *sbi,

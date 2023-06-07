@@ -4215,12 +4215,16 @@ static int build_sit_info(struct f3fs_sb_info *sbi)
 
 	SM_I(sbi)->sit_info = sit_i;
 
-	sit_i->sentries =
-		f3fs_kvzalloc(sbi, array_size(sizeof(struct seg_entry),
-					      MAIN_SEGS(sbi)),
-			      GFP_KERNEL);
-	if (!sit_i->sentries)
-		return -ENOMEM;
+  sit_i->sentries = f3fs_kvzalloc(sbi, array_size(sizeof(struct seg_entry*), MAIN_SEGS(sbi)), GFP_KERNEL);
+  if (!sit_i->sentries)
+    return -ENOMEM;
+
+  for (int i = 0; i < MAIN_SEGS(sbi); i++) {
+    sit_i->sentries[i] = f3fs_kvzalloc(sbi, array_size(sizeof(struct seg_entry), 1), GFP_KERNEL);
+    if (!sit_i->sentries[i]) {
+      return -ENOMEM;
+    }
+  }
 
 	main_bitmap_size = f3fs_bitmap_size(MAIN_SEGS(sbi));
 	sit_i->dirty_sentries_bitmap = f3fs_kvzalloc(sbi, main_bitmap_size,
@@ -4229,12 +4233,12 @@ static int build_sit_info(struct f3fs_sb_info *sbi)
 		return -ENOMEM;
 
 	for (start = 0; start < MAIN_SEGS(sbi); start++) {
-    sit_i->sentries[start].cur_valmap_lock =
+    sit_i->sentries[start]->cur_valmap_lock =
       f3fs_kzalloc(sbi, sizeof(struct rw_semaphore), GFP_KERNEL);
-    if (!sit_i->sentries[start].cur_valmap_lock) {
+    if (!sit_i->sentries[start]->cur_valmap_lock) {
       return -ENOMEM;
     }
-	  init_rwsem(sit_i->sentries[start].cur_valmap_lock);
+	  init_rwsem(sit_i->sentries[start]->cur_valmap_lock);
   }
 
 	sit_i->tmp_map = f3fs_kzalloc(sbi, SIT_VBLOCK_MAP_SIZE, GFP_KERNEL);
@@ -4375,7 +4379,7 @@ static int build_sit_entries(struct f3fs_sb_info *sbi)
 			struct f3fs_sit_block *sit_blk;
 			struct page *page;
 
-			se = &sit_i->sentries[start];
+			se = sit_i->sentries[start];
 			page = get_current_sit_page(sbi, start);
 			if (IS_ERR(page))
 				return PTR_ERR(page);
@@ -4430,7 +4434,7 @@ static int build_sit_entries(struct f3fs_sb_info *sbi)
 			break;
 		}
 
-		se = &sit_i->sentries[start];
+		se = sit_i->sentries[start];
 		sit = sit_in_journal(journal, i);
 
 		old_valid_blocks = se->valid_blocks;
@@ -5217,10 +5221,13 @@ static void destroy_sit_info(struct f3fs_sb_info *sbi)
 		return;
 
 	kfree(sit_i->tmp_map);
+  for (int i = 0 ; i < MAIN_SEGS(sbi) ; i++) {
+    kvfree(sit_i->sentries[i]);
+  }
 
   for (int i = 0 ; i < MAIN_SEGS(sbi) ; i++) {
-    if (sit_i->sentries[i].cur_valmap_lock) {
-      kvfree(sit_i->sentries[i].cur_valmap_lock);
+    if (sit_i->sentries[i]->cur_valmap_lock) {
+      kvfree(sit_i->sentries[i]->cur_valmap_lock);
     }
   }
 
