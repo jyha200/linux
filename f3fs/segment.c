@@ -2277,7 +2277,7 @@ void f3fs_invalidate_blocks(struct f3fs_sb_info *sbi, block_t addr)
 	f3fs_invalidate_compress_page(sbi, addr);
 
 	/* add it into sit main buffer */
-	down_write(&sit_i->sentry_lock);
+	f3fs_down_write2(&sit_i->sentry_lock);
 
 	update_segment_mtime(sbi, addr, 0);
 	update_sit_entry(sbi, addr, -1);
@@ -2285,7 +2285,7 @@ void f3fs_invalidate_blocks(struct f3fs_sb_info *sbi, block_t addr)
 	/* add it into dirty seglist */
 	locate_dirty_segment(sbi, segno);
 
-	up_write(&sit_i->sentry_lock);
+	f3fs_up_write2(&sit_i->sentry_lock);
 }
 
 bool f3fs_is_checkpointed_data(struct f3fs_sb_info *sbi, block_t blkaddr)
@@ -2298,7 +2298,7 @@ bool f3fs_is_checkpointed_data(struct f3fs_sb_info *sbi, block_t blkaddr)
 	if (!__is_valid_data_blkaddr(blkaddr))
 		return true;
 
-	down_read(&sit_i->sentry_lock);
+	f3fs_down_read2(&sit_i->sentry_lock);
 
 	segno = GET_SEGNO(sbi, blkaddr);
 	se = get_seg_entry(sbi, segno);
@@ -2307,7 +2307,7 @@ bool f3fs_is_checkpointed_data(struct f3fs_sb_info *sbi, block_t blkaddr)
 	if (f3fs_test_bit(offset, se->ckpt_valid_map))
 		is_cp = true;
 
-	up_read(&sit_i->sentry_lock);
+	f3fs_up_read2(&sit_i->sentry_lock);
 
 	return is_cp;
 }
@@ -2719,11 +2719,11 @@ static void __f3fs_init_atgc_curseg(struct f3fs_sb_info *sbi)
 	f3fs_down_read(&SM_I(sbi)->curseg_lock);
 
 	mutex_lock(&curseg->curseg_mutex);
-	down_write(&SIT_I(sbi)->sentry_lock);
+	f3fs_down_write2(&SIT_I(sbi)->sentry_lock);
 
 	get_atssr_segment(sbi, CURSEG_ALL_DATA_ATGC, CURSEG_COLD_DATA, SSR, 0);
 
-	up_write(&SIT_I(sbi)->sentry_lock);
+	f3fs_up_write2(&SIT_I(sbi)->sentry_lock);
 	mutex_unlock(&curseg->curseg_mutex);
 
 	f3fs_up_read(&SM_I(sbi)->curseg_lock);
@@ -2879,7 +2879,7 @@ void f3fs_allocate_segment_for_resize(struct f3fs_sb_info *sbi, int type,
 
 	f3fs_down_read(&SM_I(sbi)->curseg_lock);
 	mutex_lock(&curseg->curseg_mutex);
-	down_write(&SIT_I(sbi)->sentry_lock);
+	f3fs_down_write2(&SIT_I(sbi)->sentry_lock);
 
 	segno = CURSEG_I(sbi, type)->segno;
 	if (segno < start || segno > end)
@@ -2894,7 +2894,7 @@ void f3fs_allocate_segment_for_resize(struct f3fs_sb_info *sbi, int type,
 
 	locate_dirty_segment(sbi, segno);
 unlock:
-	up_write(&SIT_I(sbi)->sentry_lock);
+	f3fs_up_write2(&SIT_I(sbi)->sentry_lock);
 
 	if (segno != curseg->segno)
 		f3fs_notice(sbi, "For resize: curseg of type %d: %u ==> %u",
@@ -2934,9 +2934,9 @@ static void __allocate_new_section(struct f3fs_sb_info *sbi,
 void f3fs_allocate_new_section(struct f3fs_sb_info *sbi, int type, bool force)
 {
 	f3fs_down_read(&SM_I(sbi)->curseg_lock);
-	down_write(&SIT_I(sbi)->sentry_lock);
+	f3fs_down_write2(&SIT_I(sbi)->sentry_lock);
 	__allocate_new_section(sbi, type, force);
-	up_write(&SIT_I(sbi)->sentry_lock);
+	f3fs_up_write2(&SIT_I(sbi)->sentry_lock);
 	f3fs_up_read(&SM_I(sbi)->curseg_lock);
 }
 
@@ -2945,10 +2945,10 @@ void f3fs_allocate_new_segments(struct f3fs_sb_info *sbi)
 	int i;
 
 	f3fs_down_read(&SM_I(sbi)->curseg_lock);
-	down_write(&SIT_I(sbi)->sentry_lock);
+	f3fs_down_write2(&SIT_I(sbi)->sentry_lock);
 	for (i = CURSEG_HOT_DATA; i <= CURSEG_COLD_GC_DATA_END; i++)
 		__allocate_new_segment(sbi, i, false, false);
-	up_write(&SIT_I(sbi)->sentry_lock);
+	f3fs_up_write2(&SIT_I(sbi)->sentry_lock);
 	f3fs_up_read(&SM_I(sbi)->curseg_lock);
 }
 
@@ -2962,14 +2962,14 @@ bool f3fs_exist_trim_candidates(struct f3fs_sb_info *sbi,
 	__u64 trim_start = cpc->trim_start;
 	bool has_candidate = false;
 
-	down_write(&SIT_I(sbi)->sentry_lock);
+	f3fs_down_write2(&SIT_I(sbi)->sentry_lock);
 	for (; cpc->trim_start <= cpc->trim_end; cpc->trim_start++) {
 		if (add_discard_addrs(sbi, cpc, true)) {
 			has_candidate = true;
 			break;
 		}
 	}
-	up_write(&SIT_I(sbi)->sentry_lock);
+	f3fs_up_write2(&SIT_I(sbi)->sentry_lock);
 
 	cpc->trim_start = trim_start;
 	return has_candidate;
@@ -3259,7 +3259,7 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 
 	stat_inc_block_count(sbi, curseg);
 
-	down_write(&sit_i->sentry_lock);
+	f3fs_down_write2(&sit_i->sentry_lock);
   update_segment_mtime(sbi, old_blkaddr, 0);
   old_mtime = 0;
 	update_segment_mtime(sbi, *new_blkaddr, old_mtime);
@@ -3280,11 +3280,11 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 	locate_dirty_segment(sbi, GET_SEGNO(sbi, old_blkaddr));
 	locate_dirty_segment(sbi, GET_SEGNO(sbi, *new_blkaddr));
 
-	up_write(&sit_i->sentry_lock);
+	f3fs_up_write2(&sit_i->sentry_lock);
 	if (!__has_curseg_space(sbi, curseg)) {
-	  down_write(&sit_i->sentry_lock);
+	  f3fs_down_write2(&sit_i->sentry_lock);
 		sit_i->s_ops->allocate_segment(sbi, type, false);
-	  up_write(&sit_i->sentry_lock);
+	  f3fs_up_write2(&sit_i->sentry_lock);
 	}
 
   {
@@ -3320,7 +3320,7 @@ void f3fs_allocate_data_block(struct f3fs_sb_info *sbi, struct page *page,
 	f3fs_down_read(&SM_I(sbi)->curseg_lock);
 
 	mutex_lock(&curseg->curseg_mutex);
-	down_write(&sit_i->sentry_lock);
+	f3fs_down_write2(&sit_i->sentry_lock);
 
 	if (from_gc) {
 		f3fs_bug_on(sbi, GET_SEGNO(sbi, old_blkaddr) == NULL_SEGNO);
@@ -3376,7 +3376,7 @@ void f3fs_allocate_data_block(struct f3fs_sb_info *sbi, struct page *page,
 	locate_dirty_segment(sbi, GET_SEGNO(sbi, old_blkaddr));
 	locate_dirty_segment(sbi, GET_SEGNO(sbi, *new_blkaddr));
 
-	up_write(&sit_i->sentry_lock);
+	f3fs_up_write2(&sit_i->sentry_lock);
 
 	if (page && IS_NODESEG(type)) {
 		fill_node_footer_blkaddr(page, NEXT_FREE_BLKADDR(sbi, curseg));
@@ -3624,7 +3624,7 @@ void f3fs_do_replace_block(struct f3fs_sb_info *sbi, struct f3fs_summary *sum,
 	curseg = CURSEG_I(sbi, type);
 
 	mutex_lock(&curseg->curseg_mutex);
-	down_write(&sit_i->sentry_lock);
+	f3fs_down_write2(&sit_i->sentry_lock);
 
 	old_cursegno = curseg->segno;
 	old_blkoff = curseg->next_blkoff;
@@ -3667,7 +3667,7 @@ void f3fs_do_replace_block(struct f3fs_sb_info *sbi, struct f3fs_summary *sum,
 		curseg->alloc_type = old_alloc_type;
 	}
 
-	up_write(&sit_i->sentry_lock);
+	f3fs_up_write2(&sit_i->sentry_lock);
 	mutex_unlock(&curseg->curseg_mutex);
 	f3fs_up_write(&SM_I(sbi)->curseg_lock);
 }
@@ -4155,7 +4155,7 @@ void f3fs_flush_sit_entries(struct f3fs_sb_info *sbi, struct cp_control *cpc)
 	bool to_journal = !is_sbi_flag_set(sbi, SBI_IS_RESIZEFS);
 	struct seg_entry *se;
 
-	down_write(&sit_i->sentry_lock);
+	f3fs_down_write2(&sit_i->sentry_lock);
 
 	if (!sit_i->dirty_sentries)
 		goto out;
@@ -4259,7 +4259,7 @@ out:
 
 		cpc->trim_start = trim_start;
 	}
-	up_write(&sit_i->sentry_lock);
+	f3fs_up_write2(&sit_i->sentry_lock);
 
 	set_prefree_as_free_segments(sbi);
 }
@@ -4370,7 +4370,7 @@ static int build_sit_info(struct f3fs_sb_info *sbi)
 	sit_i->sents_per_block = SIT_ENTRY_PER_BLOCK;
 	sit_i->elapsed_time = le64_to_cpu(sbi->ckpt->elapsed_time);
 	sit_i->mounted_time = ktime_get_boottime_seconds();
-	init_rwsem(&sit_i->sentry_lock);
+	init_f3fs_rwsem2(&sit_i->sentry_lock);
 	return 0;
 }
 
@@ -5136,7 +5136,7 @@ static void init_min_max_mtime(struct f3fs_sb_info *sbi)
 	struct sit_info *sit_i = SIT_I(sbi);
 	unsigned int segno;
 
-	down_write(&sit_i->sentry_lock);
+	f3fs_down_write2(&sit_i->sentry_lock);
 
 	sit_i->min_mtime = ULLONG_MAX;
 
@@ -5154,7 +5154,7 @@ static void init_min_max_mtime(struct f3fs_sb_info *sbi)
 	}
 	sit_i->max_mtime = get_mtime(sbi, false);
 	sit_i->dirty_max_mtime = 0;
-	up_write(&sit_i->sentry_lock);
+	f3fs_up_write2(&sit_i->sentry_lock);
 }
 
 int f3fs_build_segment_manager(struct f3fs_sb_info *sbi)
