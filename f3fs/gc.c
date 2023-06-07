@@ -1974,13 +1974,13 @@ stop:
 
 	put_gc_inode(&gc_list);
   {
-    struct sit_info *sit_i = SIT_I(sbi);
+    struct dirty_seglist_info *dirty_i = DIRTY_I(sbi);
 
-    down_write(&sit_i->sentry_lock);
+    mutex_lock(&dirty_i->seglist_lock);
     for (int i = 0 ; i < skipped_seg_count; i++) {
       clear_bit(GET_SEC_FROM_SEG(sbi, skipped_segs[i]), DIRTY_I(sbi)->victim_secmap);
     }
-    up_write(&sit_i->sentry_lock);
+    mutex_unlock(&dirty_i->seglist_lock);
   }
 
 	if (gc_control->err_gc_skipped && !ret)
