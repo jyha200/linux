@@ -1649,7 +1649,7 @@ int f3fs_write_checkpoint(struct f3fs_sb_info *sbi, struct cp_control *cpc)
 		}
 
 		if (NM_I(sbi)->nat_cnt[DIRTY_NAT] == 0 &&
-				SIT_I(sbi)->dirty_sentries == 0 &&
+				atomic_read(&SIT_I(sbi)->dirty_sentries) == 0 &&
 				prefree_segments(sbi) == 0) {
 			f3fs_flush_sit_entries(sbi, cpc);
 			f3fs_clear_prefree_segments(sbi, cpc);

@@ -2110,7 +2110,7 @@ static bool __mark_sit_entry_dirty(struct f3fs_sb_info *sbi, unsigned int segno)
 	struct sit_info *sit_i = SIT_I(sbi);
 
 	if (!__test_and_set_bit(segno, sit_i->dirty_sentries_bitmap)) {
-		sit_i->dirty_sentries++;
+		atomic_inc(&sit_i->dirty_sentries);
 		return false;
 	}
 
@@ -3232,15 +3232,18 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 {
 	struct sit_info *sit_i = SIT_I(sbi);
 	struct curseg_info *curseg = CURSEG_I(sbi, type);
-	unsigned long long old_mtime;
+  unsigned int old_segno, new_segno;
+  bool curseg_lock_acquired = false;
 
   f3fs_bug_on(sbi, type == CURSEG_ALL_DATA_ATGC);
   f3fs_bug_on(sbi, fio == NULL);
   f3fs_bug_on(sbi, IS_NODESEG(type));
+  f3fs_bug_on(sbi, GET_SEGNO(sbi, old_blkaddr) == NULL_SEGNO);
 
 	f3fs_down_read(&SM_I(sbi)->curseg_lock);
 
-	mutex_lock(&curseg->curseg_mutex);
+	curseg_lock_acquired = mutex_trylock(&curseg->curseg_mutex);
+  f3fs_bug_on(sbi, curseg_lock_acquired == false);
 
 	*new_blkaddr = NEXT_FREE_BLKADDR(sbi, curseg);
 
@@ -3259,33 +3262,28 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 
 	stat_inc_block_count(sbi, curseg);
 
-	f3fs_down_write2(&sit_i->sentry_lock);
+  old_segno = GET_SEGNO(sbi, old_blkaddr);
+  new_segno = GET_SEGNO(sbi, *new_blkaddr);
+
+	f3fs_down_range(&sit_i->sentry_lock, old_segno, 1, true);
   update_segment_mtime(sbi, old_blkaddr, 0);
-  old_mtime = 0;
-	update_segment_mtime(sbi, *new_blkaddr, old_mtime);
-
-	/*
-	 * SIT information should be updated before segment allocation,
-	 * since SSR needs latest valid block information.
-	 */
-	update_sit_entry(sbi, *new_blkaddr, 1);
-	if (GET_SEGNO(sbi, old_blkaddr) != NULL_SEGNO)
-		update_sit_entry(sbi, old_blkaddr, -1);
-
-	/*
-	 * segment dirty status should be updated after segment allocation,
-	 * so we just need to update status only one time after previous
-	 * segment being closed.
-	 */
+	update_sit_entry(sbi, old_blkaddr, -1);
 	locate_dirty_segment(sbi, GET_SEGNO(sbi, old_blkaddr));
-	locate_dirty_segment(sbi, GET_SEGNO(sbi, *new_blkaddr));
+	f3fs_up_range(&sit_i->sentry_lock, old_segno, 1, true);
 
-	f3fs_up_write2(&sit_i->sentry_lock);
+	f3fs_down_range(&sit_i->sentry_lock, new_segno, 1, true);
+	update_segment_mtime(sbi, *new_blkaddr, 0);
+	update_sit_entry(sbi, *new_blkaddr, 1);
+	locate_dirty_segment(sbi, GET_SEGNO(sbi, *new_blkaddr));
+	f3fs_up_range(&sit_i->sentry_lock, new_segno, 1, true);
+
 	if (!__has_curseg_space(sbi, curseg)) {
 	  f3fs_down_write2(&sit_i->sentry_lock);
 		sit_i->s_ops->allocate_segment(sbi, type, false);
 	  f3fs_up_write2(&sit_i->sentry_lock);
 	}
+
+	mutex_unlock(&curseg->curseg_mutex);
 
   {
 		struct f3fs_bio_info *io;
@@ -3300,8 +3298,6 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 		list_add_tail(&fio->list, &io->io_list);
 		spin_unlock(&io->io_lock);
 	}
-
-	mutex_unlock(&curseg->curseg_mutex);
 
 	f3fs_up_read(&SM_I(sbi)->curseg_lock);
 }
@@ -4157,7 +4153,7 @@ void f3fs_flush_sit_entries(struct f3fs_sb_info *sbi, struct cp_control *cpc)
 
 	f3fs_down_write2(&sit_i->sentry_lock);
 
-	if (!sit_i->dirty_sentries)
+	if (!atomic_read(&sit_i->dirty_sentries))
 		goto out;
 
 	/*
@@ -4171,7 +4167,7 @@ void f3fs_flush_sit_entries(struct f3fs_sb_info *sbi, struct cp_control *cpc)
 	 * entries, remove all entries from journal and add and account
 	 * them in sit entry set.
 	 */
-	if (!__has_cursum_space(journal, sit_i->dirty_sentries, SIT_JOURNAL) ||
+	if (!__has_cursum_space(journal, atomic_read(&sit_i->dirty_sentries), SIT_JOURNAL) ||
 								!to_journal)
 		remove_sits_in_journal(sbi);
 
@@ -4235,7 +4231,7 @@ void f3fs_flush_sit_entries(struct f3fs_sb_info *sbi, struct cp_control *cpc)
 			}
 
 			__clear_bit(segno, bitmap);
-			sit_i->dirty_sentries--;
+			atomic_dec(&sit_i->dirty_sentries);
 			ses->entry_cnt--;
 		}
 
@@ -4249,7 +4245,8 @@ void f3fs_flush_sit_entries(struct f3fs_sb_info *sbi, struct cp_control *cpc)
 	}
 
 	f3fs_bug_on(sbi, !list_empty(head));
-	f3fs_bug_on(sbi, sit_i->dirty_sentries);
+  printk("%s %d %d\n", __func__, __LINE__, atomic_read(&sit_i->dirty_sentries));
+	f3fs_bug_on(sbi, atomic_read(&sit_i->dirty_sentries));
 out:
 	if (cpc->reason & CP_DISCARD) {
 		__u64 trim_start = cpc->trim_start;
@@ -4366,7 +4363,7 @@ static int build_sit_info(struct f3fs_sb_info *sbi)
 	sit_i->sit_blocks = sit_segs << sbi->log_blocks_per_seg;
 	sit_i->written_valid_blocks = 0;
 	sit_i->bitmap_size = sit_bitmap_size;
-	sit_i->dirty_sentries = 0;
+  atomic_set(&sit_i->dirty_sentries, 0);
 	sit_i->sents_per_block = SIT_ENTRY_PER_BLOCK;
 	sit_i->elapsed_time = le64_to_cpu(sbi->ckpt->elapsed_time);
 	sit_i->mounted_time = ktime_get_boottime_seconds();
