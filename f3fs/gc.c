@@ -1186,6 +1186,7 @@ static int ra_data_block(struct inode *inode, pgoff_t index)
 		.encrypted_page = NULL,
 		.in_list = false,
 		.retry = false,
+    .dst_hint = -1,
 	};
 	int err;
 
@@ -1273,6 +1274,7 @@ static int move_data_block(struct inode *inode, block_t bidx,
 		.encrypted_page = NULL,
 		.in_list = false,
 		.retry = false,
+    .dst_hint = -1,
 	};
 	struct dnode_of_data dn;
 	struct f3fs_summary sum;
@@ -1422,7 +1424,7 @@ out:
 }
 
 static int move_data_page(struct inode *inode, block_t bidx, int gc_type,
-							unsigned int segno, int off, unsigned char dst_hint)
+							unsigned int segno, int off, char dst_hint)
 {
 	struct page *page;
 	int err = 0;
@@ -1500,7 +1502,7 @@ out:
  */
 static int gc_data_segment(struct f3fs_sb_info *sbi, struct f3fs_summary *sum,
 		struct gc_inode_list *gc_list, unsigned int segno, int gc_type,
-		bool force_migrate, unsigned char dst_hint)
+		bool force_migrate, char dst_hint)
 {
 	struct super_block *sb = sbi->sb;
 	struct f3fs_summary *entry;
@@ -1693,7 +1695,7 @@ static int __get_victim(struct f3fs_sb_info *sbi, unsigned int *victim,
 static int do_garbage_collect(struct f3fs_sb_info *sbi,
 				unsigned int start_segno,
 				struct gc_inode_list *gc_list, int gc_type,
-				bool force_migrate, unsigned char dst_hint)
+				bool force_migrate, char dst_hint)
 {
 	struct page *sum_page;
 	struct f3fs_summary_block *sum;
@@ -1811,7 +1813,7 @@ skip:
 
 #define NUM_SKIPPED_SEG (64)
 
-int do_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control, unsigned char worker_idx)
+int do_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control, char worker_idx)
 {
 	int gc_type = gc_control->init_gc_type;
 	unsigned int segno = gc_control->victim_segno;
@@ -2111,7 +2113,7 @@ static int free_segment_range(struct f3fs_sb_info *sbi,
 			.iroot = RADIX_TREE_INIT(gc_list.iroot, GFP_NOFS),
 		};
 
-		do_garbage_collect(sbi, segno, &gc_list, FG_GC, true, 0);
+		do_garbage_collect(sbi, segno, &gc_list, FG_GC, true, -1);
 		put_gc_inode(&gc_list);
 
 		if (!gc_only && get_valid_blocks(sbi, segno, true)) {
