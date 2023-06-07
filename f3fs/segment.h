@@ -246,6 +246,7 @@ struct sit_info {
 	unsigned long *tmp_map;			/* bitmap for temporal use */
 	unsigned long *dirty_sentries_bitmap;	/* bitmap for dirty sentries */
 	atomic_t dirty_sentries;		/* # of dirty sentries */
+  struct rw_semaphore dirty_lock;
 	unsigned int sents_per_block;		/* # of SIT entries per block */
 	//struct rw_semaphore sentry_lock;	/* to protect SIT cache */
 	struct f3fs_rwsem2 sentry_lock;	/* to protect SIT cache */

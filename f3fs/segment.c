@@ -2105,15 +2105,25 @@ static void destroy_discard_cmd_control(struct f3fs_sb_info *sbi)
 	SM_I(sbi)->dcc_info = NULL;
 }
 
-static bool __mark_sit_entry_dirty(struct f3fs_sb_info *sbi, unsigned int segno)
+static bool __mark_sit_entry_dirty(struct f3fs_sb_info *sbi, unsigned int segno, bool do_lock)
 {
 	struct sit_info *sit_i = SIT_I(sbi);
 
+  if (do_lock) {
+    down_write(&sit_i->dirty_lock);
+  }
 	if (!__test_and_set_bit(segno, sit_i->dirty_sentries_bitmap)) {
-		atomic_inc(&sit_i->dirty_sentries);
+   // printk("%s %d seg %d added total %d\n", __func__, __LINE__, segno, atomic_inc_return(&sit_i->dirty_sentries));
+   atomic_inc(&sit_i->dirty_sentries);
+    if (do_lock) { 
+      up_write(&sit_i->dirty_lock);
+    }
 		return false;
 	}
 
+  if (do_lock) {
+    up_write(&sit_i->dirty_lock);
+  }
 	return true;
 }
 
@@ -2124,7 +2134,7 @@ static void __set_sit_entry_type(struct f3fs_sb_info *sbi, int type,
 
 	se->type = type;
 	if (modified)
-		__mark_sit_entry_dirty(sbi, segno);
+		__mark_sit_entry_dirty(sbi, segno, true);
 }
 
 static inline unsigned long long get_segment_mtime(struct f3fs_sb_info *sbi,
@@ -2255,7 +2265,7 @@ static void update_sit_entry(struct f3fs_sb_info *sbi, block_t blkaddr, int del)
 	if (!f3fs_test_bit(offset, se->ckpt_valid_map))
 		se->ckpt_valid_blocks += del;
 
-	__mark_sit_entry_dirty(sbi, segno);
+	__mark_sit_entry_dirty(sbi, segno, true);
 
 	/* update total number of valid blocks to be written in ckpt area */
 	SIT_I(sbi)->written_valid_blocks += del;
@@ -4127,7 +4137,7 @@ static void remove_sits_in_journal(struct f3fs_sb_info *sbi)
 		bool dirtied;
 
 		segno = le32_to_cpu(segno_in_journal(journal, i));
-		dirtied = __mark_sit_entry_dirty(sbi, segno);
+		dirtied = __mark_sit_entry_dirty(sbi, segno, false);
 
 		if (!dirtied)
 			add_sit_entry(segno, &SM_I(sbi)->sit_entry_set);
@@ -4160,6 +4170,7 @@ void f3fs_flush_sit_entries(struct f3fs_sb_info *sbi, struct cp_control *cpc)
 	 * add and account sit entries of dirty bitmap in sit entry
 	 * set temporarily
 	 */
+  down_write(&sit_i->dirty_lock);
 	add_sits_in_set(sbi);
 
 	/*
@@ -4231,6 +4242,7 @@ void f3fs_flush_sit_entries(struct f3fs_sb_info *sbi, struct cp_control *cpc)
 			}
 
 			__clear_bit(segno, bitmap);
+//      printk("%s %d seg %d dec total %d\n", __func__, __LINE__, segno, atomic_dec_return(&sit_i->dirty_sentries));
 			atomic_dec(&sit_i->dirty_sentries);
 			ses->entry_cnt--;
 		}
@@ -4245,8 +4257,8 @@ void f3fs_flush_sit_entries(struct f3fs_sb_info *sbi, struct cp_control *cpc)
 	}
 
 	f3fs_bug_on(sbi, !list_empty(head));
-  printk("%s %d %d\n", __func__, __LINE__, atomic_read(&sit_i->dirty_sentries));
 	f3fs_bug_on(sbi, atomic_read(&sit_i->dirty_sentries));
+  up_write(&sit_i->dirty_lock);
 out:
 	if (cpc->reason & CP_DISCARD) {
 		__u64 trim_start = cpc->trim_start;
@@ -4368,6 +4380,7 @@ static int build_sit_info(struct f3fs_sb_info *sbi)
 	sit_i->elapsed_time = le64_to_cpu(sbi->ckpt->elapsed_time);
 	sit_i->mounted_time = ktime_get_boottime_seconds();
 	init_f3fs_rwsem2(&sit_i->sentry_lock);
+	init_rwsem(&sit_i->dirty_lock);
 	return 0;
 }
 
