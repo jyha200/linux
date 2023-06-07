@@ -3452,16 +3452,17 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 #endif
 
 	f3fs_down_read(&SM_I(sbi)->curseg_lock);
-
+#if PROF9_1
+  ttt[1] = ktime_get_raw();
+#endif
 	mutex_lock(&curseg->curseg_mutex);
+#if PROF9_1
+  ttt[2] = ktime_get_raw();
+#endif
 	down_write(&sit_i->sentry_lock);
-
-	if (from_gc) {
-		f3fs_bug_on(sbi, GET_SEGNO(sbi, old_blkaddr) == NULL_SEGNO);
-		se = get_seg_entry(sbi, GET_SEGNO(sbi, old_blkaddr));
-		sanity_check_seg_type(sbi, se->type);
-		f3fs_bug_on(sbi, IS_NODESEG(se->type));
-	}
+#if PROF9_1
+  ttt[3] = ktime_get_raw();
+#endif
 	*new_blkaddr = NEXT_FREE_BLKADDR(sbi, curseg);
 
 	f3fs_bug_on(sbi, curseg->next_blkoff >= sbi->blocks_per_seg);
@@ -3479,13 +3480,9 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 
 	stat_inc_block_count(sbi, curseg);
 
-	if (from_gc) {
-		old_mtime = get_segment_mtime(sbi, old_blkaddr);
-	} else {
-		update_segment_mtime(sbi, old_blkaddr, 0);
-		old_mtime = 0;
-	}
-	update_segment_mtime(sbi, *new_blkaddr, old_mtime);
+  update_segment_mtime(sbi, old_blkaddr, 0);
+  old_mtime = 0;
+  update_segment_mtime(sbi, *new_blkaddr, old_mtime);
 
 	/*
 	 * SIT information should be updated before segment allocation,
@@ -3495,18 +3492,14 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 	if (GET_SEGNO(sbi, old_blkaddr) != NULL_SEGNO)
 		update_sit_entry(sbi, old_blkaddr, -1);
 #if PROF9_1
-  ttt[1] = ktime_get_raw();
+  ttt[4] = ktime_get_raw();
 #endif
 
 	if (!__has_curseg_space(sbi, curseg)) {
-		if (from_gc)
-			get_atssr_segment(sbi, type, se->type,
-						AT_SSR, se->mtime);
-		else
-			sit_i->s_ops->allocate_segment(sbi, type, false);
+		sit_i->s_ops->allocate_segment(sbi, type, false);
 	}
 #if PROF9_1
-  ttt[2] = ktime_get_raw();
+  ttt[5] = ktime_get_raw();
 #endif
 	/*
 	 * segment dirty status should be updated after segment allocation,
@@ -3524,27 +3517,27 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 		f3fs_inode_chksum_set(sbi, page);
 	}
 
-	if (fio) {
-		struct f3fs_bio_info *io;
+  {
+    struct f3fs_bio_info *io;
 
-		if (F3FS_IO_ALIGNED(sbi))
-			fio->retry = false;
+    if (F3FS_IO_ALIGNED(sbi))
+      fio->retry = false;
 
-		INIT_LIST_HEAD(&fio->list);
-		fio->in_list = true;
-		io = sbi->write_io[fio->type] + fio->temp;
-		spin_lock(&io->io_lock);
-		list_add_tail(&fio->list, &io->io_list);
-		spin_unlock(&io->io_lock);
-	}
+    INIT_LIST_HEAD(&fio->list);
+    fio->in_list = true;
+    io = sbi->write_io[fio->type] + fio->temp;
+    spin_lock(&io->io_lock);
+    list_add_tail(&fio->list, &io->io_list);
+    spin_unlock(&io->io_lock);
+  }
 
-	mutex_unlock(&curseg->curseg_mutex);
+  mutex_unlock(&curseg->curseg_mutex);
 
 	f3fs_up_read(&SM_I(sbi)->curseg_lock);
 #if PROF9_1
-  ttt[3] = ktime_get_raw();
+  ttt[6] = ktime_get_raw();
   if (from_gc == false) {
-    ktcond_print2(ttt, 10, 4);
+    ktcond_print2(ttt, 10, 7);
   }
 #endif
 }
