@@ -247,8 +247,16 @@ struct sit_info {
 	unsigned long *dirty_sentries_bitmap;	/* bitmap for dirty sentries */
 	unsigned int dirty_sentries;		/* # of dirty sentries */
 	unsigned int sents_per_block;		/* # of SIT entries per block */
-	struct rw_semaphore sentry_lock;	/* to protect SIT cache */
 	struct seg_entry *sentries;		/* SIT segment-level cache */
+
+  struct rw_semaphore sentry_only_lock;  // sentries
+  struct rw_semaphore mtime_lock;        // *_mtime
+  struct rw_semaphore dirty_sentry_lock; // dirty_sengties_bitmap, dirty_sentries
+  struct rw_semaphore tmp_map_lock;      // tmp_map
+  struct rw_semaphore blk_info_lock;     // sit_base_addr, sit_blocks, written_valid_blocks
+  struct rw_semaphore sit_bitmap_lock;   // sit_bitmap
+  struct rw_semaphore last_victim_lock;  // last_victim
+
 	struct sec_entry *sec_entries;		/* SIT section-level cache */
 
 	/* for cost-benefit algorithm in cleaning procedure */
@@ -382,6 +390,7 @@ static inline struct sec_entry *get_sec_entry(struct f3fs_sb_info *sbi,
 static inline unsigned int get_valid_blocks(struct f3fs_sb_info *sbi,
 				unsigned int segno, bool use_section)
 {
+  // sentry_only (read)
 	/*
 	 * In order to get # of valid blocks in a section instantly from many
 	 * segments, f3fs manages two counting structures separately.
@@ -395,6 +404,7 @@ static inline unsigned int get_valid_blocks(struct f3fs_sb_info *sbi,
 static inline unsigned int get_ckpt_valid_blocks(struct f3fs_sb_info *sbi,
 				unsigned int segno, bool use_section)
 {
+  // sentry_only (read)
 	if (use_section && __is_large_section(sbi)) {
 		unsigned int start_segno = START_SEGNO(segno);
 		unsigned int blocks = 0;
@@ -427,6 +437,7 @@ static inline void seg_info_from_raw_sit(struct seg_entry *se,
 static inline void __seg_info_to_raw_sit(struct seg_entry *se,
 					struct f3fs_sit_entry *rs)
 {
+  // sentry_only(read)
 	unsigned short raw_vblocks = (se->type << SIT_VBLOCKS_SHIFT) |
 					se->valid_blocks;
 	rs->vblocks = cpu_to_le16(raw_vblocks);
@@ -437,6 +448,7 @@ static inline void __seg_info_to_raw_sit(struct seg_entry *se,
 static inline void seg_info_to_sit_page(struct f3fs_sb_info *sbi,
 				struct page *page, unsigned int start)
 {
+  // sentry_only (read)
 	struct f3fs_sit_block *raw_sit;
 	struct seg_entry *se;
 	struct f3fs_sit_entry *rs;
@@ -801,6 +813,7 @@ static inline int check_block_count(struct f3fs_sb_info *sbi,
 static inline pgoff_t current_sit_addr(struct f3fs_sb_info *sbi,
 						unsigned int start)
 {
+  // sit_bitmap
 	struct sit_info *sit_i = SIT_I(sbi);
 	unsigned int offset = SIT_BLOCK_OFFSET(start);
 	block_t blk_addr = sit_i->sit_base_addr + offset;
@@ -823,6 +836,7 @@ static inline pgoff_t current_sit_addr(struct f3fs_sb_info *sbi,
 static inline pgoff_t next_sit_addr(struct f3fs_sb_info *sbi,
 						pgoff_t block_addr)
 {
+  // sit_bitmap (read)
 	struct sit_info *sit_i = SIT_I(sbi);
 	block_addr -= sit_i->sit_base_addr;
 	if (block_addr < sit_i->sit_blocks)
@@ -835,6 +849,7 @@ static inline pgoff_t next_sit_addr(struct f3fs_sb_info *sbi,
 
 static inline void set_to_next_sit(struct sit_info *sit_i, unsigned int start)
 {
+  // sit_bitmap
 	unsigned int block_off = SIT_BLOCK_OFFSET(start);
 
 	f3fs_change_bit(block_off, sit_i->sit_bitmap);
