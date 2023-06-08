@@ -393,11 +393,12 @@ static unsigned int get_cb_cost(struct f3fs_sb_info *sbi, unsigned int segno)
 	/* Handle if the system time has changed by the user */
 	if (mtime < sit_i->min_mtime)
 		sit_i->min_mtime = mtime;
-	if (mtime > sit_i->max_mtime)
-		sit_i->max_mtime = mtime;
-	if (sit_i->max_mtime != sit_i->min_mtime)
-		age = 100 - div64_u64(100 * (mtime - sit_i->min_mtime),
-				sit_i->max_mtime - sit_i->min_mtime);
+  {
+    unsigned long long max_mtime = update_max_mtime_atomic(sbi, mtime);
+    if (max_mtime != sit_i->min_mtime)
+      age = 100 - div64_u64(100 * (mtime - sit_i->min_mtime),
+          max_mtime - sit_i->min_mtime);
+  }
 
 	return UINT_MAX - ((100 * (100 - u) * age) / (100 + u));
 }
@@ -488,8 +489,7 @@ static void add_victim_entry(struct f3fs_sb_info *sbi,
 	/* Handle if the system time has changed by the user */
 	if (mtime < sit_i->min_mtime)
 		sit_i->min_mtime = mtime;
-	if (mtime > sit_i->max_mtime)
-		sit_i->max_mtime = mtime;
+  update_max_mtime_atomic(sbi, mtime);
 	if (mtime < sit_i->dirty_min_mtime)
 		sit_i->dirty_min_mtime = mtime;
 	if (mtime > sit_i->dirty_max_mtime)
@@ -754,6 +754,7 @@ static int get_victim_by_default(struct f3fs_sb_info *sbi,
 			unsigned int *result, int gc_type, int type,
 			char alloc_mode, unsigned long long age)
 {
+  // last_victim
 	struct dirty_seglist_info *dirty_i = DIRTY_I(sbi);
 	struct sit_info *sm = SIT_I(sbi);
 	struct victim_sel_policy p;
@@ -998,9 +999,9 @@ static int check_valid_map(struct f3fs_sb_info *sbi,
 	int ret;
 
 	sentry = get_seg_entry(sbi, segno);
-  down_read(&sentry->cur_valmap_lock);
+//  down_read(sentry->cur_valmap_lock);
 	ret = f3fs_test_bit(offset, sentry->cur_valid_map);
-  up_read(&sentry->cur_valmap_lock);
+//  up_read(sentry->cur_valmap_lock);
 	return ret;
 }
 
@@ -1363,7 +1364,7 @@ static int move_data_block(struct inode *inode, block_t bidx,
 	set_summary(&sum, dn.nid, dn.ofs_in_node, ni.version);
 
 	/* allocate block address */
-	f3fs_allocate_data_block(fio.sbi, NULL, fio.old_blkaddr, &newaddr,
+	f3fs_allocate_data_block2(fio.sbi, NULL, fio.old_blkaddr, &newaddr,
 				&sum, type, NULL);
 
 	fio.encrypted_page = f3fs_pagecache_get_page(META_MAPPING(fio.sbi),
@@ -1695,10 +1696,10 @@ static int __get_victim(struct f3fs_sb_info *sbi, unsigned int *victim,
 	struct sit_info *sit_i = SIT_I(sbi);
 	int ret;
 
-	down_write(&sit_i->sentry_lock);
+  down_write(&sit_i->last_victim_lock);
 	ret = DIRTY_I(sbi)->v_ops->get_victim(sbi, victim, gc_type,
 					      NO_CHECK_TYPE, LFS, 0);
-	up_write(&sit_i->sentry_lock);
+  up_write(&sit_i->last_victim_lock);
 	return ret;
 }
 
