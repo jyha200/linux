@@ -754,6 +754,7 @@ static int get_victim_by_default(struct f3fs_sb_info *sbi,
 			unsigned int *result, int gc_type, int type,
 			char alloc_mode, unsigned long long age)
 {
+  // last_victim
 	struct dirty_seglist_info *dirty_i = DIRTY_I(sbi);
 	struct sit_info *sm = SIT_I(sbi);
 	struct victim_sel_policy p;
@@ -1695,10 +1696,10 @@ static int __get_victim(struct f3fs_sb_info *sbi, unsigned int *victim,
 	struct sit_info *sit_i = SIT_I(sbi);
 	int ret;
 
-	down_write(&sit_i->sentry_lock);
+  down_write(&sit_i->last_victim_lock);
 	ret = DIRTY_I(sbi)->v_ops->get_victim(sbi, victim, gc_type,
 					      NO_CHECK_TYPE, LFS, 0);
-	up_write(&sit_i->sentry_lock);
+  up_write(&sit_i->last_victim_lock);
 	return ret;
 }
 
