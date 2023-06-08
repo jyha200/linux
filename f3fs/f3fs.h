@@ -3760,7 +3760,7 @@ void f3fs_replace_block(struct f3fs_sb_info *sbi, struct dnode_of_data *dn,
 			block_t old_addr, block_t new_addr,
 			unsigned char version, bool recover_curseg,
 			bool recover_newaddr);
-void f3fs_allocate_data_block(struct f3fs_sb_info *sbi, struct page *page,
+void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 			block_t old_blkaddr, block_t *new_blkaddr,
 			struct f3fs_summary *sum, int type,
 			struct f3fs_io_info *fio);
