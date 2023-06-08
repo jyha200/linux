@@ -198,15 +198,16 @@ struct seg_entry {
 	unsigned int ckpt_valid_blocks:10;	/* # of valid blocks last cp */
 	unsigned int curseg:1;
 	unsigned int padding:5;		/* padding */
-	unsigned char* cur_valid_map;	/* validity bitmap of blocks */
+	unsigned char cur_valid_map[SIT_VBLOCK_MAP_SIZE];	/* validity bitmap of blocks */
 	/*
 	 * # of valid blocks and the validity bitmap stored in the last
 	 * checkpoint pack. This information is used by the SSR mode.
 	 */
-	unsigned char *ckpt_valid_map;	/* validity bitmap of blocks last cp */
-	unsigned char *discard_map;
+	unsigned long ckpt_valid_map[SIT_VBLOCK_MAP_SIZE/sizeof(unsigned long)];	/* validity bitmap of blocks last cp */
+	unsigned char discard_map[SIT_VBLOCK_MAP_SIZE];
 	unsigned long long mtime;	/* modification time of the segment */
-	struct rw_semaphore cur_valmap_lock;	/* to protect SIT cache */
+//	struct rw_semaphore* cur_valmap_lock;	/* to protect SIT cache */
+	struct rw_semaphore local_lock;	/* to protect SIT cache */
 };
 
 struct sec_entry {
@@ -215,6 +216,7 @@ struct sec_entry {
 
 struct segment_allocation {
 	void (*allocate_segment)(struct f3fs_sb_info *, int, bool);
+	void (*allocate_segment2)(struct f3fs_sb_info *, int, bool);
 };
 
 #define MAX_SKIP_GC_COUNT			16
@@ -230,30 +232,32 @@ struct sit_info {
 
 	block_t sit_base_addr;		/* start block address of SIT area */
 	block_t sit_blocks;		/* # of blocks used by SIT area */
-	block_t written_valid_blocks;	/* # of valid blocks in main area */
-	char *bitmap;			/* all bitmaps pointer */
+	//atomic64_t written_valid_blocks;	/* # of valid blocks in main area */
 	char *sit_bitmap;		/* SIT bitmap pointer */
-#ifdef CONFIG_F3FS_CHECK_FS
-	char *sit_bitmap_mir;		/* SIT bitmap mirror */
-
-	/* bitmap of segments to be ignored by GC in case of errors */
-	unsigned long *invalid_segmap;
-#endif
 	unsigned int bitmap_size;	/* SIT bitmap size */
 
 	unsigned long *tmp_map;			/* bitmap for temporal use */
 	unsigned long *dirty_sentries_bitmap;	/* bitmap for dirty sentries */
-	unsigned int dirty_sentries;		/* # of dirty sentries */
+	atomic_t dirty_sentries;		/* # of dirty sentries */
 	unsigned int sents_per_block;		/* # of SIT entries per block */
-	struct rw_semaphore sentry_lock;	/* to protect SIT cache */
 	struct seg_entry *sentries;		/* SIT segment-level cache */
+
+  struct rw_semaphore sentry_only_lock;  // sentries
+//  struct rw_semaphore mtime_lock;        // *_mtime
+  struct rw_semaphore dirty_sentry_lock; // dirty_sengties_bitmap, dirty_sentries
+  struct rw_semaphore tmp_map_lock;      // tmp_map
+  struct rw_semaphore blk_info_lock;     // sit_base_addr, sit_blocks, written_valid_blocks
+  struct rw_semaphore sit_bitmap_lock;   // sit_bitmap
+  struct rw_semaphore last_victim_lock;  // last_victim
+
 	struct sec_entry *sec_entries;		/* SIT section-level cache */
 
 	/* for cost-benefit algorithm in cleaning procedure */
 	unsigned long long elapsed_time;	/* elapsed time after mount */
 	unsigned long long mounted_time;	/* mount time */
 	unsigned long long min_mtime;		/* min. modification time */
-	unsigned long long max_mtime;		/* max. modification time */
+	//unsigned long long max_mtime;		/* max. modification time */
+	atomic64_t max_mtime;
 	unsigned long long dirty_min_mtime;	/* rerange candidates in GC_AT */
 	unsigned long long dirty_max_mtime;	/* rerange candidates in GC_AT */
 
@@ -289,7 +293,7 @@ struct dirty_seglist_info {
 	unsigned long *dirty_segmap[NR_DIRTY_TYPE];
 	unsigned long *dirty_secmap;
 	struct mutex seglist_lock;		/* lock for segment bitmaps */
-	int nr_dirty[NR_DIRTY_TYPE];		/* # of dirty segments */
+	atomic_t nr_dirty[NR_DIRTY_TYPE];		/* # of dirty segments */
 	unsigned long *victim_secmap;		/* background GC victims */
 	unsigned long *pinned_secmap;		/* pinned victims from foreground GC */
 	unsigned int pinned_secmap_cnt;		/* count of victims which has pinned data */
@@ -384,6 +388,7 @@ static inline struct sec_entry *get_sec_entry(struct f3fs_sb_info *sbi,
 static inline unsigned int get_valid_blocks(struct f3fs_sb_info *sbi,
 				unsigned int segno, bool use_section)
 {
+  // sentry_only (read)
 	/*
 	 * In order to get # of valid blocks in a section instantly from many
 	 * segments, f3fs manages two counting structures separately.
@@ -397,6 +402,7 @@ static inline unsigned int get_valid_blocks(struct f3fs_sb_info *sbi,
 static inline unsigned int get_ckpt_valid_blocks(struct f3fs_sb_info *sbi,
 				unsigned int segno, bool use_section)
 {
+  // sentry_only (read)
 	if (use_section && __is_large_section(sbi)) {
 		unsigned int start_segno = START_SEGNO(segno);
 		unsigned int blocks = 0;
@@ -429,6 +435,7 @@ static inline void seg_info_from_raw_sit(struct seg_entry *se,
 static inline void __seg_info_to_raw_sit(struct seg_entry *se,
 					struct f3fs_sit_entry *rs)
 {
+  // sentry_only(read)
 	unsigned short raw_vblocks = (se->type << SIT_VBLOCKS_SHIFT) |
 					se->valid_blocks;
 	rs->vblocks = cpu_to_le16(raw_vblocks);
@@ -439,6 +446,7 @@ static inline void __seg_info_to_raw_sit(struct seg_entry *se,
 static inline void seg_info_to_sit_page(struct f3fs_sb_info *sbi,
 				struct page *page, unsigned int start)
 {
+  // sentry_only (read)
 	struct f3fs_sit_block *raw_sit;
 	struct seg_entry *se;
 	struct f3fs_sit_entry *rs;
@@ -453,6 +461,26 @@ static inline void seg_info_to_sit_page(struct f3fs_sb_info *sbi,
 		se = get_seg_entry(sbi, start + i);
 		__seg_info_to_raw_sit(se, rs);
 	}
+}
+
+static inline unsigned long long update_max_mtime_atomic(struct f3fs_sb_info* sbi,
+  unsigned long long new_time) {
+
+  unsigned long long max_mtime = atomic64_read(&SIT_I(sbi)->max_mtime);
+  while (true) {
+    if (new_time > max_mtime) {
+      s64 old = atomic64_cmpxchg(&SIT_I(sbi)->max_mtime, max_mtime, new_time);
+      if (old >= new_time) {
+        break;
+      } else {
+        max_mtime = old;
+      }
+    }
+    else {
+      break;
+    }
+  }
+  return max_mtime;
 }
 
 static inline void seg_info_to_raw_sit(struct seg_entry *se,
@@ -563,7 +591,7 @@ static inline void get_sit_bitmap(struct f3fs_sb_info *sbi,
 
 static inline block_t written_block_count(struct f3fs_sb_info *sbi)
 {
-	return SIT_I(sbi)->written_valid_blocks;
+	return 0;//atomic64_read(&SIT_I(sbi)->written_valid_blocks);
 }
 
 static inline unsigned int free_segments(struct f3fs_sb_info *sbi)
@@ -584,17 +612,18 @@ static inline unsigned int free_sections(struct f3fs_sb_info *sbi)
 
 static inline unsigned int prefree_segments(struct f3fs_sb_info *sbi)
 {
-	return DIRTY_I(sbi)->nr_dirty[PRE];
+	return atomic_read(&DIRTY_I(sbi)->nr_dirty[PRE]);
 }
 
 static inline unsigned int dirty_segments(struct f3fs_sb_info *sbi)
 {
-	return DIRTY_I(sbi)->nr_dirty[DIRTY_HOT_DATA] +
-		DIRTY_I(sbi)->nr_dirty[DIRTY_WARM_DATA] +
-		DIRTY_I(sbi)->nr_dirty[DIRTY_COLD_DATA] +
-		DIRTY_I(sbi)->nr_dirty[DIRTY_HOT_NODE] +
-		DIRTY_I(sbi)->nr_dirty[DIRTY_WARM_NODE] +
-		DIRTY_I(sbi)->nr_dirty[DIRTY_COLD_NODE];
+  struct dirty_seglist_info* dirty_i = DIRTY_I(sbi);
+	return atomic_read(&dirty_i->nr_dirty[DIRTY_HOT_DATA]) +
+		atomic_read(&dirty_i->nr_dirty[DIRTY_WARM_DATA]) +
+		atomic_read(&dirty_i->nr_dirty[DIRTY_COLD_DATA]) +
+		atomic_read(&dirty_i->nr_dirty[DIRTY_HOT_NODE]) +
+		atomic_read(&dirty_i->nr_dirty[DIRTY_WARM_NODE]) +
+		atomic_read(&dirty_i->nr_dirty[DIRTY_COLD_NODE]);
 }
 
 static inline unsigned int total_written_blocks(struct f3fs_sb_info* sbi)
@@ -665,7 +694,7 @@ static inline bool has_not_enough_free_secs(struct f3fs_sb_info *sbi,
 		return false;
 
 	free = free_sections(sbi) + freed;
-	need_lower = node_secs + dent_secs + reserved_sections(sbi) + needed + 40;
+	need_lower = node_secs + dent_secs + reserved_sections(sbi) + needed;
 	need_upper = need_lower + (node_blocks ? 1 : 0) + (dent_blocks ? 1 : 0);
 
 	if (free > need_upper)
@@ -818,6 +847,7 @@ static inline int check_block_count(struct f3fs_sb_info *sbi,
 static inline pgoff_t current_sit_addr(struct f3fs_sb_info *sbi,
 						unsigned int start)
 {
+  // sit_bitmap
 	struct sit_info *sit_i = SIT_I(sbi);
 	unsigned int offset = SIT_BLOCK_OFFSET(start);
 	block_t blk_addr = sit_i->sit_base_addr + offset;
@@ -840,6 +870,7 @@ static inline pgoff_t current_sit_addr(struct f3fs_sb_info *sbi,
 static inline pgoff_t next_sit_addr(struct f3fs_sb_info *sbi,
 						pgoff_t block_addr)
 {
+  // sit_bitmap (read)
 	struct sit_info *sit_i = SIT_I(sbi);
 	block_addr -= sit_i->sit_base_addr;
 	if (block_addr < sit_i->sit_blocks)
@@ -852,6 +883,7 @@ static inline pgoff_t next_sit_addr(struct f3fs_sb_info *sbi,
 
 static inline void set_to_next_sit(struct sit_info *sit_i, unsigned int start)
 {
+  // sit_bitmap
 	unsigned int block_off = SIT_BLOCK_OFFSET(start);
 
 	f3fs_change_bit(block_off, sit_i->sit_bitmap);
