@@ -205,7 +205,7 @@ struct seg_entry {
 	unsigned long ckpt_valid_map[SIT_VBLOCK_MAP_SIZE/sizeof(unsigned long)];	/* validity bitmap of blocks last cp */
 	unsigned char discard_map[SIT_VBLOCK_MAP_SIZE];
 	unsigned long long mtime;	/* modification time of the segment */
-	struct rw_semaphore cur_valmap_lock;	/* to protect SIT cache */
+	struct rw_semaphore* cur_valmap_lock;	/* to protect SIT cache */
 };
 
 struct sec_entry {
