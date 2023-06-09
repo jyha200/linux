@@ -811,8 +811,10 @@ static void locate_dirty_segment(struct f3fs_sb_info *sbi, unsigned int segno)
 		ckpt_valid_blocks == usable_blocks)) {
 		__locate_dirty_segment(sbi, segno, PRE);
 		__remove_dirty_segment(sbi, segno, DIRTY);
-	} else if (valid_blocks < usable_blocks) {
-		__locate_dirty_segment(sbi, segno, DIRTY);
+  } else if (valid_blocks < usable_blocks) {
+    if (!test_bit(segno, dirty_i->dirty_segmap[PRE])) {
+      __locate_dirty_segment(sbi, segno, DIRTY);
+    }
 	} else {
 		/* Recovery routine with SSR needs this */
 		__remove_dirty_segment(sbi, segno, DIRTY);
@@ -3351,14 +3353,14 @@ void f3fs_allocate_data_block(struct f3fs_sb_info *sbi, struct page *page,
 						AT_SSR, se->mtime);
 		else
 			sit_i->s_ops->allocate_segment(sbi, type, false);
+	  locate_dirty_segment(sbi, GET_SEGNO(sbi, *new_blkaddr));
 	}
 	/*
 	 * segment dirty status should be updated after segment allocation,
 	 * so we just need to update status only one time after previous
 	 * segment being closed.
 	 */
-	locate_dirty_segment(sbi, GET_SEGNO(sbi, old_blkaddr));
-	locate_dirty_segment(sbi, GET_SEGNO(sbi, *new_blkaddr));
+  locate_dirty_segment(sbi, GET_SEGNO(sbi, old_blkaddr));
 
 	up_write(&sit_i->last_victim_lock);
 	up_write(&sit_i->blk_info_lock);
