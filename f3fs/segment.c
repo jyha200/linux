@@ -2193,9 +2193,9 @@ static void update_sit_entry(struct f3fs_sb_info *sbi, block_t blkaddr, int del)
 
 	/* Update valid block bitmap */
 	if (del > 0) {
-    down_write(&se->cur_valmap_lock);
+    down_write(se->cur_valmap_lock);
 		exist = f3fs_test_and_set_bit(offset, se->cur_valid_map);
-    up_write(&se->cur_valmap_lock);
+    up_write(se->cur_valmap_lock);
 #ifdef CONFIG_F3FS_CHECK_FS
 		mir_exist = f3fs_test_and_set_bit(offset,
 						se->cur_valid_map_mir);
@@ -2226,9 +2226,9 @@ static void update_sit_entry(struct f3fs_sb_info *sbi, block_t blkaddr, int del)
 				se->ckpt_valid_blocks++;
 		}
 	} else {
-    down_write(&se->cur_valmap_lock);
+    down_write(se->cur_valmap_lock);
 		exist = f3fs_test_and_clear_bit(offset, se->cur_valid_map);
-    up_write(&se->cur_valmap_lock);
+    up_write(se->cur_valmap_lock);
 #ifdef CONFIG_F3FS_CHECK_FS
 		mir_exist = f3fs_test_and_clear_bit(offset,
 						se->cur_valid_map_mir);
@@ -4284,7 +4284,12 @@ static int build_sit_info(struct f3fs_sb_info *sbi)
 		return -ENOMEM;
 
 	for (start = 0; start < MAIN_SEGS(sbi); start++) {
-	  init_rwsem(&sit_i->sentries[start].cur_valmap_lock);
+    sit_i->sentries[start].cur_valmap_lock =
+      f3fs_kzalloc(sbi, sizeof(struct rw_semaphore), GFP_KERNEL);
+    if (!sit_i->sentries[start].cur_valmap_lock) {
+      return -ENOMEM;
+    }
+	  init_rwsem(sit_i->sentries[start].cur_valmap_lock);
   }
 
 	sit_i->tmp_map = f3fs_kzalloc(sbi, SIT_VBLOCK_MAP_SIZE, GFP_KERNEL);
@@ -5264,6 +5269,12 @@ static void destroy_sit_info(struct f3fs_sb_info *sbi)
 		return;
 
 	kfree(sit_i->tmp_map);
+
+  for (int i = 0 ; i < MAIN_SEGS(sbi) ; i++) {
+    if (sit_i->sentries[i].cur_valmap_lock) {
+      kvfree(sit_i->sentries[i].cur_valmap_lock);
+    }
+  }
 
 	kvfree(sit_i->sentries);
 	kvfree(sit_i->sec_entries);
