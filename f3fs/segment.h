@@ -205,7 +205,7 @@ struct seg_entry {
 	 * # of valid blocks and the validity bitmap stored in the last
 	 * checkpoint pack. This information is used by the SSR mode.
 	 */
-	unsigned char *ckpt_valid_map;	/* validity bitmap of blocks last cp */
+	unsigned long *ckpt_valid_map;	/* validity bitmap of blocks last cp */
 	unsigned char *discard_map;
 	unsigned long long mtime;	/* modification time of the segment */
 	struct rw_semaphore cur_valmap_lock;	/* to protect SIT cache */
