@@ -2223,7 +2223,7 @@ static void update_sit_entry(struct f3fs_sb_info *sbi, block_t blkaddr, int del)
 		 * or newly invalidated.
 		 */
 		if (!is_sbi_flag_set(sbi, SBI_CP_DISABLED)) {
-			if (!f3fs_test_and_set_bit(offset, se->ckpt_valid_map))
+			if (!test_and_set_bit(offset, se->ckpt_valid_map))
 				se->ckpt_valid_blocks++;
 		}
 	} else {
@@ -2252,7 +2252,7 @@ static void update_sit_entry(struct f3fs_sb_info *sbi, block_t blkaddr, int del)
 			 * before, we must track that to know how much space we
 			 * really have.
 			 */
-			if (f3fs_test_bit(offset, se->ckpt_valid_map)) {
+			if (test_bit(offset, se->ckpt_valid_map)) {
 				spin_lock(&sbi->stat_lock);
 				sbi->unusable_block_count++;
 				spin_unlock(&sbi->stat_lock);
@@ -2263,7 +2263,7 @@ static void update_sit_entry(struct f3fs_sb_info *sbi, block_t blkaddr, int del)
 			f3fs_test_and_clear_bit(offset, se->discard_map))
 			sbi->discard_blks++;
 	}
-	if (!f3fs_test_bit(offset, se->ckpt_valid_map))
+	if (!test_bit(offset, se->ckpt_valid_map))
 		se->ckpt_valid_blocks += del;
 
 	__mark_sit_entry_dirty(sbi, segno);
@@ -2307,7 +2307,6 @@ void f3fs_invalidate_blocks(struct f3fs_sb_info *sbi, block_t addr)
 
 bool f3fs_is_checkpointed_data(struct f3fs_sb_info *sbi, block_t blkaddr)
 {
-	struct sit_info *sit_i = SIT_I(sbi);
 	unsigned int segno, offset;
 	struct seg_entry *se;
 	bool is_cp = false;
@@ -2315,16 +2314,12 @@ bool f3fs_is_checkpointed_data(struct f3fs_sb_info *sbi, block_t blkaddr)
 	if (!__is_valid_data_blkaddr(blkaddr))
 		return true;
 
-	down_read(&sit_i->sentry_only_lock);
-
 	segno = GET_SEGNO(sbi, blkaddr);
 	se = get_seg_entry(sbi, segno);
 	offset = GET_BLKOFF_FROM_SEG0(sbi, blkaddr);
 
-	if (f3fs_test_bit(offset, se->ckpt_valid_map))
+	if (test_and_set_bit(offset, se->ckpt_valid_map))
 		is_cp = true;
-
-	up_read(&sit_i->sentry_only_lock);
 
 	return is_cp;
 }
@@ -4305,7 +4300,7 @@ static int build_sit_info(struct f3fs_sb_info *sbi)
 		sit_i->sentries[start].cur_valid_map = bitmap;
 		bitmap += SIT_VBLOCK_MAP_SIZE;
 
-		sit_i->sentries[start].ckpt_valid_map = bitmap;
+		sit_i->sentries[start].ckpt_valid_map = (unsigned long*)bitmap;
 		bitmap += SIT_VBLOCK_MAP_SIZE;
 
 #ifdef CONFIG_F3FS_CHECK_FS
