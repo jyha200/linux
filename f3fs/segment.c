@@ -2291,6 +2291,7 @@ void f3fs_invalidate_blocks(struct f3fs_sb_info *sbi, block_t addr)
 	down_write(&sit_i->mtime_lock);
 	down_write(&sit_i->dirty_sentry_lock);
 	down_write(&sit_i->blk_info_lock);
+  f3fs_bug_on(sbi, true);
 
 	update_segment_mtime(sbi, addr, 0);
 	update_sit_entry(sbi, addr, -1);
@@ -2602,9 +2603,7 @@ static void new_curseg(struct f3fs_sb_info *sbi, int type, bool new_sec)
 		dir = ALLOC_RIGHT;
 
 	segno = __get_next_segno(sbi, type);
-//  printk("%s %d",__func__, __LINE__);
 	get_new_segment(sbi, &segno, new_sec, dir);
-//  printk("%s %d",__func__, __LINE__);
 	curseg->next_segno = segno;
 	reset_curseg(sbi, type, 1);
 	curseg->alloc_type = LFS;
@@ -2740,6 +2739,7 @@ static void __f3fs_init_atgc_curseg(struct f3fs_sb_info *sbi)
 	down_write(&SIT_I(sbi)->dirty_sentry_lock);
 	down_write(&SIT_I(sbi)->tmp_map_lock);
 	down_write(&SIT_I(sbi)->last_victim_lock);
+  f3fs_bug_on(sbi, true);
 
 	get_atssr_segment(sbi, CURSEG_ALL_DATA_ATGC, CURSEG_COLD_DATA, SSR, 0);
 
@@ -2908,6 +2908,7 @@ void f3fs_allocate_segment_for_resize(struct f3fs_sb_info *sbi, int type,
 	down_write(&SIT_I(sbi)->sentry_only_lock);
 	down_write(&SIT_I(sbi)->dirty_sentry_lock);
 	down_write(&SIT_I(sbi)->tmp_map_lock);
+  f3fs_bug_on(sbi, true);
 
 	segno = CURSEG_I(sbi, type)->segno;
 	if (segno < start || segno > end)
@@ -2970,6 +2971,7 @@ void f3fs_allocate_new_section(struct f3fs_sb_info *sbi, int type, bool force)
 	down_write(&SIT_I(sbi)->dirty_sentry_lock);
 	down_write(&SIT_I(sbi)->tmp_map_lock);
 	down_write(&SIT_I(sbi)->last_victim_lock);
+  f3fs_bug_on(sbi, true);
 
 	__allocate_new_section(sbi, type, force);
 
@@ -2989,6 +2991,7 @@ void f3fs_allocate_new_segments(struct f3fs_sb_info *sbi)
 	down_write(&SIT_I(sbi)->dirty_sentry_lock);
 	down_write(&SIT_I(sbi)->tmp_map_lock);
 	down_write(&SIT_I(sbi)->last_victim_lock);
+  f3fs_bug_on(sbi, true);
 
 	for (i = CURSEG_HOT_DATA; i <= CURSEG_COLD_GC_DATA_END; i++)
 		__allocate_new_segment(sbi, i, false, false);
@@ -3012,6 +3015,7 @@ bool f3fs_exist_trim_candidates(struct f3fs_sb_info *sbi,
 
 	down_read(&SIT_I(sbi)->sentry_only_lock);
 	down_write(&SIT_I(sbi)->tmp_map_lock);
+  f3fs_bug_on(sbi, true);
 	for (; cpc->trim_start <= cpc->trim_end; cpc->trim_start++) {
 		if (add_discard_addrs(sbi, cpc, true)) {
 			has_candidate = true;
@@ -3602,6 +3606,7 @@ void f3fs_do_replace_block(struct f3fs_sb_info *sbi, struct f3fs_summary *sum,
 	down_write(&sit_i->dirty_sentry_lock);
 	down_write(&sit_i->tmp_map_lock);
 	down_write(&sit_i->blk_info_lock);
+  f3fs_bug_on(sbi, true);
 
 	old_cursegno = curseg->segno;
 	old_blkoff = curseg->next_blkoff;
