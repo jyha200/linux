@@ -2194,9 +2194,9 @@ static void update_sit_entry(struct f3fs_sb_info *sbi, block_t blkaddr, int del)
 
 	/* Update valid block bitmap */
 	if (del > 0) {
-    down_write(&se->cur_valmap_lock);
+    down_write(se->cur_valmap_lock);
 		exist = f3fs_test_and_set_bit(offset, se->cur_valid_map);
-    up_write(&se->cur_valmap_lock);
+    up_write(se->cur_valmap_lock);
 #ifdef CONFIG_F3FS_CHECK_FS
 		mir_exist = f3fs_test_and_set_bit(offset,
 						se->cur_valid_map_mir);
@@ -2227,9 +2227,9 @@ static void update_sit_entry(struct f3fs_sb_info *sbi, block_t blkaddr, int del)
 				se->ckpt_valid_blocks++;
 		}
 	} else {
-    down_write(&se->cur_valmap_lock);
+    down_write(se->cur_valmap_lock);
 		exist = f3fs_test_and_clear_bit(offset, se->cur_valid_map);
-    up_write(&se->cur_valmap_lock);
+    up_write(se->cur_valmap_lock);
 #ifdef CONFIG_F3FS_CHECK_FS
 		mir_exist = f3fs_test_and_clear_bit(offset,
 						se->cur_valid_map_mir);
@@ -2292,6 +2292,7 @@ void f3fs_invalidate_blocks(struct f3fs_sb_info *sbi, block_t addr)
 	down_write(&sit_i->mtime_lock);
 	down_write(&sit_i->dirty_sentry_lock);
 	down_write(&sit_i->blk_info_lock);
+  f3fs_bug_on(sbi, true);
 
 	update_segment_mtime(sbi, addr, 0);
 	update_sit_entry(sbi, addr, -1);
@@ -2603,9 +2604,7 @@ static void new_curseg(struct f3fs_sb_info *sbi, int type, bool new_sec)
 		dir = ALLOC_RIGHT;
 
 	segno = __get_next_segno(sbi, type);
-//  printk("%s %d",__func__, __LINE__);
 	get_new_segment(sbi, &segno, new_sec, dir);
-//  printk("%s %d",__func__, __LINE__);
 	curseg->next_segno = segno;
 	reset_curseg(sbi, type, 1);
 	curseg->alloc_type = LFS;
@@ -2741,6 +2740,7 @@ static void __f3fs_init_atgc_curseg(struct f3fs_sb_info *sbi)
 	down_write(&SIT_I(sbi)->dirty_sentry_lock);
 	down_write(&SIT_I(sbi)->tmp_map_lock);
 	down_write(&SIT_I(sbi)->last_victim_lock);
+  f3fs_bug_on(sbi, true);
 
 	get_atssr_segment(sbi, CURSEG_ALL_DATA_ATGC, CURSEG_COLD_DATA, SSR, 0);
 
@@ -2909,6 +2909,7 @@ void f3fs_allocate_segment_for_resize(struct f3fs_sb_info *sbi, int type,
 	down_write(&SIT_I(sbi)->sentry_only_lock);
 	down_write(&SIT_I(sbi)->dirty_sentry_lock);
 	down_write(&SIT_I(sbi)->tmp_map_lock);
+  f3fs_bug_on(sbi, true);
 
 	segno = CURSEG_I(sbi, type)->segno;
 	if (segno < start || segno > end)
@@ -2971,6 +2972,7 @@ void f3fs_allocate_new_section(struct f3fs_sb_info *sbi, int type, bool force)
 	down_write(&SIT_I(sbi)->dirty_sentry_lock);
 	down_write(&SIT_I(sbi)->tmp_map_lock);
 	down_write(&SIT_I(sbi)->last_victim_lock);
+  f3fs_bug_on(sbi, true);
 
 	__allocate_new_section(sbi, type, force);
 
@@ -2990,6 +2992,7 @@ void f3fs_allocate_new_segments(struct f3fs_sb_info *sbi)
 	down_write(&SIT_I(sbi)->dirty_sentry_lock);
 	down_write(&SIT_I(sbi)->tmp_map_lock);
 	down_write(&SIT_I(sbi)->last_victim_lock);
+  f3fs_bug_on(sbi, true);
 
 	for (i = CURSEG_HOT_DATA; i <= CURSEG_COLD_GC_DATA_END; i++)
 		__allocate_new_segment(sbi, i, false, false);
@@ -3013,6 +3016,7 @@ bool f3fs_exist_trim_candidates(struct f3fs_sb_info *sbi,
 
 	down_read(&SIT_I(sbi)->sentry_only_lock);
 	down_write(&SIT_I(sbi)->tmp_map_lock);
+  f3fs_bug_on(sbi, true);
 	for (; cpc->trim_start <= cpc->trim_end; cpc->trim_start++) {
 		if (add_discard_addrs(sbi, cpc, true)) {
 			has_candidate = true;
@@ -3603,6 +3607,7 @@ void f3fs_do_replace_block(struct f3fs_sb_info *sbi, struct f3fs_summary *sum,
 	down_write(&sit_i->dirty_sentry_lock);
 	down_write(&sit_i->tmp_map_lock);
 	down_write(&sit_i->blk_info_lock);
+  f3fs_bug_on(sbi, true);
 
 	old_cursegno = curseg->segno;
 	old_blkoff = curseg->next_blkoff;
@@ -4285,7 +4290,12 @@ static int build_sit_info(struct f3fs_sb_info *sbi)
 		return -ENOMEM;
 
 	for (start = 0; start < MAIN_SEGS(sbi); start++) {
-	  init_rwsem(&sit_i->sentries[start].cur_valmap_lock);
+    sit_i->sentries[start].cur_valmap_lock =
+      f3fs_kzalloc(sbi, sizeof(struct rw_semaphore), GFP_KERNEL);
+    if (!sit_i->sentries[start].cur_valmap_lock) {
+      return -ENOMEM;
+    }
+	  init_rwsem(sit_i->sentries[start].cur_valmap_lock);
   }
 
 	sit_i->tmp_map = f3fs_kzalloc(sbi, SIT_VBLOCK_MAP_SIZE, GFP_KERNEL);
@@ -5265,6 +5275,12 @@ static void destroy_sit_info(struct f3fs_sb_info *sbi)
 		return;
 
 	kfree(sit_i->tmp_map);
+
+  for (int i = 0 ; i < MAIN_SEGS(sbi) ; i++) {
+    if (sit_i->sentries[i].cur_valmap_lock) {
+      kvfree(sit_i->sentries[i].cur_valmap_lock);
+    }
+  }
 
 	kvfree(sit_i->sentries);
 	kvfree(sit_i->sec_entries);
