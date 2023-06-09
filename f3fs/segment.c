@@ -4266,9 +4266,8 @@ static int build_sit_info(struct f3fs_sb_info *sbi)
 	struct f3fs_super_block *raw_super = F3FS_RAW_SUPER(sbi);
 	struct sit_info *sit_i;
 	unsigned int sit_segs, start;
-	char *src_bitmap, *bitmap;
-	unsigned int bitmap_size, main_bitmap_size, sit_bitmap_size;
-	unsigned int discard_map = f3fs_block_unit_discard(sbi) ? 1 : 0;
+	char *src_bitmap;
+	unsigned int main_bitmap_size, sit_bitmap_size;
 
 	/* allocate memory for SIT information */
 	sit_i = f3fs_kzalloc(sbi, sizeof(struct sit_info), GFP_KERNEL);
@@ -4290,35 +4289,9 @@ static int build_sit_info(struct f3fs_sb_info *sbi)
 	if (!sit_i->dirty_sentries_bitmap)
 		return -ENOMEM;
 
-#ifdef CONFIG_F3FS_CHECK_FS
-	bitmap_size = MAIN_SEGS(sbi) * SIT_VBLOCK_MAP_SIZE * (3 + discard_map);
-#else
-	bitmap_size = MAIN_SEGS(sbi) * SIT_VBLOCK_MAP_SIZE * (2 + discard_map);
-#endif
-	sit_i->bitmap = f3fs_kvzalloc(sbi, bitmap_size, GFP_KERNEL);
-	if (!sit_i->bitmap)
-		return -ENOMEM;
-
-	bitmap = sit_i->bitmap;
-
 	for (start = 0; start < MAIN_SEGS(sbi); start++) {
-		sit_i->sentries[start].cur_valid_map = bitmap;
-		bitmap += SIT_VBLOCK_MAP_SIZE;
-
-		sit_i->sentries[start].ckpt_valid_map = (unsigned long*)bitmap;
-		bitmap += SIT_VBLOCK_MAP_SIZE;
-
-#ifdef CONFIG_F3FS_CHECK_FS
-		sit_i->sentries[start].cur_valid_map_mir = bitmap;
-		bitmap += SIT_VBLOCK_MAP_SIZE;
-#endif
-
-		if (discard_map) {
-			sit_i->sentries[start].discard_map = bitmap;
-			bitmap += SIT_VBLOCK_MAP_SIZE;
-		}
 	  init_rwsem(&sit_i->sentries[start].cur_valmap_lock);
-	}
+  }
 
 	sit_i->tmp_map = f3fs_kzalloc(sbi, SIT_VBLOCK_MAP_SIZE, GFP_KERNEL);
 	if (!sit_i->tmp_map)
@@ -4343,18 +4316,6 @@ static int build_sit_info(struct f3fs_sb_info *sbi)
 	sit_i->sit_bitmap = kmemdup(src_bitmap, sit_bitmap_size, GFP_KERNEL);
 	if (!sit_i->sit_bitmap)
 		return -ENOMEM;
-
-#ifdef CONFIG_F3FS_CHECK_FS
-	sit_i->sit_bitmap_mir = kmemdup(src_bitmap,
-					sit_bitmap_size, GFP_KERNEL);
-	if (!sit_i->sit_bitmap_mir)
-		return -ENOMEM;
-
-	sit_i->invalid_segmap = f3fs_kvzalloc(sbi,
-					main_bitmap_size, GFP_KERNEL);
-	if (!sit_i->invalid_segmap)
-		return -ENOMEM;
-#endif
 
 	/* init SIT information */
 	sit_i->s_ops = &default_salloc_ops;
@@ -5308,8 +5269,6 @@ static void destroy_sit_info(struct f3fs_sb_info *sbi)
 	if (!sit_i)
 		return;
 
-	if (sit_i->sentries)
-		kvfree(sit_i->bitmap);
 	kfree(sit_i->tmp_map);
 
 	kvfree(sit_i->sentries);
