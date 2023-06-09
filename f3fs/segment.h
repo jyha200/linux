@@ -197,16 +197,13 @@ struct seg_entry {
 	unsigned int valid_blocks:10;	/* # of valid blocks */
 	unsigned int ckpt_valid_blocks:10;	/* # of valid blocks last cp */
 	unsigned int padding:6;		/* padding */
-	unsigned char *cur_valid_map;	/* validity bitmap of blocks */
-#ifdef CONFIG_F3FS_CHECK_FS
-	unsigned char *cur_valid_map_mir;	/* mirror of current valid bitmap */
-#endif
+	unsigned char cur_valid_map[SIT_VBLOCK_MAP_SIZE];	/* validity bitmap of blocks */
 	/*
 	 * # of valid blocks and the validity bitmap stored in the last
 	 * checkpoint pack. This information is used by the SSR mode.
 	 */
-	unsigned long *ckpt_valid_map;	/* validity bitmap of blocks last cp */
-	unsigned char *discard_map;
+	unsigned long ckpt_valid_map[SIT_VBLOCK_MAP_SIZE/sizeof(unsigned long)];	/* validity bitmap of blocks last cp */
+	unsigned char discard_map[SIT_VBLOCK_MAP_SIZE];
 	unsigned long long mtime;	/* modification time of the segment */
 	struct rw_semaphore cur_valmap_lock;	/* to protect SIT cache */
 };
@@ -233,14 +230,7 @@ struct sit_info {
 	block_t sit_base_addr;		/* start block address of SIT area */
 	block_t sit_blocks;		/* # of blocks used by SIT area */
 	block_t written_valid_blocks;	/* # of valid blocks in main area */
-	char *bitmap;			/* all bitmaps pointer */
 	char *sit_bitmap;		/* SIT bitmap pointer */
-#ifdef CONFIG_F3FS_CHECK_FS
-	char *sit_bitmap_mir;		/* SIT bitmap mirror */
-
-	/* bitmap of segments to be ignored by GC in case of errors */
-	unsigned long *invalid_segmap;
-#endif
 	unsigned int bitmap_size;	/* SIT bitmap size */
 
 	unsigned long *tmp_map;			/* bitmap for temporal use */
