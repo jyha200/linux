@@ -1364,7 +1364,7 @@ static int move_data_block(struct inode *inode, block_t bidx,
 	set_summary(&sum, dn.nid, dn.ofs_in_node, ni.version);
 
 	/* allocate block address */
-	f3fs_allocate_data_block(fio.sbi, NULL, fio.old_blkaddr, &newaddr,
+	f3fs_allocate_data_block2(fio.sbi, NULL, fio.old_blkaddr, &newaddr,
 				&sum, type, NULL);
 
 	fio.encrypted_page = f3fs_pagecache_get_page(META_MAPPING(fio.sbi),
