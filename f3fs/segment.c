@@ -868,6 +868,38 @@ static void locate_dirty_segment(struct f3fs_sb_info *sbi, unsigned int segno)
 	mutex_unlock(&dirty_i->seglist_lock);
 }
 
+static void locate_dirty_segment2(struct f3fs_sb_info *sbi,
+  unsigned int segno, block_t valid_blocks, enum dirty_type seg_dirty_type)
+{
+  // sentry_only (read)
+	struct dirty_seglist_info *dirty_i = DIRTY_I(sbi);
+	unsigned int usable_blocks;
+	struct seg_entry *sentry;
+
+	if (segno == NULL_SEGNO || IS_CURSEG(sbi, segno))
+		return;
+
+  f3fs_bug_on(sbi, is_sbi_flag_set(sbi, SBI_CP_DISABLED));
+
+	sentry = get_seg_entry(sbi, segno);
+	usable_blocks = f3fs_usable_blks_in_seg(sbi, segno);
+	mutex_lock(&dirty_i->seglist_lock);
+
+	if (valid_blocks == 0) {
+		__locate_dirty_segment2(sbi, segno, PRE, seg_dirty_type);
+		__remove_dirty_segment2(sbi, segno, DIRTY, seg_dirty_type, valid_blocks);
+  } else if (valid_blocks < usable_blocks) {
+    if (!test_bit(segno, dirty_i->dirty_segmap[PRE])) {
+      __locate_dirty_segment2(sbi, segno, DIRTY, seg_dirty_type);
+    }
+	} else {
+		/* Recovery routine with SSR needs this */
+		__remove_dirty_segment2(sbi, segno, DIRTY, seg_dirty_type, valid_blocks);
+	}
+
+	mutex_unlock(&dirty_i->seglist_lock);
+}
+
 /* This moves currently empty dirty blocks to prefree. Must hold seglist_lock */
 void f3fs_dirty_to_prefree(struct f3fs_sb_info *sbi)
 {
@@ -880,8 +912,8 @@ void f3fs_dirty_to_prefree(struct f3fs_sb_info *sbi)
 			continue;
 		if (IS_CURSEG(sbi, segno))
 			continue;
-		__locate_dirty_segment(sbi, segno, PRE);
-		__remove_dirty_segment(sbi, segno, DIRTY);
+		__locate_dirty_segment2(sbi, segno, PRE);
+		__remove_dirty_segment2(sbi, segno, DIRTY);
 	}
 	mutex_unlock(&dirty_i->seglist_lock);
 }
@@ -3376,10 +3408,16 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 
 	if (!__has_curseg_space(sbi, curseg)) {
     unsigned int segno = GET_SEGNO(sbi, *new_blkaddr);
-		unsigned short valid_blocks = get_valid_blocks(sbi, segno, false);
+		unsigned short valid_blocks = -1;
+    enum dirty_type seg_dirty_type = NR_DIRTY_TYPE;
     
 		sit_i->s_ops->allocate_segment(sbi, type, false);
-	  locate_dirty_segment(sbi, segno);
+    if (segno != NULL_SEGNO && !IS_CURSEG(sbi, segno)) {
+      valid_blocks = get_valid_blocks(sbi, segno, false);
+      seg_dirty_type = get_seg_entry(sbi, segno)->type;
+    }
+
+	  locate_dirty_segment2(sbi, segno, valid_blocks, seg_dirty_type);
 	}
 	/*
 	 * segment dirty status should be updated after segment allocation,
@@ -3388,8 +3426,14 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 	 */
   {
     unsigned int segno = GET_SEGNO(sbi, old_blkaddr);
-    unsigned short valid_blocks = get_valid_blocks(sbi, segno, false);
-    locate_dirty_segment(sbi, segno);
+		unsigned short valid_blocks = -1;
+    enum dirty_type seg_dirty_type = NR_DIRTY_TYPE;
+    if (segno != NULL_SEGNO && !IS_CURSEG(sbi, segno)) {
+      valid_blocks = get_valid_blocks(sbi, segno, false);
+      seg_dirty_type = get_seg_entry(sbi, segno)->type;
+    }
+
+	  locate_dirty_segment2(sbi, segno, valid_blocks, seg_dirty_type);
   }
 
 	up_write(&sit_i->last_victim_lock);
