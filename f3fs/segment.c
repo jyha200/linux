@@ -705,6 +705,29 @@ int f3fs_flush_device_cache(struct f3fs_sb_info *sbi)
 
 	return ret;
 }
+static void __locate_dirty_segment2(struct f3fs_sb_info *sbi, unsigned int segno,
+		enum dirty_type dirty_type, enum dirty_type seg_dirty_type)
+{
+  // sentry_only (read)
+	struct dirty_seglist_info *dirty_i = DIRTY_I(sbi);
+	f3fs_bug_on(sbi, __is_large_section(sbi));
+
+	/* need not be added */
+	if (IS_CURSEG(sbi, segno))
+		return;
+
+	if (!test_and_set_bit(segno, dirty_i->dirty_segmap[dirty_type]))
+		dirty_i->nr_dirty[dirty_type]++;
+
+	if (dirty_type == DIRTY) {
+		if (unlikely(seg_dirty_type >= DIRTY)) {
+			f3fs_bug_on(sbi, 1);
+			return;
+		}
+		if (!test_and_set_bit(segno, dirty_i->dirty_segmap[seg_dirty_type]))
+			dirty_i->nr_dirty[seg_dirty_type]++;
+	}
+}
 
 static void __locate_dirty_segment(struct f3fs_sb_info *sbi, unsigned int segno,
 		enum dirty_type dirty_type)
@@ -740,6 +763,27 @@ static void __locate_dirty_segment(struct f3fs_sb_info *sbi, unsigned int segno,
 
 			if (!IS_CURSEC(sbi, secno))
 				set_bit(secno, dirty_i->dirty_secmap);
+		}
+	}
+}
+
+static void __remove_dirty_segment2(struct f3fs_sb_info *sbi, unsigned int segno,
+		enum dirty_type dirty_type, enum dirty_type seg_dirty_type, block_t valid_blocks)
+{
+  // sentry_only (read)
+	struct dirty_seglist_info *dirty_i = DIRTY_I(sbi);
+	f3fs_bug_on(sbi, __is_large_section(sbi));
+
+	if (test_and_clear_bit(segno, dirty_i->dirty_segmap[dirty_type]))
+		dirty_i->nr_dirty[dirty_type]--;
+
+	if (dirty_type == DIRTY) {
+		if (test_and_clear_bit(segno, dirty_i->dirty_segmap[seg_dirty_type]))
+			dirty_i->nr_dirty[seg_dirty_type]--;
+
+		if (valid_blocks == 0) {
+			clear_bit(GET_SEC_FROM_SEG(sbi, segno),
+						dirty_i->victim_secmap);
 		}
 	}
 }
@@ -796,10 +840,12 @@ static void locate_dirty_segment(struct f3fs_sb_info *sbi, unsigned int segno)
 	struct dirty_seglist_info *dirty_i = DIRTY_I(sbi);
 	unsigned short valid_blocks, ckpt_valid_blocks;
 	unsigned int usable_blocks;
+	struct seg_entry *sentry;
 
 	if (segno == NULL_SEGNO || IS_CURSEG(sbi, segno))
 		return;
 
+	sentry = get_seg_entry(sbi, segno);
 	usable_blocks = f3fs_usable_blks_in_seg(sbi, segno);
 	mutex_lock(&dirty_i->seglist_lock);
 
@@ -808,15 +854,15 @@ static void locate_dirty_segment(struct f3fs_sb_info *sbi, unsigned int segno)
 
 	if (valid_blocks == 0 && (!is_sbi_flag_set(sbi, SBI_CP_DISABLED) ||
 		ckpt_valid_blocks == usable_blocks)) {
-		__locate_dirty_segment(sbi, segno, PRE);
-		__remove_dirty_segment(sbi, segno, DIRTY);
+		__locate_dirty_segment2(sbi, segno, PRE, sentry->type);
+		__remove_dirty_segment2(sbi, segno, DIRTY, sentry->type, valid_blocks);
   } else if (valid_blocks < usable_blocks) {
     if (!test_bit(segno, dirty_i->dirty_segmap[PRE])) {
-      __locate_dirty_segment(sbi, segno, DIRTY);
+      __locate_dirty_segment2(sbi, segno, DIRTY, sentry->type);
     }
 	} else {
 		/* Recovery routine with SSR needs this */
-		__remove_dirty_segment(sbi, segno, DIRTY);
+		__remove_dirty_segment2(sbi, segno, DIRTY, sentry->type, valid_blocks);
 	}
 
 	mutex_unlock(&dirty_i->seglist_lock);
@@ -3281,6 +3327,103 @@ static int __get_segment_type(struct f3fs_io_info *fio)
 	return type;
 }
 
+void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
+		block_t old_blkaddr, block_t *new_blkaddr,
+		struct f3fs_summary *sum, int type,
+		struct f3fs_io_info *fio)
+{
+	struct sit_info *sit_i = SIT_I(sbi);
+	struct curseg_info *curseg = CURSEG_I(sbi, type);
+  f3fs_bug_on(sbi, type == CURSEG_ALL_DATA_ATGC);
+
+	f3fs_down_read(&SM_I(sbi)->curseg_lock);
+
+	mutex_lock(&curseg->curseg_mutex);
+	down_write(&sit_i->sentry_only_lock);
+	down_write(&sit_i->mtime_lock);
+	down_write(&sit_i->dirty_sentry_lock);
+	down_write(&sit_i->tmp_map_lock);
+	down_write(&sit_i->blk_info_lock);
+	down_write(&sit_i->last_victim_lock);
+
+	*new_blkaddr = NEXT_FREE_BLKADDR(sbi, curseg);
+
+	f3fs_bug_on(sbi, curseg->next_blkoff >= sbi->blocks_per_seg);
+
+	f3fs_wait_discard_bio(sbi, *new_blkaddr);
+
+	/*
+	 * __add_sum_entry should be resided under the curseg_mutex
+	 * because, this function updates a summary entry in the
+	 * current summary block.
+	 */
+	__add_sum_entry(sbi, type, sum);
+
+	__refresh_next_blkoff(sbi, curseg);
+
+	stat_inc_block_count(sbi, curseg);
+
+	update_segment_mtime(sbi, old_blkaddr, 0);
+	update_segment_mtime(sbi, *new_blkaddr, 0);
+
+	/*
+	 * SIT information should be updated before segment allocation,
+	 * since SSR needs latest valid block information.
+	 */
+	update_sit_entry(sbi, *new_blkaddr, 1);
+	if (GET_SEGNO(sbi, old_blkaddr) != NULL_SEGNO)
+		update_sit_entry(sbi, old_blkaddr, -1);
+
+	if (!__has_curseg_space(sbi, curseg)) {
+    unsigned int segno = GET_SEGNO(sbi, *new_blkaddr);
+		unsigned short valid_blocks = get_valid_blocks(sbi, segno, false);
+    
+		sit_i->s_ops->allocate_segment(sbi, type, false);
+	  locate_dirty_segment(sbi, segno);
+	}
+	/*
+	 * segment dirty status should be updated after segment allocation,
+	 * so we just need to update status only one time after previous
+	 * segment being closed.
+	 */
+  {
+    unsigned int segno = GET_SEGNO(sbi, old_blkaddr);
+    unsigned short valid_blocks = get_valid_blocks(sbi, segno, false);
+    locate_dirty_segment(sbi, segno);
+  }
+
+	up_write(&sit_i->last_victim_lock);
+	up_write(&sit_i->blk_info_lock);
+	up_write(&sit_i->tmp_map_lock);
+	up_write(&sit_i->dirty_sentry_lock);
+	up_write(&sit_i->mtime_lock);
+	up_write(&sit_i->sentry_only_lock);
+
+	if (page && IS_NODESEG(type)) {
+		fill_node_footer_blkaddr(page, NEXT_FREE_BLKADDR(sbi, curseg));
+
+		f3fs_inode_chksum_set(sbi, page);
+	}
+
+	if (fio) {
+		struct f3fs_bio_info *io;
+
+		if (F3FS_IO_ALIGNED(sbi))
+			fio->retry = false;
+
+		INIT_LIST_HEAD(&fio->list);
+		fio->in_list = true;
+		io = sbi->write_io[fio->type] + fio->temp;
+		spin_lock(&io->io_lock);
+		list_add_tail(&fio->list, &io->io_list);
+		spin_unlock(&io->io_lock);
+	}
+
+	mutex_unlock(&curseg->curseg_mutex);
+
+	f3fs_up_read(&SM_I(sbi)->curseg_lock);
+}
+
 void f3fs_allocate_data_block(struct f3fs_sb_info *sbi, struct page *page,
 		block_t old_blkaddr, block_t *new_blkaddr,
 		struct f3fs_summary *sum, int type,
@@ -3424,7 +3567,7 @@ static void do_write_page(struct f3fs_summary *sum, struct f3fs_io_info *fio)
 	if (keep_order)
 		f3fs_down_read(&fio->sbi->io_order_lock);
 reallocate:
-	f3fs_allocate_data_block(fio->sbi, fio->page, fio->old_blkaddr,
+	f3fs_allocate_data_block2(fio->sbi, fio->page, fio->old_blkaddr,
 			&fio->new_blkaddr, sum, type, fio);
 	if (GET_SEGNO(fio->sbi, fio->old_blkaddr) != NULL_SEGNO) {
 		invalidate_mapping_pages(META_MAPPING(fio->sbi),
