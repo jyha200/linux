@@ -2247,7 +2247,7 @@ static void update_segment_mtime(struct f3fs_sb_info *sbi, block_t blkaddr,
 }
 
 static void update_sit_entry2(struct f3fs_sb_info *sbi, block_t blkaddr, int del,
-  unsigned int* valid_blocks, enum dirty_type* dirty_type)
+  unsigned int* valid_blocks, enum dirty_type* dirty_type, unsigned long long old_mtime)
 {
   // sentry_only, dirty_sentry, block_info
 	struct seg_entry *se;
@@ -2257,6 +2257,8 @@ static void update_sit_entry2(struct f3fs_sb_info *sbi, block_t blkaddr, int del
 #ifdef CONFIG_F3FS_CHECK_FS
 	bool mir_exist;
 #endif
+  unsigned long long ctime = get_mtime(sbi, false);
+  unsigned long long mtime = old_mtime ? old_mtime : ctime;
 
 	segno = GET_SEGNO(sbi, blkaddr);
 	f3fs_bug_on(sbi, is_sbi_flag_set(sbi, SBI_CP_DISABLED));
@@ -2266,6 +2268,15 @@ static void update_sit_entry2(struct f3fs_sb_info *sbi, block_t blkaddr, int del
 	se = get_seg_entry(sbi, segno);
 	new_vblocks = se->valid_blocks + del;
 	offset = GET_BLKOFF_FROM_SEG0(sbi, blkaddr);
+
+  if (!se->mtime)
+    se->mtime = mtime;
+  else
+    se->mtime = div_u64(se->mtime * se->valid_blocks + mtime,
+        se->valid_blocks + 1);
+
+  if (ctime > SIT_I(sbi)->max_mtime)
+    SIT_I(sbi)->max_mtime = ctime;
 
 	f3fs_bug_on(sbi, (new_vblocks < 0 ||
 			(new_vblocks > f3fs_usable_blks_in_seg(sbi, segno))));
@@ -3466,16 +3477,13 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 
 	stat_inc_block_count(sbi, curseg);
 
-	update_segment_mtime(sbi, old_blkaddr, 0);
-	update_segment_mtime(sbi, *new_blkaddr, 0);
-
 	/*
 	 * SIT information should be updated before segment allocation,
 	 * since SSR needs latest valid block information.
 	 */
-	update_sit_entry2(sbi, *new_blkaddr, 1, &new_valid_blocks, &new_seg_dirty_type);
+	update_sit_entry2(sbi, *new_blkaddr, 1, &new_valid_blocks, &new_seg_dirty_type, 0);
 	if (old_segno != NULL_SEGNO)
-		update_sit_entry2(sbi, old_blkaddr, -1, &old_valid_blocks, &old_seg_dirty_type);
+		update_sit_entry2(sbi, old_blkaddr, -1, &old_valid_blocks, &old_seg_dirty_type, 0);
 
 	if (!__has_curseg_space(sbi, curseg)) {
 		sit_i->s_ops->allocate_segment(sbi, type, false);
