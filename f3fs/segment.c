@@ -3254,7 +3254,6 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
       break;
     }
   }
-  down_write(&sit_i->sentry_only_lock);
 
 	f3fs_bug_on(sbi, curseg->next_blkoff >= sbi->blocks_per_seg);
 
@@ -3280,9 +3279,11 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 		update_sit_entry2(sbi, old_blkaddr, -1, &old_valid_blocks, &old_seg_dirty_type, 0);
 
 	if (!__has_curseg_space(sbi, curseg)) {
+    down_write(&sit_i->sentry_only_lock);
 	  down_write(&sit_i->last_victim_lock);
 		sit_i->s_ops->allocate_segment(sbi, type, false);
 	  up_write(&sit_i->last_victim_lock);
+	  up_write(&sit_i->sentry_only_lock);
 	  locate_dirty_segment2(sbi, new_segno, new_valid_blocks, new_seg_dirty_type);
 	}
 	/*
@@ -3300,7 +3301,6 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 	//up_write(&sit_i->blk_info_lock);
 	//up_write(&sit_i->tmp_map_lock);
 	//up_write(&sit_i->mtime_lock);
-	up_write(&sit_i->sentry_only_lock);
 
   if (new_segno != old_segno && old_segno != NULL_SEGNO) {
     up_write(&get_seg_entry(sbi, old_segno)->local_lock);
@@ -4139,9 +4139,9 @@ void f3fs_flush_sit_entries(struct f3fs_sb_info *sbi, struct cp_control *cpc)
 		/* flush dirty sit entries in region of current sit set */
 		for_each_set_bit_from(segno, bitmap, end) {
 			int offset, sit_offset;
-      down_read(&sit_i->sentry_only_lock);
-
 			se = get_seg_entry(sbi, segno);
+      down_read(&se->local_lock);
+
 #ifdef CONFIG_F3FS_CHECK_FS
 			if (memcmp(se->cur_valid_map, se->cur_valid_map_mir,
 						SIT_VBLOCK_MAP_SIZE))
@@ -4175,7 +4175,7 @@ void f3fs_flush_sit_entries(struct f3fs_sb_info *sbi, struct cp_control *cpc)
 			__clear_bit(segno, bitmap);
 			sit_i->dirty_sentries--;
 			ses->entry_cnt--;
-      up_read(&sit_i->sentry_only_lock);
+      up_read(&se->local_lock);
 		}
 
 		if (to_journal)
