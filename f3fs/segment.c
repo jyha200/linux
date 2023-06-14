@@ -4078,7 +4078,6 @@ void f3fs_flush_sit_entries(struct f3fs_sb_info *sbi, struct cp_control *cpc)
 
 	if (!sit_i->dirty_sentries)
 		goto out;
-  down_read(&sit_i->sentry_only_lock);
 
 	/*
 	 * add and account sit entries of dirty bitmap in sit entry
@@ -4122,6 +4121,7 @@ void f3fs_flush_sit_entries(struct f3fs_sb_info *sbi, struct cp_control *cpc)
 		/* flush dirty sit entries in region of current sit set */
 		for_each_set_bit_from(segno, bitmap, end) {
 			int offset, sit_offset;
+      down_read(&sit_i->sentry_only_lock);
 
 			se = get_seg_entry(sbi, segno);
 #ifdef CONFIG_F3FS_CHECK_FS
@@ -4157,6 +4157,7 @@ void f3fs_flush_sit_entries(struct f3fs_sb_info *sbi, struct cp_control *cpc)
 			__clear_bit(segno, bitmap);
 			sit_i->dirty_sentries--;
 			ses->entry_cnt--;
+      up_read(&sit_i->sentry_only_lock);
 		}
 
 		if (to_journal)
@@ -4167,7 +4168,6 @@ void f3fs_flush_sit_entries(struct f3fs_sb_info *sbi, struct cp_control *cpc)
 		f3fs_bug_on(sbi, ses->entry_cnt);
 		release_sit_entry_set(ses);
 	}
-  up_read(&sit_i->sentry_only_lock);
 
 	f3fs_bug_on(sbi, !list_empty(head));
 	f3fs_bug_on(sbi, sit_i->dirty_sentries);
@@ -4228,6 +4228,7 @@ static int build_sit_info(struct f3fs_sb_info *sbi)
       return -ENOMEM;
     }
 	  init_rwsem(get_seg_entry(sbi, start)->cur_valmap_lock);
+	  init_rwsem(&get_seg_entry(sbi, start)->local_lock);
   }
 
 	sit_i->tmp_map = f3fs_kzalloc(sbi, SIT_VBLOCK_MAP_SIZE, GFP_KERNEL);
