@@ -2130,7 +2130,7 @@ static inline unsigned long long get_segment_mtime(struct f3fs_sb_info *sbi,
 static void update_sit_entry2(struct f3fs_sb_info *sbi, block_t blkaddr, int del,
   unsigned int* valid_blocks, enum dirty_type* dirty_type, unsigned long long old_mtime)
 {
-  // sentry_only, dirty_sentry, block_info
+  // sentry_only, dirty_sentry
 	struct seg_entry *se;
 	unsigned int segno, offset;
 	long int new_vblocks;
@@ -2200,7 +2200,7 @@ static void update_sit_entry2(struct f3fs_sb_info *sbi, block_t blkaddr, int del
 	__mark_sit_entry_dirty(sbi, segno);
 
 	/* update total number of valid blocks to be written in ckpt area */
-	SIT_I(sbi)->written_valid_blocks += del;
+	atomic64_add(del, &SIT_I(sbi)->written_valid_blocks);
   *valid_blocks = se->valid_blocks;
   *dirty_type = se->type;
 }
@@ -3242,7 +3242,7 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 	down_write(&sit_i->sentry_only_lock);
 //	down_write(&sit_i->mtime_lock);
 	down_write(&sit_i->tmp_map_lock);
-	down_write(&sit_i->blk_info_lock);
+	//down_write(&sit_i->blk_info_lock);
 	//down_write(&sit_i->dirty_sentry_lock);
 
 	*new_blkaddr = NEXT_FREE_BLKADDR(sbi, curseg);
@@ -3290,7 +3290,7 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
   }
 
 	//up_write(&sit_i->dirty_sentry_lock);
-	up_write(&sit_i->blk_info_lock);
+	//up_write(&sit_i->blk_info_lock);
 	up_write(&sit_i->tmp_map_lock);
 	//up_write(&sit_i->mtime_lock);
 	up_write(&sit_i->sentry_only_lock);
@@ -4260,7 +4260,7 @@ static int build_sit_info(struct f3fs_sb_info *sbi)
 
 	sit_i->sit_base_addr = le32_to_cpu(raw_super->sit_blkaddr);
 	sit_i->sit_blocks = sit_segs << sbi->log_blocks_per_seg;
-	sit_i->written_valid_blocks = 0;
+	atomic64_set(&sit_i->written_valid_blocks, 0);
 	sit_i->bitmap_size = sit_bitmap_size;
 	sit_i->dirty_sentries = 0;
 	sit_i->sents_per_block = SIT_ENTRY_PER_BLOCK;
@@ -4498,8 +4498,7 @@ static void init_free_segmap(struct f3fs_sb_info *sbi)
 		if (!sentry->valid_blocks)
 			__set_free(sbi, start);
 		else
-			SIT_I(sbi)->written_valid_blocks +=
-						sentry->valid_blocks;
+			atomic64_add(sentry->valid_blocks, &SIT_I(sbi)->written_valid_blocks);
 	}
 
 	/* set use the current segments */
