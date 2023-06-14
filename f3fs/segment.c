@@ -2078,15 +2078,29 @@ static void destroy_discard_cmd_control(struct f3fs_sb_info *sbi)
 	SM_I(sbi)->dcc_info = NULL;
 }
 
-static bool __mark_sit_entry_dirty(struct f3fs_sb_info *sbi, unsigned int segno)
+static bool __mark_sit_entry_dirty_without_lock(struct f3fs_sb_info *sbi, unsigned int segno)
 {
-  // dirty_sentry
 	struct sit_info *sit_i = SIT_I(sbi);
 
 	if (!__test_and_set_bit(segno, sit_i->dirty_sentries_bitmap)) {
 		sit_i->dirty_sentries++;
 		return false;
 	}
+
+	return true;
+}
+
+static bool __mark_sit_entry_dirty(struct f3fs_sb_info *sbi, unsigned int segno)
+{
+	struct sit_info *sit_i = SIT_I(sbi);
+
+	down_write(&sit_i->dirty_sentry_lock);
+	if (!__test_and_set_bit(segno, sit_i->dirty_sentries_bitmap)) {
+		sit_i->dirty_sentries++;
+	  up_write(&sit_i->dirty_sentry_lock);
+		return false;
+	}
+	up_write(&sit_i->dirty_sentry_lock);
 
 	return true;
 }
@@ -3227,9 +3241,9 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 	mutex_lock(&curseg->curseg_mutex);
 	down_write(&sit_i->sentry_only_lock);
 //	down_write(&sit_i->mtime_lock);
-	down_write(&sit_i->dirty_sentry_lock);
 	down_write(&sit_i->tmp_map_lock);
 	down_write(&sit_i->blk_info_lock);
+	//down_write(&sit_i->dirty_sentry_lock);
 
 	*new_blkaddr = NEXT_FREE_BLKADDR(sbi, curseg);
   new_segno = GET_SEGNO(sbi, *new_blkaddr);
@@ -3275,9 +3289,9 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
     }
   }
 
+	//up_write(&sit_i->dirty_sentry_lock);
 	up_write(&sit_i->blk_info_lock);
 	up_write(&sit_i->tmp_map_lock);
-	up_write(&sit_i->dirty_sentry_lock);
 	//up_write(&sit_i->mtime_lock);
 	up_write(&sit_i->sentry_only_lock);
 
@@ -4040,7 +4054,7 @@ static void remove_sits_in_journal(struct f3fs_sb_info *sbi)
 		bool dirtied;
 
 		segno = le32_to_cpu(segno_in_journal(journal, i));
-		dirtied = __mark_sit_entry_dirty(sbi, segno);
+		dirtied = __mark_sit_entry_dirty_without_lock(sbi, segno);
 
 		if (!dirtied)
 			add_sit_entry(segno, &SM_I(sbi)->sit_entry_set);
@@ -4065,9 +4079,9 @@ void f3fs_flush_sit_entries(struct f3fs_sb_info *sbi, struct cp_control *cpc)
 	struct seg_entry *se;
 
   down_read(&sit_i->sentry_only_lock);
-	down_write(&sit_i->dirty_sentry_lock);
 	down_write(&sit_i->tmp_map_lock);
 	down_write(&sit_i->sit_bitmap_lock);
+	down_write(&sit_i->dirty_sentry_lock);
 
 	if (!sit_i->dirty_sentries)
 		goto out;
@@ -4172,9 +4186,9 @@ out:
 		cpc->trim_start = trim_start;
 	}
 
+	up_write(&sit_i->dirty_sentry_lock);
 	up_write(&sit_i->sit_bitmap_lock);
 	up_write(&sit_i->tmp_map_lock);
-	up_write(&sit_i->dirty_sentry_lock);
   up_read(&sit_i->sentry_only_lock);
 
 	set_prefree_as_free_segments(sbi);
