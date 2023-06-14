@@ -3233,7 +3233,6 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 	f3fs_down_read(&SM_I(sbi)->curseg_lock);
 
 	mutex_lock(&curseg->curseg_mutex);
-	down_write(&sit_i->sentry_only_lock);
 //	down_write(&sit_i->mtime_lock);
 //	down_write(&sit_i->tmp_map_lock);
 	//down_write(&sit_i->blk_info_lock);
@@ -3242,6 +3241,7 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 	*new_blkaddr = NEXT_FREE_BLKADDR(sbi, curseg);
   new_segno = GET_SEGNO(sbi, *new_blkaddr);
   old_segno = GET_SEGNO(sbi, old_blkaddr);
+	down_write(&sit_i->sentry_only_lock);
 
 	f3fs_bug_on(sbi, curseg->next_blkoff >= sbi->blocks_per_seg);
 
@@ -4072,13 +4072,13 @@ void f3fs_flush_sit_entries(struct f3fs_sb_info *sbi, struct cp_control *cpc)
 	bool to_journal = !is_sbi_flag_set(sbi, SBI_IS_RESIZEFS);
 	struct seg_entry *se;
 
-  down_read(&sit_i->sentry_only_lock);
 	down_write(&sit_i->tmp_map_lock);
 	down_write(&sit_i->sit_bitmap_lock);
 	down_write(&sit_i->dirty_sentry_lock);
 
 	if (!sit_i->dirty_sentries)
 		goto out;
+  down_read(&sit_i->sentry_only_lock);
 
 	/*
 	 * add and account sit entries of dirty bitmap in sit entry
@@ -4167,6 +4167,7 @@ void f3fs_flush_sit_entries(struct f3fs_sb_info *sbi, struct cp_control *cpc)
 		f3fs_bug_on(sbi, ses->entry_cnt);
 		release_sit_entry_set(ses);
 	}
+  up_read(&sit_i->sentry_only_lock);
 
 	f3fs_bug_on(sbi, !list_empty(head));
 	f3fs_bug_on(sbi, sit_i->dirty_sentries);
@@ -4183,7 +4184,6 @@ out:
 	up_write(&sit_i->dirty_sentry_lock);
 	up_write(&sit_i->sit_bitmap_lock);
 	up_write(&sit_i->tmp_map_lock);
-  up_read(&sit_i->sentry_only_lock);
 
 	set_prefree_as_free_segments(sbi);
 }
