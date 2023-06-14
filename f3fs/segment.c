@@ -3241,7 +3241,20 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 	*new_blkaddr = NEXT_FREE_BLKADDR(sbi, curseg);
   new_segno = GET_SEGNO(sbi, *new_blkaddr);
   old_segno = GET_SEGNO(sbi, old_blkaddr);
-	down_write(&sit_i->sentry_only_lock);
+  while (true) {
+    down_write(&get_seg_entry(sbi, new_segno)->local_lock);
+    if (new_segno != old_segno && old_segno != NULL_SEGNO) {
+      bool acquired = down_write_trylock(&get_seg_entry(sbi, old_segno)->local_lock);
+      if (acquired) {
+        break;
+      } else {
+        up_write(&get_seg_entry(sbi, new_segno)->local_lock);
+      }
+    } else {
+      break;
+    }
+  }
+  down_write(&sit_i->sentry_only_lock);
 
 	f3fs_bug_on(sbi, curseg->next_blkoff >= sbi->blocks_per_seg);
 
@@ -3288,6 +3301,11 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 	//up_write(&sit_i->tmp_map_lock);
 	//up_write(&sit_i->mtime_lock);
 	up_write(&sit_i->sentry_only_lock);
+
+  if (new_segno != old_segno && old_segno != NULL_SEGNO) {
+    up_write(&get_seg_entry(sbi, old_segno)->local_lock);
+  }
+  up_write(&get_seg_entry(sbi, new_segno)->local_lock);
 
 	if (page && IS_NODESEG(type)) {
 		fill_node_footer_blkaddr(page, NEXT_FREE_BLKADDR(sbi, curseg));
