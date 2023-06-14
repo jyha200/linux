@@ -2569,7 +2569,7 @@ static int __next_free_blkoff(struct f3fs_sb_info *sbi,
 static void __refresh_next_blkoff(struct f3fs_sb_info *sbi,
 				struct curseg_info *seg)
 {
-  // sentry_only (read), tmp_map
+  // sentry_only (read)
 	if (seg->alloc_type == SSR) {
 		seg->next_blkoff =
 			__next_free_blkoff(sbi, seg->segno,
@@ -2812,7 +2812,7 @@ static int get_ssr_segment(struct f3fs_sb_info *sbi, int type,
 static void allocate_segment_by_default(struct f3fs_sb_info *sbi,
 						int type, bool force)
 {
-  // sentry_only, dirty_sentry, last_victim, tmp_map
+  // sentry_only, dirty_sentry, last_victim
 	struct curseg_info *curseg = CURSEG_I(sbi, type);
 
 	if (force)
@@ -3236,7 +3236,7 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 	mutex_lock(&curseg->curseg_mutex);
 	down_write(&sit_i->sentry_only_lock);
 //	down_write(&sit_i->mtime_lock);
-	down_write(&sit_i->tmp_map_lock);
+//	down_write(&sit_i->tmp_map_lock);
 	//down_write(&sit_i->blk_info_lock);
 	//down_write(&sit_i->dirty_sentry_lock);
 
@@ -3286,7 +3286,7 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 
 	//up_write(&sit_i->dirty_sentry_lock);
 	//up_write(&sit_i->blk_info_lock);
-	up_write(&sit_i->tmp_map_lock);
+	//up_write(&sit_i->tmp_map_lock);
 	//up_write(&sit_i->mtime_lock);
 	up_write(&sit_i->sentry_only_lock);
 
