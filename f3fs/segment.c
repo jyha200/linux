@@ -3279,11 +3279,9 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 		update_sit_entry2(sbi, old_blkaddr, -1, &old_valid_blocks, &old_seg_dirty_type, 0);
 
 	if (!__has_curseg_space(sbi, curseg)) {
-    down_write(&sit_i->sentry_only_lock);
 	  down_write(&sit_i->last_victim_lock);
 		sit_i->s_ops->allocate_segment(sbi, type, false);
 	  up_write(&sit_i->last_victim_lock);
-	  up_write(&sit_i->sentry_only_lock);
 	  locate_dirty_segment2(sbi, new_segno, new_valid_blocks, new_seg_dirty_type);
 	}
 	/*
