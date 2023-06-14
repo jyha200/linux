@@ -3239,7 +3239,6 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 	f3fs_down_read(&SM_I(sbi)->curseg_lock);
 
 	mutex_lock(&curseg->curseg_mutex);
-	down_write(&sit_i->sentry_only_lock);
 //	down_write(&sit_i->mtime_lock);
 //	down_write(&sit_i->tmp_map_lock);
 	//down_write(&sit_i->blk_info_lock);
@@ -3248,6 +3247,19 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 	*new_blkaddr = NEXT_FREE_BLKADDR(sbi, curseg);
   new_segno = GET_SEGNO(sbi, *new_blkaddr);
   old_segno = GET_SEGNO(sbi, old_blkaddr);
+  while (true) {
+    down_write(&get_seg_entry(sbi, new_segno)->local_lock);
+    if (new_segno != old_segno && old_segno != NULL_SEGNO) {
+      bool acquired = down_write_trylock(&get_seg_entry(sbi, old_segno)->local_lock);
+      if (acquired) {
+        break;
+      } else {
+        up_write(&get_seg_entry(sbi, new_segno)->local_lock);
+      }
+    } else {
+      break;
+    }
+  }
 
 	f3fs_bug_on(sbi, curseg->next_blkoff >= sbi->blocks_per_seg);
 
@@ -3293,7 +3305,11 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 	//up_write(&sit_i->blk_info_lock);
 	//up_write(&sit_i->tmp_map_lock);
 	//up_write(&sit_i->mtime_lock);
-	up_write(&sit_i->sentry_only_lock);
+
+  if (new_segno != old_segno && old_segno != NULL_SEGNO) {
+    up_write(&get_seg_entry(sbi, old_segno)->local_lock);
+  }
+  up_write(&get_seg_entry(sbi, new_segno)->local_lock);
 
 	if (page && IS_NODESEG(type)) {
 		fill_node_footer_blkaddr(page, NEXT_FREE_BLKADDR(sbi, curseg));
@@ -4078,7 +4094,6 @@ void f3fs_flush_sit_entries(struct f3fs_sb_info *sbi, struct cp_control *cpc)
 	bool to_journal = !is_sbi_flag_set(sbi, SBI_IS_RESIZEFS);
 	struct seg_entry *se;
 
-  down_read(&sit_i->sentry_only_lock);
 	down_write(&sit_i->tmp_map_lock);
 	down_write(&sit_i->sit_bitmap_lock);
 	down_write(&sit_i->dirty_sentry_lock);
@@ -4128,8 +4143,9 @@ void f3fs_flush_sit_entries(struct f3fs_sb_info *sbi, struct cp_control *cpc)
 		/* flush dirty sit entries in region of current sit set */
 		for_each_set_bit_from(segno, bitmap, end) {
 			int offset, sit_offset;
-
 			se = get_seg_entry(sbi, segno);
+      down_read(&se->local_lock);
+
 #ifdef CONFIG_F3FS_CHECK_FS
 			if (memcmp(se->cur_valid_map, se->cur_valid_map_mir,
 						SIT_VBLOCK_MAP_SIZE))
@@ -4163,6 +4179,7 @@ void f3fs_flush_sit_entries(struct f3fs_sb_info *sbi, struct cp_control *cpc)
 			__clear_bit(segno, bitmap);
 			sit_i->dirty_sentries--;
 			ses->entry_cnt--;
+      up_read(&se->local_lock);
 		}
 
 		if (to_journal)
@@ -4189,7 +4206,6 @@ out:
 	up_write(&sit_i->dirty_sentry_lock);
 	up_write(&sit_i->sit_bitmap_lock);
 	up_write(&sit_i->tmp_map_lock);
-  up_read(&sit_i->sentry_only_lock);
 
 	set_prefree_as_free_segments(sbi);
 }
@@ -4229,6 +4245,7 @@ static int build_sit_info(struct f3fs_sb_info *sbi)
       return -ENOMEM;
     }
 	  init_rwsem(sit_i->sentries[start].cur_valmap_lock);
+	  init_rwsem(&sit_i->sentries[start].local_lock);
   }
 
 	sit_i->tmp_map = f3fs_kzalloc(sbi, SIT_VBLOCK_MAP_SIZE, GFP_KERNEL);
