@@ -2112,30 +2112,6 @@ static inline unsigned long long get_segment_mtime(struct f3fs_sb_info *sbi,
 	return get_seg_entry(sbi, segno)->mtime;
 }
 
-static void update_segment_mtime(struct f3fs_sb_info *sbi, block_t blkaddr,
-						unsigned long long old_mtime)
-{
-  // sentry_only, mtime
-	struct seg_entry *se;
-	unsigned int segno = GET_SEGNO(sbi, blkaddr);
-	unsigned long long ctime = get_mtime(sbi, false);
-	unsigned long long mtime = old_mtime ? old_mtime : ctime;
-
-	if (segno == NULL_SEGNO)
-		return;
-
-	se = get_seg_entry(sbi, segno);
-
-	if (!se->mtime)
-		se->mtime = mtime;
-	else
-		se->mtime = div_u64(se->mtime * se->valid_blocks + mtime,
-						se->valid_blocks + 1);
-
-	if (ctime > SIT_I(sbi)->max_mtime)
-		SIT_I(sbi)->max_mtime = ctime;
-}
-
 static void update_sit_entry2(struct f3fs_sb_info *sbi, block_t blkaddr, int del,
   unsigned int* valid_blocks, enum dirty_type* dirty_type, unsigned long long old_mtime)
 {
@@ -2164,9 +2140,7 @@ static void update_sit_entry2(struct f3fs_sb_info *sbi, block_t blkaddr, int del
   else
     se->mtime = div_u64(se->mtime * se->valid_blocks + mtime,
         se->valid_blocks + 1);
-
-  if (ctime > SIT_I(sbi)->max_mtime)
-    SIT_I(sbi)->max_mtime = ctime;
+  update_max_mtime_atomic(sbi, ctime);
 
 	f3fs_bug_on(sbi, (new_vblocks < 0 ||
 			(new_vblocks > f3fs_usable_blks_in_seg(sbi, segno))));
@@ -2230,7 +2204,7 @@ void f3fs_invalidate_blocks(struct f3fs_sb_info *sbi, block_t addr)
 
 	/* add it into sit main buffer */
 	down_write(&sit_i->sentry_only_lock);
-	down_write(&sit_i->mtime_lock);
+//	down_write(&sit_i->mtime_lock);
 	down_write(&sit_i->dirty_sentry_lock);
 	down_write(&sit_i->blk_info_lock);
   f3fs_bug_on(sbi, true);
@@ -2244,7 +2218,7 @@ void f3fs_invalidate_blocks(struct f3fs_sb_info *sbi, block_t addr)
   }
 	up_write(&sit_i->blk_info_lock);
 	up_write(&sit_i->dirty_sentry_lock);
-	up_write(&sit_i->mtime_lock);
+//	up_write(&sit_i->mtime_lock);
 	up_write(&sit_i->sentry_only_lock);
 }
 
@@ -3246,7 +3220,7 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 
 	mutex_lock(&curseg->curseg_mutex);
 	down_write(&sit_i->sentry_only_lock);
-	down_write(&sit_i->mtime_lock);
+//	down_write(&sit_i->mtime_lock);
 	down_write(&sit_i->dirty_sentry_lock);
 	down_write(&sit_i->tmp_map_lock);
 	down_write(&sit_i->blk_info_lock);
@@ -3298,7 +3272,7 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 	up_write(&sit_i->blk_info_lock);
 	up_write(&sit_i->tmp_map_lock);
 	up_write(&sit_i->dirty_sentry_lock);
-	up_write(&sit_i->mtime_lock);
+	//up_write(&sit_i->mtime_lock);
 	up_write(&sit_i->sentry_only_lock);
 
 	if (page && IS_NODESEG(type)) {
@@ -3542,7 +3516,7 @@ void f3fs_do_replace_block(struct f3fs_sb_info *sbi, struct f3fs_summary *sum,
 
 	mutex_lock(&curseg->curseg_mutex);
 	down_write(&sit_i->sentry_only_lock);
-	down_write(&sit_i->mtime_lock);
+//	down_write(&sit_i->mtime_lock);
 	down_write(&sit_i->dirty_sentry_lock);
 	down_write(&sit_i->tmp_map_lock);
 	down_write(&sit_i->blk_info_lock);
@@ -3562,16 +3536,16 @@ void f3fs_do_replace_block(struct f3fs_sb_info *sbi, struct f3fs_summary *sum,
 	__add_sum_entry(sbi, type, sum);
 
 	if (!recover_curseg || recover_newaddr) {
-		if (!from_gc)
-			update_segment_mtime(sbi, new_blkaddr, 0);
+		//if (!from_gc)
+		//	update_segment_mtime(sbi, new_blkaddr, 0);
 		//update_sit_entry(sbi, new_blkaddr, 1);
 	}
 	if (GET_SEGNO(sbi, old_blkaddr) != NULL_SEGNO) {
 		invalidate_mapping_pages(META_MAPPING(sbi),
 					old_blkaddr, old_blkaddr);
 		f3fs_invalidate_compress_page(sbi, old_blkaddr);
-		if (!from_gc)
-			update_segment_mtime(sbi, old_blkaddr, 0);
+		//if (!from_gc)
+			//update_segment_mtime(sbi, old_blkaddr, 0);
 		//update_sit_entry(sbi, old_blkaddr, -1);
 	}
 
@@ -3592,7 +3566,7 @@ void f3fs_do_replace_block(struct f3fs_sb_info *sbi, struct f3fs_summary *sum,
 	up_write(&sit_i->blk_info_lock);
 	up_write(&sit_i->tmp_map_lock);
 	up_write(&sit_i->dirty_sentry_lock);
-	up_write(&sit_i->mtime_lock);
+//	up_write(&sit_i->mtime_lock);
 	up_write(&sit_i->sentry_only_lock);
 
 	mutex_unlock(&curseg->curseg_mutex);
@@ -4273,7 +4247,7 @@ static int build_sit_info(struct f3fs_sb_info *sbi)
 	sit_i->elapsed_time = le64_to_cpu(sbi->ckpt->elapsed_time);
 	sit_i->mounted_time = ktime_get_boottime_seconds();
 	init_rwsem(&sit_i->sentry_only_lock);
-	init_rwsem(&sit_i->mtime_lock);
+//	init_rwsem(&sit_i->mtime_lock);
 	init_rwsem(&sit_i->dirty_sentry_lock);
 	init_rwsem(&sit_i->tmp_map_lock);
 	init_rwsem(&sit_i->blk_info_lock);
@@ -5061,7 +5035,7 @@ static void init_min_max_mtime(struct f3fs_sb_info *sbi)
 		if (sit_i->min_mtime > mtime)
 			sit_i->min_mtime = mtime;
 	}
-	sit_i->max_mtime = get_mtime(sbi, false);
+	atomic64_set(&sit_i->max_mtime, get_mtime(sbi, false));
 	sit_i->dirty_max_mtime = 0;
 }
 
