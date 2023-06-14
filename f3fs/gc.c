@@ -393,11 +393,12 @@ static unsigned int get_cb_cost(struct f3fs_sb_info *sbi, unsigned int segno)
 	/* Handle if the system time has changed by the user */
 	if (mtime < sit_i->min_mtime)
 		sit_i->min_mtime = mtime;
-	if (mtime > sit_i->max_mtime)
-		sit_i->max_mtime = mtime;
-	if (sit_i->max_mtime != sit_i->min_mtime)
-		age = 100 - div64_u64(100 * (mtime - sit_i->min_mtime),
-				sit_i->max_mtime - sit_i->min_mtime);
+  {
+    unsigned long long max_mtime = update_max_mtime_atomic(sbi, mtime);
+    if (max_mtime != sit_i->min_mtime)
+      age = 100 - div64_u64(100 * (mtime - sit_i->min_mtime),
+          max_mtime - sit_i->min_mtime);
+  }
 
 	return UINT_MAX - ((100 * (100 - u) * age) / (100 + u));
 }
@@ -488,8 +489,7 @@ static void add_victim_entry(struct f3fs_sb_info *sbi,
 	/* Handle if the system time has changed by the user */
 	if (mtime < sit_i->min_mtime)
 		sit_i->min_mtime = mtime;
-	if (mtime > sit_i->max_mtime)
-		sit_i->max_mtime = mtime;
+  update_max_mtime_atomic(sbi, mtime);
 	if (mtime < sit_i->dirty_min_mtime)
 		sit_i->dirty_min_mtime = mtime;
 	if (mtime > sit_i->dirty_max_mtime)

@@ -239,7 +239,7 @@ struct sit_info {
 	unsigned int sents_per_block;		/* # of SIT entries per block */
 
   struct rw_semaphore sentry_only_lock;  // sentries
-  struct rw_semaphore mtime_lock;        // *_mtime
+//  struct rw_semaphore mtime_lock;        // *_mtime
   struct rw_semaphore dirty_sentry_lock; // dirty_sengties_bitmap, dirty_sentries
   struct rw_semaphore tmp_map_lock;      // tmp_map
   struct rw_semaphore blk_info_lock;     // sit_base_addr, sit_blocks, written_valid_blocks
@@ -253,7 +253,8 @@ struct sit_info {
 	unsigned long long elapsed_time;	/* elapsed time after mount */
 	unsigned long long mounted_time;	/* mount time */
 	unsigned long long min_mtime;		/* min. modification time */
-	unsigned long long max_mtime;		/* max. modification time */
+	//unsigned long long max_mtime;		/* max. modification time */
+	atomic64_t max_mtime;
 	unsigned long long dirty_min_mtime;	/* rerange candidates in GC_AT */
 	unsigned long long dirty_max_mtime;	/* rerange candidates in GC_AT */
 
@@ -453,6 +454,28 @@ static inline void seg_info_to_sit_page(struct f3fs_sb_info *sbi,
 		se = get_seg_entry(sbi, start + i);
 		__seg_info_to_raw_sit(se, rs);
 	}
+}
+
+static inline unsigned long long update_max_mtime_atomic(struct f3fs_sb_info* sbi,
+  unsigned long long new_time) {
+
+  unsigned long long max_mtime = atomic64_read(&SIT_I(sbi)->max_mtime);
+  while (true) {
+    if (new_time > max_mtime) {
+      s64 old = atomic64_cmpxchg(&SIT_I(sbi)->max_mtime, max_mtime, new_time);
+      if (old == new_time) {
+        break;
+      } else if (old >= new_time) {
+        break;
+      } else {
+        max_mtime = old;
+      }
+    }
+    else {
+      break;
+    }
+  }
+  return max_mtime;
 }
 
 static inline void seg_info_to_raw_sit(struct seg_entry *se,
