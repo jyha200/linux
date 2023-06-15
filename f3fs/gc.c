@@ -288,12 +288,12 @@ static void select_policy(struct f3fs_sb_info *sbi, int gc_type,
 	if (p->alloc_mode == SSR) {
 		p->gc_mode = GC_GREEDY;
 		p->dirty_bitmap = dirty_i->dirty_segmap[type];
-		p->max_search = dirty_i->nr_dirty[type];
+		p->max_search = atomic_read(&dirty_i->nr_dirty[type]);
 		p->ofs_unit = 1;
 	} else if (p->alloc_mode == AT_SSR) {
 		p->gc_mode = GC_GREEDY;
 		p->dirty_bitmap = dirty_i->dirty_segmap[type];
-		p->max_search = dirty_i->nr_dirty[type];
+		p->max_search = atomic_read(&dirty_i->nr_dirty[type]);
 		p->ofs_unit = 1;
 	} else {
 		p->gc_mode = select_gc_type(sbi, gc_type);
@@ -304,7 +304,7 @@ static void select_policy(struct f3fs_sb_info *sbi, int gc_type,
 						0, MAIN_SECS(sbi));
 		} else {
 			p->dirty_bitmap = dirty_i->dirty_segmap[DIRTY];
-			p->max_search = dirty_i->nr_dirty[DIRTY];
+			p->max_search = atomic_read(&dirty_i->nr_dirty[DIRTY]);
 		}
 	}
 
