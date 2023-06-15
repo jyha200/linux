@@ -292,7 +292,7 @@ struct dirty_seglist_info {
 	unsigned long *dirty_segmap[NR_DIRTY_TYPE];
 	unsigned long *dirty_secmap;
 	struct mutex seglist_lock;		/* lock for segment bitmaps */
-	int nr_dirty[NR_DIRTY_TYPE];		/* # of dirty segments */
+	atomic_t nr_dirty[NR_DIRTY_TYPE];		/* # of dirty segments */
 	unsigned long *victim_secmap;		/* background GC victims */
 	unsigned long *pinned_secmap;		/* pinned victims from foreground GC */
 	unsigned int pinned_secmap_cnt;		/* count of victims which has pinned data */
@@ -613,17 +613,18 @@ static inline unsigned int free_sections(struct f3fs_sb_info *sbi)
 
 static inline unsigned int prefree_segments(struct f3fs_sb_info *sbi)
 {
-	return DIRTY_I(sbi)->nr_dirty[PRE];
+	return atomic_read(&DIRTY_I(sbi)->nr_dirty[PRE]);
 }
 
 static inline unsigned int dirty_segments(struct f3fs_sb_info *sbi)
 {
-	return DIRTY_I(sbi)->nr_dirty[DIRTY_HOT_DATA] +
-		DIRTY_I(sbi)->nr_dirty[DIRTY_WARM_DATA] +
-		DIRTY_I(sbi)->nr_dirty[DIRTY_COLD_DATA] +
-		DIRTY_I(sbi)->nr_dirty[DIRTY_HOT_NODE] +
-		DIRTY_I(sbi)->nr_dirty[DIRTY_WARM_NODE] +
-		DIRTY_I(sbi)->nr_dirty[DIRTY_COLD_NODE];
+  struct dirty_seglist_info* dirty_i = DIRTY_I(sbi);
+	return atomic_read(&dirty_i->nr_dirty[DIRTY_HOT_DATA]) +
+		atomic_read(&dirty_i->nr_dirty[DIRTY_WARM_DATA]) +
+		atomic_read(&dirty_i->nr_dirty[DIRTY_COLD_DATA]) +
+		atomic_read(&dirty_i->nr_dirty[DIRTY_HOT_NODE]) +
+		atomic_read(&dirty_i->nr_dirty[DIRTY_WARM_NODE]) +
+		atomic_read(&dirty_i->nr_dirty[DIRTY_COLD_NODE]);
 }
 
 static inline int overprovision_segments(struct f3fs_sb_info *sbi)
