@@ -744,7 +744,7 @@ static void __locate_dirty_segment2(struct f3fs_sb_info *sbi, unsigned int segno
 		return;
 
 	if (!test_and_set_bit(segno, dirty_i->dirty_segmap[dirty_type]))
-		dirty_i->nr_dirty[dirty_type]++;
+		atomic_inc(&dirty_i->nr_dirty[dirty_type]);
 
 	if (dirty_type == DIRTY) {
 		if (unlikely(seg_dirty_type >= DIRTY)) {
@@ -752,7 +752,7 @@ static void __locate_dirty_segment2(struct f3fs_sb_info *sbi, unsigned int segno
 			return;
 		}
 		if (!test_and_set_bit(segno, dirty_i->dirty_segmap[seg_dirty_type]))
-			dirty_i->nr_dirty[seg_dirty_type]++;
+			atomic_inc(&dirty_i->nr_dirty[seg_dirty_type]);
 	}
 }
 
@@ -764,11 +764,11 @@ static void __remove_dirty_segment2(struct f3fs_sb_info *sbi, unsigned int segno
 	f3fs_bug_on(sbi, __is_large_section(sbi));
 
 	if (test_and_clear_bit(segno, dirty_i->dirty_segmap[dirty_type]))
-		dirty_i->nr_dirty[dirty_type]--;
+		atomic_dec(&dirty_i->nr_dirty[dirty_type]);
 
 	if (dirty_type == DIRTY) {
 		if (test_and_clear_bit(segno, dirty_i->dirty_segmap[seg_dirty_type]))
-			dirty_i->nr_dirty[seg_dirty_type]--;
+			atomic_dec(&dirty_i->nr_dirty[seg_dirty_type]);
 
 		if (valid_blocks == 0) {
 			clear_bit(GET_SEC_FROM_SEG(sbi, segno),
@@ -794,7 +794,7 @@ static void locate_dirty_segment2(struct f3fs_sb_info *sbi,
 //  f3fs_bug_on(sbi, is_sbi_flag_set(sbi, SBI_CP_DISABLED));
 
 	usable_blocks = f3fs_usable_blks_in_seg(sbi, segno);
-	mutex_lock(&dirty_i->seglist_lock);
+//	mutex_lock(&dirty_i->seglist_lock);
 
 	if (valid_blocks == 0) {
 		__locate_dirty_segment2(sbi, segno, PRE, seg_dirty_type);
@@ -808,7 +808,7 @@ static void locate_dirty_segment2(struct f3fs_sb_info *sbi,
 		__remove_dirty_segment2(sbi, segno, DIRTY, seg_dirty_type, valid_blocks);
 	}
 
-	mutex_unlock(&dirty_i->seglist_lock);
+	//mutex_unlock(&dirty_i->seglist_lock);
 }
 
 /* This moves currently empty dirty blocks to prefree. Must hold seglist_lock */
@@ -1944,7 +1944,7 @@ void f3fs_clear_prefree_segments(struct f3fs_sb_info *sbi,
 
 		for (i = start; i < end; i++) {
 			if (test_and_clear_bit(i, prefree_map))
-				dirty_i->nr_dirty[PRE]--;
+				atomic_dec(&dirty_i->nr_dirty[PRE]);
 		}
 
 		if (!f3fs_realtime_discard_enable(sbi))
@@ -5216,7 +5216,7 @@ static void discard_dirty_segmap(struct f3fs_sb_info *sbi,
 
 	mutex_lock(&dirty_i->seglist_lock);
 	kvfree(dirty_i->dirty_segmap[dirty_type]);
-	dirty_i->nr_dirty[dirty_type] = 0;
+	atomic_set(&dirty_i->nr_dirty[dirty_type], 0);
 	mutex_unlock(&dirty_i->seglist_lock);
 }
 
