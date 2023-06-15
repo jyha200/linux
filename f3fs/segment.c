@@ -3295,9 +3295,10 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 	 * so we just need to update status only one time after previous
 	 * segment being closed.
 	 */
-  {
-    if (old_segno != NULL_SEGNO && !IS_CURSEG(sbi, old_segno)) {
-	    locate_dirty_segment2(sbi, old_segno, old_valid_blocks, old_seg_dirty_type);
+  if (old_segno != NULL_SEGNO && !IS_CURSEG(sbi, old_segno)) {
+	  struct dirty_seglist_info *dirty_i = DIRTY_I(sbi);
+    if (!test_bit(old_segno, dirty_i->dirty_segmap[PRE]) || old_valid_blocks == 0) {
+      locate_dirty_segment2(sbi, old_segno, old_valid_blocks, old_seg_dirty_type);
     }
   }
 
