@@ -1136,7 +1136,9 @@ enum temp_type {
 	HOT = 0,	/* must be zero for meta bio */
 	WARM,
 	COLD,
-	NR_TEMP_TYPE,
+  COLD_GC_START,
+  COLD_GC_END = COLD_GC_START + MAX_GC_WORKER - 1,
+  NR_TEMP_TYPE,
 };
 
 enum need_lock_type {
@@ -1778,8 +1780,8 @@ struct f3fs_sb_info {
 	spinlock_t stat_lock;			/* lock for stat operations */
 
 	/* to attach REQ_META|REQ_FUA flags */
-	unsigned int data_io_flag;
-	unsigned int node_io_flag;
+	unsigned long long data_io_flag;
+	unsigned long long node_io_flag;
 
 	/* For sysfs support */
 	struct kobject s_kobj;			/* /sys/fs/f3fs/<devname> */
