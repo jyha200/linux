@@ -3214,8 +3214,11 @@ static int __get_segment_type(struct f3fs_io_info *fio)
 		fio->temp = HOT;
 	else if (IS_WARM(type))
 		fio->temp = WARM;
-	else
-		fio->temp = COLD;
+  else {
+    if (fio->dst_hint == -1) {
+      fio->temp = COLD;
+    }
+  }
 	return type;
 }
 
