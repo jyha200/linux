@@ -3433,6 +3433,7 @@ static int __get_segment_type(struct f3fs_io_info *fio)
 }
 
 #define PROF9 (0)
+#define PROF9_1 (1)
 
 void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 		block_t old_blkaddr, block_t *new_blkaddr,
@@ -3508,24 +3509,59 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 	 * SIT information should be updated before segment allocation,
 	 * since SSR needs latest valid block information.
 	 */
-	update_sit_entry2(sbi, *new_blkaddr, 1, &new_valid_blocks, &new_seg_dirty_type, 0);
-	if (old_segno != NULL_SEGNO)
-		update_sit_entry2(sbi, old_blkaddr, -1, &old_valid_blocks, &old_seg_dirty_type, 0);
 #if PROF9
   if (do_profile) {
     ttt[3] = ktime_get_raw();
   }
 #endif
 
-	if (!__has_curseg_space(sbi, curseg)) {
-	  down_write(&sit_i->last_victim_lock);
-		sit_i->s_ops->allocate_segment(sbi, type, false);
-	  up_write(&sit_i->last_victim_lock);
-	  locate_dirty_segment2(sbi, new_segno, new_valid_blocks, new_seg_dirty_type);
-	}
+	update_sit_entry2(sbi, *new_blkaddr, 1, &new_valid_blocks, &new_seg_dirty_type, 0);
+	if (old_segno != NULL_SEGNO)
+		update_sit_entry2(sbi, old_blkaddr, -1, &old_valid_blocks, &old_seg_dirty_type, 0);
 #if PROF9
   if (do_profile) {
     ttt[4] = ktime_get_raw();
+  }
+#endif
+
+	if (!__has_curseg_space(sbi, curseg)) {
+#if PROF9_1
+    ktime_t ttt[15];
+    bool do_profile = fio->io_type == FS_GC_DATA_IO;
+    if (do_profile) {
+      ttt[0] = ktime_get_raw();
+    }
+#endif
+
+	  down_write(&sit_i->last_victim_lock);
+#if PROF9_1
+    if (do_profile) {
+      ttt[1] = ktime_get_raw();
+    }
+#endif
+		sit_i->s_ops->allocate_segment(sbi, type, false);
+#if PROF9_1
+    if (do_profile) {
+      ttt[2] = ktime_get_raw();
+    }
+#endif
+	  up_write(&sit_i->last_victim_lock);
+#if PROF9_1
+    if (do_profile) {
+      ttt[3] = ktime_get_raw();
+    }
+#endif
+	  locate_dirty_segment2(sbi, new_segno, new_valid_blocks, new_seg_dirty_type);
+#if PROF9_1
+    if (do_profile) {
+      ttt[4] = ktime_get_raw();
+      ktcond_print2(ttt, 11, 5);
+    }
+#endif
+	}
+#if PROF9
+  if (do_profile) {
+    ttt[5] = ktime_get_raw();
   }
 #endif
 	/*
@@ -3541,7 +3577,7 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
   }
 #if PROF9
   if (do_profile) {
-    ttt[5] = ktime_get_raw();
+    ttt[6] = ktime_get_raw();
   }
 #endif
 
@@ -3562,7 +3598,7 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 	}
 #if PROF9
   if (do_profile) {
-    ttt[6] = ktime_get_raw();
+    ttt[7] = ktime_get_raw();
   }
 #endif
 
@@ -3585,8 +3621,8 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 	f3fs_up_read(&SM_I(sbi)->curseg_lock);
 #if PROF9
   if (do_profile) {
-    ttt[7] = ktime_get_raw();
-    ktcond_print2(ttt, 10, 8);
+    ttt[8] = ktime_get_raw();
+    ktcond_print2(ttt, 10, 9);
   }
 #endif
 }
