@@ -174,8 +174,8 @@ int watchdog_fn(void* arg) {
   int* prev_loc = NULL;
   int prev_reward = 0;
   int spec_max_iops = max_kiops * 1000;
-  spec_max_iops /= 16;
   long good = 0, bad = 0, some_bad = 0, count = 0;
+  spec_max_iops /= 16;
   memset(&c, 0x0, sizeof(struct nvme_command));
   c.common.opcode = INVALID_OPCODE;
   parse_device_list();
@@ -218,8 +218,8 @@ int watchdog_fn(void* arg) {
         int real_time_idx = 0;
         unsigned long iops = 0, size = 0, inflight = 0;
         int* loc = NULL;
+        part_stat_get2(raw_devs[idx], stats);
         if (rl_on) {
-          part_stat_get2(raw_devs[idx], stats);
           iops = stats[1] - prev_stats[1];
           inflight = stats[0];
           if (iops == 0) {
@@ -236,21 +236,20 @@ int watchdog_fn(void* arg) {
           }
           //timeout = msecs_to_jiffies(WORST_LAT);
 
-          start_time = ktime_get();
         }
         else {
           timeout = msecs_to_jiffies(timeout_ms);
         }
+        start_time = ktime_get();
         ret = nvme_submit_user_cmd(ctrl->admin_q, &c, NULL, 0, NULL, 0, 0, &result, timeout, false);
+				end_time = ktime_get();
+				time_diff = ktime_to_ns(ktime_sub(end_time, start_time));
         if (rl_on) {
-          end_time = ktime_get();
-          time_diff = ktime_to_ns(ktime_sub(end_time, start_time));
           real_time_idx = get_lat_idx(time_diff/1000000);
         }
     //    printk("inferred expected_idx %d exeuted_idx %d", timeout_idx, real_time_idx);
 #if 0
         if (first) {
-          printk("inflights %lu duration %lld ns", stats[0], time_diff);
         } else {
           printk("inflights %lu w_ios %lu w_secs %lu r_ios %lu r_secs %lu duration %lld ns", stats[0], stats[1] - prev_stats[1], stats[2] - prev_stats[2], stats[3] - prev_stats[3], stats[4] - prev_stats[4], time_diff);
         }
@@ -282,21 +281,24 @@ int watchdog_fn(void* arg) {
               some_bad++;
             }
           }
-          count++;
-          feedback(prev_loc, *loc, prev_reward);
-          prev_stats[0] = stats[0];
-          prev_stats[1] = stats[1];
-          prev_stats[2] = stats[2];
-          prev_stats[3] = stats[3];
-          prev_stats[4] = stats[4];
-          prev_loc = loc;
-          prev_reward = reward;
         }
-        first = false;
-        if (count % 1000 == 0) {
-//          printk("%ld: %ld %ld %ld ratio %ld", count, good, some_bad, bad, good * 100 / count);
-        }
-      }
+				if (rl_on) {
+					feedback(prev_loc, *loc, prev_reward);
+				}
+				count++;
+				prev_stats[0] = stats[0];
+				prev_stats[1] = stats[1];
+				prev_stats[2] = stats[2];
+				prev_stats[3] = stats[3];
+				prev_stats[4] = stats[4];
+				prev_loc = loc;
+				prev_reward = reward;
+
+				first = false;
+				if (count % 1000 == 0) {
+					//          printk("%ld: %ld %ld %ld ratio %ld", count, good, some_bad, bad, good * 100 / count);
+				}
+			}
     }
     msleep(polling_duration_ms);
   }
