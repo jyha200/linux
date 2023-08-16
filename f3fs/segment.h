@@ -216,6 +216,7 @@ struct sec_entry {
 
 struct segment_allocation {
 	void (*allocate_segment)(struct f3fs_sb_info *, int, bool);
+	void (*allocate_segment2)(struct f3fs_sb_info *, int, bool);
 };
 
 #define MAX_SKIP_GC_COUNT			16
@@ -469,9 +470,7 @@ static inline unsigned long long update_max_mtime_atomic(struct f3fs_sb_info* sb
   while (true) {
     if (new_time > max_mtime) {
       s64 old = atomic64_cmpxchg(&SIT_I(sbi)->max_mtime, max_mtime, new_time);
-      if (old == new_time) {
-        break;
-      } else if (old >= new_time) {
+      if (old >= new_time) {
         break;
       } else {
         max_mtime = old;
