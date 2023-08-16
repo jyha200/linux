@@ -1647,7 +1647,7 @@ int f3fs_write_checkpoint(struct f3fs_sb_info *sbi, struct cp_control *cpc)
 			unblock_operations(sbi);
 			goto out;
 		}
-
+/*
 		if (NM_I(sbi)->nat_cnt[DIRTY_NAT] == 0 &&
 				SIT_I(sbi)->dirty_sentries == 0 &&
 				prefree_segments(sbi) == 0) {
@@ -1655,7 +1655,7 @@ int f3fs_write_checkpoint(struct f3fs_sb_info *sbi, struct cp_control *cpc)
 			f3fs_clear_prefree_segments(sbi, cpc);
 			unblock_operations(sbi);
 			goto out;
-		}
+		}*/
 	}
 
 	/*
