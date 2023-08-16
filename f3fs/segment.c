@@ -2082,7 +2082,7 @@ static bool __mark_sit_entry_dirty_without_lock(struct f3fs_sb_info *sbi, unsign
 	struct sit_info *sit_i = SIT_I(sbi);
 
 	if (!__test_and_set_bit(segno, sit_i->dirty_sentries_bitmap)) {
-		sit_i->dirty_sentries++;
+//		sit_i->dirty_sentries++;
 		return false;
 	}
 
@@ -2093,13 +2093,13 @@ static bool __mark_sit_entry_dirty(struct f3fs_sb_info *sbi, unsigned int segno)
 {
 	struct sit_info *sit_i = SIT_I(sbi);
 
-	down_write(&sit_i->dirty_sentry_lock);
+//	down_write(&sit_i->dirty_sentry_lock);
 	if (!__test_and_set_bit(segno, sit_i->dirty_sentries_bitmap)) {
-		sit_i->dirty_sentries++;
-	  up_write(&sit_i->dirty_sentry_lock);
+//		sit_i->dirty_sentries++;
+//	  up_write(&sit_i->dirty_sentry_lock);
 		return false;
 	}
-	up_write(&sit_i->dirty_sentry_lock);
+//	up_write(&sit_i->dirty_sentry_lock);
 
 	return true;
 }
@@ -2219,7 +2219,7 @@ void f3fs_invalidate_blocks(struct f3fs_sb_info *sbi, block_t addr)
 	/* add it into sit main buffer */
 	down_write(&sit_i->sentry_only_lock);
 //	down_write(&sit_i->mtime_lock);
-	down_write(&sit_i->dirty_sentry_lock);
+//	down_write(&sit_i->dirty_sentry_lock);
 	down_write(&sit_i->blk_info_lock);
   f3fs_bug_on(sbi, true);
   {
@@ -2231,7 +2231,7 @@ void f3fs_invalidate_blocks(struct f3fs_sb_info *sbi, block_t addr)
     locate_dirty_segment2(sbi, segno, seg_dirty_type, valid_blocks);
   }
 	up_write(&sit_i->blk_info_lock);
-	up_write(&sit_i->dirty_sentry_lock);
+//	up_write(&sit_i->dirty_sentry_lock);
 //	up_write(&sit_i->mtime_lock);
 	up_write(&sit_i->sentry_only_lock);
 }
@@ -2832,6 +2832,26 @@ static void allocate_segment_by_default(struct f3fs_sb_info *sbi,
 	stat_inc_seg_type(sbi, curseg);
 }
 
+static void allocate_segment_by_default2(struct f3fs_sb_info *sbi,
+						int type, bool force)
+{
+  // sentry_only, dirty_sentry
+	struct curseg_info *curseg = CURSEG_I(sbi, type);
+
+	if (!is_set_ckpt_flags(sbi, CP_CRC_RECOVERY_FLAG) &&
+					curseg->seg_type == CURSEG_WARM_NODE)
+		new_curseg(sbi, type, false);
+	else if (curseg->alloc_type == LFS &&
+			is_next_segment_free(sbi, curseg, type) &&
+			likely(!is_sbi_flag_set(sbi, SBI_CP_DISABLED)))
+		new_curseg(sbi, type, false);
+	else {
+    new_curseg(sbi, type, false);
+  }
+
+  stat_inc_seg_type(sbi, curseg);
+}
+
 void f3fs_allocate_segment_for_resize(struct f3fs_sb_info *sbi, int type,
 					unsigned int start, unsigned int end)
 {
@@ -2944,6 +2964,7 @@ void f3fs_allocate_new_segments(struct f3fs_sb_info *sbi)
 
 static const struct segment_allocation default_salloc_ops = {
 	.allocate_segment = allocate_segment_by_default,
+	.allocate_segment2 = allocate_segment_by_default2,
 };
 
 bool f3fs_exist_trim_candidates(struct f3fs_sb_info *sbi,
@@ -3282,9 +3303,7 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
 		update_sit_entry2(sbi, old_blkaddr, -1, &old_valid_blocks, &old_seg_dirty_type, 0);
 
 	if (!__has_curseg_space(sbi, curseg)) {
-	  down_write(&sit_i->last_victim_lock);
-		sit_i->s_ops->allocate_segment(sbi, type, false);
-	  up_write(&sit_i->last_victim_lock);
+		sit_i->s_ops->allocate_segment2(sbi, type, false);
 	  locate_dirty_segment2(sbi, new_segno, new_valid_blocks, new_seg_dirty_type);
 	}
 	/*
@@ -4094,7 +4113,7 @@ void f3fs_flush_sit_entries(struct f3fs_sb_info *sbi, struct cp_control *cpc)
 
 	down_write(&sit_i->tmp_map_lock);
 	down_write(&sit_i->sit_bitmap_lock);
-	down_write(&sit_i->dirty_sentry_lock);
+//	down_write(&sit_i->dirty_sentry_lock);
 
 	if (!sit_i->dirty_sentries)
 		goto out;
@@ -4175,7 +4194,7 @@ void f3fs_flush_sit_entries(struct f3fs_sb_info *sbi, struct cp_control *cpc)
 			}
 
 			__clear_bit(segno, bitmap);
-			sit_i->dirty_sentries--;
+	//		sit_i->dirty_sentries--;
 			ses->entry_cnt--;
       up_read(&se->local_lock);
 		}
@@ -4190,7 +4209,7 @@ void f3fs_flush_sit_entries(struct f3fs_sb_info *sbi, struct cp_control *cpc)
 	}
 
 	f3fs_bug_on(sbi, !list_empty(head));
-	f3fs_bug_on(sbi, sit_i->dirty_sentries);
+//	f3fs_bug_on(sbi, sit_i->dirty_sentries);
 out:
 	if (cpc->reason & CP_DISCARD) {
 		__u64 trim_start = cpc->trim_start;
@@ -4201,7 +4220,7 @@ out:
 		cpc->trim_start = trim_start;
 	}
 
-	up_write(&sit_i->dirty_sentry_lock);
+	//up_write(&sit_i->dirty_sentry_lock);
 	up_write(&sit_i->sit_bitmap_lock);
 	up_write(&sit_i->tmp_map_lock);
 
