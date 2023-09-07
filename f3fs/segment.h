@@ -303,6 +303,8 @@ struct dirty_seglist_info {
 struct victim_selection {
 	int (*get_victim)(struct f3fs_sb_info *, unsigned int *,
 					int, int, char, unsigned long long);
+	int (*get_multiple_victim)(struct f3fs_sb_info *, unsigned int *,
+					int, int, char, unsigned long long);
 };
 
 /* for active log information */
