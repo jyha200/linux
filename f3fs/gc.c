@@ -180,7 +180,7 @@ static int gc_worker_func(void* data)
         msecs_to_jiffies(300));
 
     if (worker_arg->state == 1) {
-      worker_arg->ret = do_gc(worker_arg->sbi, worker_arg->gc_control, worker_arg->idx);
+      worker_arg->ret = do_gc(worker_arg->sbi, worker_arg->gc_control, worker_arg->idx, worker_arg->multiple_victim);
       worker_arg->state = 0;
       wake_up(&worker_arg->caller_wq);
     }
@@ -215,6 +215,9 @@ int f3fs_start_gc_thread(struct f3fs_sb_info *sbi)
     sbi->gc_thread->worker_args[i].sbi = sbi;
     sbi->gc_thread->worker_args[i].gc_control = NULL;
     sbi->gc_thread->worker_args[i].idx = i;
+    for (int j = 0 ; j < VICTIM_COUNT ; j++) {
+      sbi->gc_thread->worker_args[i].multiple_victim[j] = NULL_SEGNO;
+    }
 
     init_waitqueue_head(&sbi->gc_thread->worker_args[i].wq);
     init_waitqueue_head(&sbi->gc_thread->worker_args[i].caller_wq);
@@ -949,8 +952,139 @@ out:
 	return ret;
 }
 
+static unsigned int get_local_max(unsigned int* selected, int count, int* max_idx) {
+  unsigned int local_max = 0;
+  for (int i = 0 ; i < VICTIM_COUNT ; i++) {
+    if (local_max < selected[i]) {
+      local_max = selected[i];
+      *max_idx = i;
+    }
+  }
+
+  return local_max;
+}
+
+static int get_multiple_victim_by_default(struct f3fs_sb_info *sbi,
+			unsigned int *result, int gc_type, int type,
+			char alloc_mode, unsigned long long age)
+{
+  // last_victim
+	struct dirty_seglist_info *dirty_i = DIRTY_I(sbi);
+	struct sit_info *sm = SIT_I(sbi);
+	struct victim_sel_policy p;
+	unsigned int secno, last_victim;
+	unsigned int last_segment;
+	unsigned int nsearched;
+	bool is_atgc;
+	int ret = 0;
+  unsigned int local_max = 0;
+  int local_max_idx = 0;
+  unsigned int selected_cost[VICTIM_COUNT] = {0,};
+  int selected_count = 0;
+  bool changed = false;
+
+	last_segment = MAIN_SECS(sbi) * sbi->segs_per_sec;
+
+	p.alloc_mode = alloc_mode;
+	p.age = age;
+	p.age_threshold = sbi->am.age_threshold;
+
+	select_policy(sbi, gc_type, type, &p);
+	p.min_segno = NULL_SEGNO;
+	p.oldest_age = 0;
+	p.min_cost = get_max_cost(sbi, &p);
+
+	is_atgc = (p.gc_mode == GC_AT || p.alloc_mode == AT_SSR);
+  f3fs_bug_on(sbi, is_atgc);
+	nsearched = 0;
+
+	ret = -ENODATA;
+	if (p.max_search == 0)
+		goto out;
+
+	last_victim = sm->last_victim[p.gc_mode];
+
+	while (1) {
+		unsigned long cost, *dirty_bitmap;
+		unsigned int unit_no, segno;
+
+		dirty_bitmap = p.dirty_bitmap;
+		unit_no = find_next_bit(dirty_bitmap,
+				last_segment / p.ofs_unit,
+				p.offset / p.ofs_unit);
+		segno = unit_no * p.ofs_unit;
+		if (segno >= last_segment) {
+			if (sm->last_victim[p.gc_mode]) {
+				last_segment =
+					sm->last_victim[p.gc_mode];
+				sm->last_victim[p.gc_mode] = 0;
+				p.offset = 0;
+				continue;
+			}
+			break;
+		}
+
+		p.offset = segno + p.ofs_unit;
+		nsearched++;
+
+		secno = GET_SEC_FROM_SEG(sbi, segno);
+
+		if (sec_usage_check(sbi, secno))
+			goto next;
+
+		if (test_bit(secno, dirty_i->victim_secmap))
+			goto next;
+
+		if (gc_type == FG_GC && f3fs_section_is_pinned(dirty_i, secno))
+			goto next;
+
+		cost = get_gc_cost(sbi, segno, &p);
+    changed = false;
+    if (selected_count < VICTIM_COUNT) {
+      result[selected_count] = segno;
+      selected_cost[selected_count] = cost;
+      selected_count++;
+      changed = true;
+    } else if (local_max > cost) {
+      result[local_max_idx] = segno;
+      selected_cost[local_max_idx] = cost;
+      changed = true;
+    }
+
+    if (changed) {
+      local_max = get_local_max(selected_cost, selected_count, &local_max_idx);
+      ret = 0;
+    }
+
+next:
+		if (nsearched >= p.max_search) {
+			if (!sm->last_victim[p.gc_mode] && segno <= last_victim)
+				sm->last_victim[p.gc_mode] =
+					last_victim + p.ofs_unit;
+			else
+				sm->last_victim[p.gc_mode] = segno + p.ofs_unit;
+			sm->last_victim[p.gc_mode] %=
+				(MAIN_SECS(sbi) * sbi->segs_per_sec);
+			break;
+		}
+	}
+
+out:
+  for (int i = 0 ; i < selected_count ; i++) {
+    set_bit(result[i], dirty_i->victim_secmap);
+  }
+
+	if (p.min_segno != NULL_SEGNO)
+		trace_f3fs_get_victim(sbi->sb, type, gc_type, &p,
+				sbi->cur_victim_sec,
+				prefree_segments(sbi), free_segments(sbi));
+
+	return ret;
+}
+
 static const struct victim_selection default_v_ops = {
 	.get_victim = get_victim_by_default,
+	.get_multiple_victim = get_multiple_victim_by_default,
 };
 
 static struct inode *find_gc_inode(struct gc_inode_list *gc_list, nid_t ino)
@@ -1691,10 +1825,68 @@ next_step:
 }
 
 static int __get_victim(struct f3fs_sb_info *sbi, unsigned int *victim,
-			int gc_type)
+			int gc_type, unsigned int* multiple_victim)
 {
 	struct sit_info *sit_i = SIT_I(sbi);
 	int ret;
+
+  if (*victim == NULL_SEGNO) {
+    if (multiple_victim) {
+	    struct dirty_seglist_info *dirty_i = DIRTY_I(sbi);
+
+      down_write(&sit_i->last_victim_lock);
+	    mutex_lock(&dirty_i->seglist_lock);
+
+      for (int i = 0 ; i < VICTIM_COUNT ; i++) {
+        unsigned int candidate = multiple_victim[i];
+        unsigned long *dirty_bitmap = dirty_i->dirty_segmap[DIRTY];
+        if (candidate == NULL_SEGNO) {
+          continue;
+        }
+
+        multiple_victim[i] = NULL_SEGNO;
+
+        if (!get_valid_blocks(sbi, candidate, false)) {
+          continue;
+        }
+
+        if (sec_usage_check(sbi, GET_SEC_FROM_SEG(sbi, candidate))) {
+          continue;
+        }
+
+        if (!test_bit(candidate, dirty_bitmap)) {
+          clear_bit(candidate, dirty_i->victim_secmap);
+          continue;
+        }
+
+        *victim = candidate;
+        break;
+      }
+
+      if (*victim == NULL_SEGNO) {
+        ret = DIRTY_I(sbi)->v_ops->get_multiple_victim(
+          sbi,
+          multiple_victim,
+          gc_type,
+          NO_CHECK_TYPE,
+          LFS,
+          0);
+        *victim = multiple_victim[0];
+        multiple_victim[0] = NULL_SEGNO;
+      } else {
+        ret = 0;
+      }
+
+      if (*victim != NULL_SEGNO) {
+        if (gc_type == FG_GC)
+          sbi->cur_victim_sec = *victim;
+      }
+
+      mutex_unlock(&dirty_i->seglist_lock);
+      up_write(&sit_i->last_victim_lock);
+      return ret;
+    }
+  }
 
   down_write(&sit_i->last_victim_lock);
 	ret = DIRTY_I(sbi)->v_ops->get_victim(sbi, victim, gc_type,
@@ -1824,7 +2016,7 @@ skip:
 
 #define NUM_SKIPPED_SEG (64)
 
-int do_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control, char worker_idx)
+int do_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control, char worker_idx, unsigned int* multiple_victim)
 {
 	int gc_type = gc_control->init_gc_type;
 	unsigned int segno = gc_control->victim_segno;
@@ -1882,7 +2074,7 @@ gc_more:
 		goto stop;
 	}
 retry:
-	ret = __get_victim(sbi, &segno, gc_type);
+	ret = __get_victim(sbi, &segno, gc_type, multiple_victim);
 	if (ret) {
 		/* allow to search victim from sections has pinned data */
 		if (ret == -ENODATA && gc_type == FG_GC &&
@@ -2026,7 +2218,7 @@ int f3fs_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control)
       ret = atomic_read(&gc_control->freed);
     }
   } else {
-    ret = do_gc(sbi, gc_control, 0);
+    ret = do_gc(sbi, gc_control, 0, NULL);
   }
 /*  if (prefree_segments(sbi)) {
     struct cp_control cpc;
