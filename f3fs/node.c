@@ -205,6 +205,7 @@ static struct nat_entry *__lookup_nat_cache(struct f3fs_nm_info *nm_i, nid_t n)
 
 	ne = radix_tree_lookup(&nm_i->nat_root, n);
 
+#if 0
 	/* for recent accessed nat entry, move it to tail of lru list */
 	if (ne && !get_nat_flag(ne, IS_DIRTY)) {
 		spin_lock(&nm_i->nat_list_lock);
@@ -212,6 +213,7 @@ static struct nat_entry *__lookup_nat_cache(struct f3fs_nm_info *nm_i, nid_t n)
 			list_move_tail(&ne->list, &nm_i->nat_entries);
 		spin_unlock(&nm_i->nat_list_lock);
 	}
+#endif
 
 	return ne;
 }
