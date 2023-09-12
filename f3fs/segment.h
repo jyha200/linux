@@ -206,7 +206,7 @@ struct seg_entry {
 	unsigned long ckpt_valid_map[SIT_VBLOCK_MAP_SIZE/sizeof(unsigned long)];	/* validity bitmap of blocks last cp */
 	unsigned char discard_map[SIT_VBLOCK_MAP_SIZE];
 	unsigned long long mtime;	/* modification time of the segment */
-	struct rw_semaphore* cur_valmap_lock;	/* to protect SIT cache */
+//	struct rw_semaphore* cur_valmap_lock;	/* to protect SIT cache */
 	struct rw_semaphore local_lock;	/* to protect SIT cache */
 };
 
@@ -232,7 +232,7 @@ struct sit_info {
 
 	block_t sit_base_addr;		/* start block address of SIT area */
 	block_t sit_blocks;		/* # of blocks used by SIT area */
-	atomic64_t written_valid_blocks;	/* # of valid blocks in main area */
+	//atomic64_t written_valid_blocks;	/* # of valid blocks in main area */
 	char *sit_bitmap;		/* SIT bitmap pointer */
 	unsigned int bitmap_size;	/* SIT bitmap size */
 
@@ -593,7 +593,7 @@ static inline void get_sit_bitmap(struct f3fs_sb_info *sbi,
 
 static inline block_t written_block_count(struct f3fs_sb_info *sbi)
 {
-	return atomic64_read(&SIT_I(sbi)->written_valid_blocks);
+	return 0;//atomic64_read(&SIT_I(sbi)->written_valid_blocks);
 }
 
 static inline unsigned int free_segments(struct f3fs_sb_info *sbi)

@@ -1133,9 +1133,9 @@ static int check_valid_map(struct f3fs_sb_info *sbi,
 	int ret;
 
 	sentry = get_seg_entry(sbi, segno);
-  down_read(sentry->cur_valmap_lock);
+//  down_read(sentry->cur_valmap_lock);
 	ret = f3fs_test_bit(offset, sentry->cur_valid_map);
-  up_read(sentry->cur_valmap_lock);
+//  up_read(sentry->cur_valmap_lock);
 	return ret;
 }
 
