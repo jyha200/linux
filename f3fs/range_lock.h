@@ -21,7 +21,7 @@ struct lock_class_key {
 struct f3fs_rwsem2 {
   my_lock_t range_lock;
 #if IN_KERNEL
-  struct list_head locked_ranges;
+  struct rb_root locked_ranges;
 #else
   GList* locked_ranges;
 #endif
@@ -30,7 +30,7 @@ struct f3fs_rwsem2 {
 struct f3fs_range {
   my_lock_t internal_lock;
 #if IN_KERNEL
-  struct list_head list_elem;
+  struct rb_node node;
 #endif
   unsigned start;
   unsigned size;
@@ -94,7 +94,7 @@ static inline void __init_f3fs_rwsem2(struct f3fs_rwsem2 *sem,
 {
 #if IN_KERNEL
 	__init_rwsem(&sem->range_lock, sem_name, key);
-  INIT_LIST_HEAD(&sem->locked_ranges);
+  sem->locked_ranges = RB_ROOT;
 #else
   pthread_rwlock_init(&sem->range_lock, NULL);
   sem->locked_ranges = NULL;
@@ -125,10 +125,20 @@ struct f3fs_range* get_min_locked_range(struct f3fs_rwsem2 *sem, unsigned start)
   user_data[2] = NULL; // found min_start_range for ret
 #if IN_KERNEL
   {
-    struct f3fs_range* range = NULL;
-    list_for_each_entry(range, &sem->locked_ranges, list_elem) {
-      check_range(range, user_data);
+    struct rb_node *node = sem->locked_ranges.rb_node;
+    struct f3fs_range* ret = NULL;
+
+    while (node) {
+      struct f3fs_range *cur_range = rb_entry(node, struct f3fs_range, node);
+
+      if (start <= cur_range->start) {
+        ret = cur_range;
+        node = node->rb_left;
+      } else {
+        node = node->rb_right;
+      }
     }
+    return ret;
   }
 #else
   g_list_foreach(sem->locked_ranges, check_range, user_data);
@@ -144,7 +154,7 @@ struct f3fs_range* f3fs_alloc_range(unsigned start, unsigned size)
   static struct lock_class_key __key;
 
 	__init_rwsem(&ret->internal_lock, "f3fs_range_internal" , &__key);
-  INIT_LIST_HEAD(&ret->list_elem);
+  RB_CLEAR_NODE(&ret->node);
 #else
   struct f3fs_range* ret = malloc(sizeof(struct f3fs_range));
 
@@ -157,11 +167,21 @@ struct f3fs_range* f3fs_alloc_range(unsigned start, unsigned size)
   return ret;
 }
 
+static bool is_less(struct rb_node* node, const struct rb_node* parent) {
+  struct f3fs_range* node_range = rb_entry(node, struct f3fs_range, node);
+  struct f3fs_range* parent_range = rb_entry(parent, struct f3fs_range, node);
+  if (node_range-> start < parent_range->start) {
+    return true;
+  } else {
+    return false;
+  }
+}
+
 static inline void f3fs_insert_range2(
   struct f3fs_rwsem2* head, struct f3fs_range* new_range)
 {
 #if IN_KERNEL
-  list_add_tail(&new_range->list_elem, &head->locked_ranges);
+  rb_add(&new_range->node, &head->locked_ranges, is_less);
 #else
   head->locked_ranges = g_list_append(head->locked_ranges, (gpointer) new_range);
 #endif
@@ -172,7 +192,7 @@ static inline void f3fs_remove_range(
   struct f3fs_rwsem2* head, struct f3fs_range* del_range)
 {
 #if IN_KERNEL
-  list_del(&del_range->list_elem);
+  rb_erase(&del_range->node, &head->locked_ranges);
   kfree(del_range);
 #else
   head->locked_ranges = g_list_remove(head->locked_ranges, (gpointer) del_range);
