@@ -2138,14 +2138,15 @@ static void update_sit_entry2(struct f3fs_sb_info *sbi, block_t blkaddr, int del
 #ifdef CONFIG_F3FS_CHECK_FS
 	bool mir_exist;
 #endif
-  unsigned long long ctime = get_mtime(sbi, false);
+  unsigned long long ctime = 0;//get_mtime(sbi, false);
   unsigned long long mtime = old_mtime ? old_mtime : ctime;
 
 	segno = GET_SEGNO(sbi, blkaddr);
+/*
 	f3fs_bug_on(sbi, is_sbi_flag_set(sbi, SBI_CP_DISABLED));
 	f3fs_bug_on(sbi, __is_large_section(sbi));
 	f3fs_bug_on(sbi, !valid_blocks || !dirty_type);
-
+*/
 	se = get_seg_entry(sbi, segno);
 	new_vblocks = se->valid_blocks + del;
 	offset = GET_BLKOFF_FROM_SEG0(sbi, blkaddr);
@@ -2157,16 +2158,16 @@ static void update_sit_entry2(struct f3fs_sb_info *sbi, block_t blkaddr, int del
         se->valid_blocks + 1);
   update_max_mtime_atomic(sbi, ctime);
 
-	f3fs_bug_on(sbi, (new_vblocks < 0 ||
+/*	f3fs_bug_on(sbi, (new_vblocks < 0 ||
 			(new_vblocks > f3fs_usable_blks_in_seg(sbi, segno))));
-
+*/
 	se->valid_blocks = new_vblocks;
 
 	/* Update valid block bitmap */
 	if (del > 0) {
-    down_write(se->cur_valmap_lock);
+//    down_write(se->cur_valmap_lock);
 		exist = f3fs_test_and_set_bit(offset, se->cur_valid_map);
-    up_write(se->cur_valmap_lock);
+//    up_write(se->cur_valmap_lock);
 		if (unlikely(exist)) {
 			f3fs_err(sbi, "Bitmap was wrongly set, blk:%u",
 				 blkaddr);
@@ -2179,9 +2180,9 @@ static void update_sit_entry2(struct f3fs_sb_info *sbi, block_t blkaddr, int del
 				!f3fs_test_and_set_bit(offset, se->discard_map))
 			sbi->discard_blks--;
 	} else {
-    down_write(se->cur_valmap_lock);
+//    down_write(se->cur_valmap_lock);
 		exist = f3fs_test_and_clear_bit(offset, se->cur_valid_map);
-    up_write(se->cur_valmap_lock);
+//    up_write(se->cur_valmap_lock);
 		if (unlikely(!exist)) {
 			f3fs_err(sbi, "Bitmap was wrongly cleared, blk:%u",
 				 blkaddr);
@@ -2200,7 +2201,7 @@ static void update_sit_entry2(struct f3fs_sb_info *sbi, block_t blkaddr, int del
 	__mark_sit_entry_dirty(sbi, segno);
 
 	/* update total number of valid blocks to be written in ckpt area */
-	atomic64_add(del, &SIT_I(sbi)->written_valid_blocks);
+//	atomic64_add(del, &SIT_I(sbi)->written_valid_blocks);
   *valid_blocks = se->valid_blocks;
   *dirty_type = se->type;
 }
@@ -4257,12 +4258,12 @@ static int build_sit_info(struct f3fs_sb_info *sbi)
 		return -ENOMEM;
 
 	for (start = 0; start < MAIN_SEGS(sbi); start++) {
-    sit_i->sentries[start].cur_valmap_lock =
+   /* sit_i->sentries[start].cur_valmap_lock =
       f3fs_kzalloc(sbi, sizeof(struct rw_semaphore), GFP_KERNEL);
     if (!sit_i->sentries[start].cur_valmap_lock) {
       return -ENOMEM;
     }
-	  init_rwsem(sit_i->sentries[start].cur_valmap_lock);
+	  init_rwsem(sit_i->sentries[start].cur_valmap_lock);*/
 	  init_rwsem(&sit_i->sentries[start].local_lock);
   }
 
@@ -4295,7 +4296,7 @@ static int build_sit_info(struct f3fs_sb_info *sbi)
 
 	sit_i->sit_base_addr = le32_to_cpu(raw_super->sit_blkaddr);
 	sit_i->sit_blocks = sit_segs << sbi->log_blocks_per_seg;
-	atomic64_set(&sit_i->written_valid_blocks, 0);
+	//atomic64_set(&sit_i->written_valid_blocks, 0);
 	sit_i->bitmap_size = sit_bitmap_size;
 	sit_i->dirty_sentries = 0;
 	sit_i->sents_per_block = SIT_ENTRY_PER_BLOCK;
@@ -4532,8 +4533,9 @@ static void init_free_segmap(struct f3fs_sb_info *sbi)
 		sentry = get_seg_entry(sbi, start);
 		if (!sentry->valid_blocks)
 			__set_free(sbi, start);
-		else
-			atomic64_add(sentry->valid_blocks, &SIT_I(sbi)->written_valid_blocks);
+		else {
+			//atomic64_add(sentry->valid_blocks, &SIT_I(sbi)->written_valid_blocks);
+		}
 	}
 
 	/* set use the current segments */
@@ -5246,12 +5248,12 @@ static void destroy_sit_info(struct f3fs_sb_info *sbi)
 
 	kfree(sit_i->tmp_map);
 
-  for (int i = 0 ; i < MAIN_SEGS(sbi) ; i++) {
+/*  for (int i = 0 ; i < MAIN_SEGS(sbi) ; i++) {
     if (sit_i->sentries[i].cur_valmap_lock) {
       kvfree(sit_i->sentries[i].cur_valmap_lock);
     }
   }
-
+*/
 	kvfree(sit_i->sentries);
 	kvfree(sit_i->sec_entries);
 	kvfree(sit_i->dirty_sentries_bitmap);
