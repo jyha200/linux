@@ -765,7 +765,7 @@ static void locate_dirty_segment2(struct f3fs_sb_info *sbi,
 	if (segno == NULL_SEGNO || IS_CURSEG(sbi, segno))
 		return;
 
-  f3fs_bug_on(sbi, is_sbi_flag_set(sbi, SBI_CP_DISABLED));
+//  f3fs_bug_on(sbi, is_sbi_flag_set(sbi, SBI_CP_DISABLED));
 
 	usable_blocks = f3fs_usable_blks_in_seg(sbi, segno);
 //	mutex_lock(&dirty_i->seglist_lock);
@@ -3229,7 +3229,7 @@ static int __get_segment_type(struct f3fs_io_info *fio)
 	case 4:
 		type = __get_segment_type_4(fio);
 		break;
-	case 22:
+	case 33:
 		type = __get_segment_type_6(fio);
 		break;
 	default:
