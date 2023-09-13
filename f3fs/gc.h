@@ -30,7 +30,7 @@
 /* Search max. number of dirty segments to select a victim segment */
 #define DEF_MAX_VICTIM_SEARCH 4096 /* covers 8GB */
 
-#define NUM_GC_WORKER (16)
+#define NUM_GC_WORKER (27)
 
 #define VICTIM_COUNT (4)
 
