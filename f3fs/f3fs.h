@@ -1003,7 +1003,7 @@ static inline void set_new_dnode(struct dnode_of_data *dn, struct inode *inode,
  * data and 8 for node logs.
  */
 
-#define MAX_GC_WORKER (16)
+#define MAX_GC_WORKER (27)
 #define	NR_CURSEG_DATA_TYPE	(3 + MAX_GC_WORKER)
 #define NR_CURSEG_NODE_TYPE	(3)
 #define NR_CURSEG_INMEM_TYPE	(2)
