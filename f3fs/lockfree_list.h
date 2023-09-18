@@ -1,4 +1,4 @@
-#define IN_KERNEL2 (0)
+#define IN_KERNEL2 (1)
 
 #if IN_KERNEL2
 #include <linux/types.h>
@@ -22,7 +22,7 @@ struct LNode {
 };
 
 struct ListRL {
-  struct LNode* head;
+  volatile struct LNode* head;
 };
 
 struct RangeLock {
