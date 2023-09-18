@@ -30,6 +30,7 @@
 #include <linux/fsverity.h>
 
 #include "range_lock.h"
+#include "lockfree_list.h"
 
 struct pagevec;
 
@@ -801,7 +802,7 @@ struct f3fs_inode_info {
 	struct inode *cow_inode;	/* copy-on-write inode for atomic write */
 
 	/* avoid racing between foreground op and gc */
-	struct f3fs_rwsem2 i_gc_rwsem[2];
+	struct f3fs_rwsem3 i_gc_rwsem[2];
 	struct f3fs_rwsem i_xattr_sem; /* avoid racing between reading and changing EAs */
 
 	int i_extra_isize;		/* size of extra space located in i_addr */
@@ -2170,6 +2171,11 @@ static inline void f3fs_down_read2(struct f3fs_rwsem2 *sem)
 {
   f3fs_down_range(sem, 0, 0xFFFFFFFF, false);
 }
+
+static inline struct RangeLock* f3fs_down_read3(struct f3fs_rwsem3 *sem)
+{
+  return RWRangeAcquire(&sem->list_rl, 0, 0xFFFFFFFF, false);
+}
 static inline void f3fs_down_read(struct f3fs_rwsem *sem)
 {
 #ifdef CONFIG_F3FS_UNFAIR_RWSEM
@@ -2178,10 +2184,17 @@ static inline void f3fs_down_read(struct f3fs_rwsem *sem)
 	down_read(&sem->internal_rwsem);
 #endif
 }
+
 static inline int f3fs_down_read_trylock2(struct f3fs_rwsem2 *sem)
 {
 	return f3fs_down_range_trylock(sem, 0, 0xFFFFFFFF, false);
 }
+
+static inline struct RangeLock* f3fs_down_read_trylock3(struct f3fs_rwsem3 *sem)
+{
+  return RWRangeTryAcquire(&sem->list_rl, 0, 0xFFFFFFFF, false);
+}
+
 static inline int f3fs_down_read_trylock(struct f3fs_rwsem *sem)
 {
 	return down_read_trylock(&sem->internal_rwsem);
@@ -2195,9 +2208,15 @@ static inline void f3fs_down_read_nested(struct f3fs_rwsem *sem, int subclass)
 #else
 #define f3fs_down_read_nested(sem, subclass) f3fs_down_read(sem)
 #endif
+
 static inline void f3fs_up_read2(struct f3fs_rwsem2 *sem)
 {
   f3fs_up_range(sem, 0, 0xFFFFFFFF, false);
+}
+
+static inline void f3fs_up_read3(struct RangeLock* range)
+{
+  MutexRangeRelease(range);
 }
 
 static inline void f3fs_up_read(struct f3fs_rwsem *sem)
@@ -2208,6 +2227,11 @@ static inline void f3fs_up_read(struct f3fs_rwsem *sem)
 static inline void f3fs_down_write2(struct f3fs_rwsem2 *sem)
 {
   f3fs_down_range(sem, 0, 0xFFFFFFFF, true);
+}
+
+static inline struct RangeLock* f3fs_down_write3(struct f3fs_rwsem3* sem)
+{
+  return RWRangeAcquire(&sem->list_rl, 0, 0xFFFFFFFF, true);
 }
 
 static inline void f3fs_down_write(struct f3fs_rwsem *sem)
@@ -2226,6 +2250,17 @@ static inline int f3fs_down_write_trylock2(struct f3fs_rwsem2 *sem)
 	return f3fs_down_range_trylock(sem, 0, 0xFFFFFFFF, true);
 }
 
+static inline struct RangeLock* f3fs_down_write_range_trylock3(
+  struct f3fs_rwsem3 *sem, unsigned start, unsigned size)
+{
+  return RWRangeTryAcquire(&sem->list_rl, start, start + size, true);
+}
+
+static inline struct RangeLock* f3fs_down_write_trylock3(struct f3fs_rwsem3 *sem)
+{
+  return RWRangeTryAcquire(&sem->list_rl, 0, 0xFFFFFFFF, true);
+}
+
 static inline int f3fs_down_write_trylock(struct f3fs_rwsem *sem)
 {
 	return down_write_trylock(&sem->internal_rwsem);
@@ -2240,6 +2275,17 @@ static inline void f3fs_up_write_range2(
 static inline void f3fs_up_write2(struct f3fs_rwsem2 *sem)
 {
   f3fs_up_range(sem, 0, 0xFFFFFFFF, true);
+}
+
+static inline void f3fs_up_write_range3(struct RangeLock* range)
+{
+  MutexRangeRelease(range);
+}
+
+
+static inline void f3fs_up_write3(struct RangeLock* range)
+{
+  MutexRangeRelease(range);
 }
 
 static inline void f3fs_up_write(struct f3fs_rwsem *sem)
