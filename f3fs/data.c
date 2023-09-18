@@ -3269,14 +3269,14 @@ void f3fs_write_failed(struct inode *inode, loff_t to)
 
 	/* In the fs-verity case, f3fs_end_enable_verity() does the truncate */
 	if (to > i_size && !f3fs_verity_in_progress(inode)) {
-		f3fs_down_write2(&F3FS_I(inode)->i_gc_rwsem[WRITE]);
+		struct RangeLock* range = f3fs_down_write3(&F3FS_I(inode)->i_gc_rwsem[WRITE]);
 		filemap_invalidate_lock(inode->i_mapping);
 
 		truncate_pagecache(inode, i_size);
 		f3fs_truncate_blocks(inode, i_size, true);
 
 		filemap_invalidate_unlock(inode->i_mapping);
-		f3fs_up_write2(&F3FS_I(inode)->i_gc_rwsem[WRITE]);
+		f3fs_up_write3(range);
 	}
 }
 
@@ -3786,7 +3786,7 @@ static int f3fs_migrate_blocks(struct inode *inode, block_t start_blk,
 	unsigned int end_sec = secidx + blkcnt / blk_per_sec;
 	int ret = 0;
 
-	f3fs_down_write2(&F3FS_I(inode)->i_gc_rwsem[WRITE]);
+	struct RangeLock* range = f3fs_down_write3(&F3FS_I(inode)->i_gc_rwsem[WRITE]);
 	filemap_invalidate_lock(inode->i_mapping);
 
 	set_inode_flag(inode, FI_ALIGNED_WRITE);
@@ -3832,7 +3832,7 @@ done:
 	clear_inode_flag(inode, FI_ALIGNED_WRITE);
 
 	filemap_invalidate_unlock(inode->i_mapping);
-	f3fs_up_write2(&F3FS_I(inode)->i_gc_rwsem[WRITE]);
+	f3fs_up_write3(range);
 
 	return ret;
 }
