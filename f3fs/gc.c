@@ -1507,6 +1507,8 @@ static int gc_data_segment(struct f3fs_sb_info *sbi, struct f3fs_summary *sum,
 	int phase = 0;
 	int submitted = 0;
 	unsigned int usable_blks_in_seg = f3fs_usable_blks_in_seg(sbi, segno);
+  struct RangeLock* range_w = NULL;
+  struct RangeLock* range_r = NULL;
 
 	start_addr = START_BLOCK(sbi, segno);
 
@@ -1573,8 +1575,12 @@ next_step:
 			start_bidx = f3fs_start_bidx_of_node(nofs, inode) +
 								ofs_in_node;
 
-			if (!f3fs_down_write_range_trylock2(
-				&F3FS_I(inode)->i_gc_rwsem[WRITE], start_bidx, 1)) {
+			range_w = f3fs_down_write_range_trylock3(
+        &F3FS_I(inode)->i_gc_rwsem[WRITE],
+        start_bidx,
+        1);
+
+			if (!range_w) {
 				iput(inode);
 				sbi->skipped_gc_rwsem++;
 				continue;
@@ -1582,8 +1588,8 @@ next_step:
 
 			if (f3fs_post_read_required(inode)) {
 				int err = ra_data_block(inode, start_bidx);
+				f3fs_up_write_range3(range_w);
 
-				f3fs_up_write_range2(&F3FS_I(inode)->i_gc_rwsem[WRITE], start_bidx, 1);
 				if (err) {
 					iput(inode);
 					continue;
@@ -1594,7 +1600,8 @@ next_step:
 
 			data_page = f3fs_get_read_data_page(inode,
 						start_bidx, REQ_RAHEAD, true);
-			f3fs_up_write_range2(&F3FS_I(inode)->i_gc_rwsem[WRITE], start_bidx, 1);
+			f3fs_up_write_range3(range_w);
+
 			if (IS_ERR(data_page)) {
 				iput(inode);
 				continue;
@@ -1616,15 +1623,18 @@ next_step:
 								+ ofs_in_node;
 
 			if (S_ISREG(inode->i_mode)) {
-				if (!f3fs_down_write_range_trylock2(
-          &fi->i_gc_rwsem[READ], start_bidx, 1)) {
+        range_r = f3fs_down_write_range_trylock3(
+          &fi->i_gc_rwsem[READ], start_bidx, 1);
+        if (!range_r) {
 					sbi->skipped_gc_rwsem++;
 					continue;
 				}
-				if (!f3fs_down_write_range_trylock2(
-						&fi->i_gc_rwsem[WRITE], start_bidx, 1)) {
+        range_w = f3fs_down_write_range_trylock3(
+						&fi->i_gc_rwsem[WRITE], start_bidx, 1);
+        if (!range_w) {
+          f3fs_up_write_range3(range_r);
+        //count[7]++;
 					sbi->skipped_gc_rwsem++;
-					f3fs_up_write_range2(&fi->i_gc_rwsem[READ], start_bidx, 1);
 					continue;
 				}
 				locked = true;
@@ -1644,8 +1654,8 @@ next_step:
 				submitted++;
 
 			if (locked) {
-				f3fs_up_write_range2(&fi->i_gc_rwsem[WRITE], start_bidx, 1);
-				f3fs_up_write_range2(&fi->i_gc_rwsem[READ], start_bidx, 1);
+				f3fs_up_write_range3(range_w);
+				f3fs_up_write_range3(range_r);
 			}
 
 			stat_inc_data_blk_count(sbi, 1, gc_type);
