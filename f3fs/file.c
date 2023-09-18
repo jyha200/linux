@@ -941,6 +941,7 @@ int f3fs_setattr(struct user_namespace *mnt_userns, struct dentry *dentry,
 	}
 
 	if (attr->ia_valid & ATTR_SIZE) {
+    struct RangeLock* range = NULL;
 		loff_t old_size = i_size_read(inode);
 
 		if (attr->ia_size > MAX_INLINE_DATA(inode)) {
@@ -953,7 +954,7 @@ int f3fs_setattr(struct user_namespace *mnt_userns, struct dentry *dentry,
 				return err;
 		}
 
-		f3fs_down_write2(&F3FS_I(inode)->i_gc_rwsem[WRITE]);
+		range = f3fs_down_write3(&F3FS_I(inode)->i_gc_rwsem[WRITE]);
 		filemap_invalidate_lock(inode->i_mapping);
 
 		truncate_setsize(inode, attr->ia_size);
@@ -965,7 +966,7 @@ int f3fs_setattr(struct user_namespace *mnt_userns, struct dentry *dentry,
 		 * larger than i_size.
 		 */
 		filemap_invalidate_unlock(inode->i_mapping);
-		f3fs_up_write2(&F3FS_I(inode)->i_gc_rwsem[WRITE]);
+		f3fs_up_write3(range);
 		if (err)
 			return err;
 
@@ -1101,13 +1102,14 @@ static int punch_hole(struct inode *inode, loff_t offset, loff_t len)
 		if (pg_start < pg_end) {
 			loff_t blk_start, blk_end;
 			struct f3fs_sb_info *sbi = F3FS_I_SB(inode);
+      struct RangeLock* range = NULL;
 
 			f3fs_balance_fs(sbi, true);
 
 			blk_start = (loff_t)pg_start << PAGE_SHIFT;
 			blk_end = (loff_t)pg_end << PAGE_SHIFT;
 
-			f3fs_down_write2(&F3FS_I(inode)->i_gc_rwsem[WRITE]);
+			range = f3fs_down_write3(&F3FS_I(inode)->i_gc_rwsem[WRITE]);
 			filemap_invalidate_lock(inode->i_mapping);
 
 			truncate_pagecache_range(inode, blk_start, blk_end - 1);
@@ -1117,7 +1119,7 @@ static int punch_hole(struct inode *inode, loff_t offset, loff_t len)
 			f3fs_unlock_op(sbi);
 
 			filemap_invalidate_unlock(inode->i_mapping);
-			f3fs_up_write2(&F3FS_I(inode)->i_gc_rwsem[WRITE]);
+			f3fs_up_write3(range);
 		}
 	}
 
@@ -1346,11 +1348,12 @@ static int f3fs_do_collapse(struct inode *inode, loff_t offset, loff_t len)
 	pgoff_t start = offset >> PAGE_SHIFT;
 	pgoff_t end = (offset + len) >> PAGE_SHIFT;
 	int ret;
+  struct RangeLock* range = NULL;
 
 	f3fs_balance_fs(sbi, true);
 
 	/* avoid gc operation during block exchange */
-	f3fs_down_write2(&F3FS_I(inode)->i_gc_rwsem[WRITE]);
+	range = f3fs_down_write3(&F3FS_I(inode)->i_gc_rwsem[WRITE]);
 	filemap_invalidate_lock(inode->i_mapping);
 
 	f3fs_lock_op(sbi);
@@ -1360,7 +1363,7 @@ static int f3fs_do_collapse(struct inode *inode, loff_t offset, loff_t len)
 	f3fs_unlock_op(sbi);
 
 	filemap_invalidate_unlock(inode->i_mapping);
-	f3fs_up_write2(&F3FS_I(inode)->i_gc_rwsem[WRITE]);
+	f3fs_up_write3(range);
 	return ret;
 }
 
@@ -1502,8 +1505,9 @@ static int f3fs_zero_range(struct inode *inode, loff_t offset, loff_t len,
 			struct dnode_of_data dn;
 			unsigned int end_offset;
 			pgoff_t end;
+      struct RangeLock* range = NULL;
 
-			f3fs_down_write2(&F3FS_I(inode)->i_gc_rwsem[WRITE]);
+			range = f3fs_down_write3(&F3FS_I(inode)->i_gc_rwsem[WRITE]);
 			filemap_invalidate_lock(mapping);
 
 			truncate_pagecache_range(inode,
@@ -1517,7 +1521,7 @@ static int f3fs_zero_range(struct inode *inode, loff_t offset, loff_t len,
 			if (ret) {
 				f3fs_unlock_op(sbi);
 				filemap_invalidate_unlock(mapping);
-				f3fs_up_write2(&F3FS_I(inode)->i_gc_rwsem[WRITE]);
+				f3fs_up_write3(range);
 				goto out;
 			}
 
@@ -1529,7 +1533,7 @@ static int f3fs_zero_range(struct inode *inode, loff_t offset, loff_t len,
 
 			f3fs_unlock_op(sbi);
 			filemap_invalidate_unlock(mapping);
-			f3fs_up_write2(&F3FS_I(inode)->i_gc_rwsem[WRITE]);
+			f3fs_up_write3(range);
 
 			f3fs_balance_fs(sbi, dn.node_changed);
 
@@ -1567,6 +1571,7 @@ static int f3fs_insert_range(struct inode *inode, loff_t offset, loff_t len)
 	pgoff_t nr, pg_start, pg_end, delta, idx;
 	loff_t new_size;
 	int ret = 0;
+  struct RangeLock* range = NULL;
 
 	new_size = i_size_read(inode) + len;
 	ret = inode_newsize_ok(inode, new_size);
@@ -1603,7 +1608,7 @@ static int f3fs_insert_range(struct inode *inode, loff_t offset, loff_t len)
 	idx = DIV_ROUND_UP(i_size_read(inode), PAGE_SIZE);
 
 	/* avoid gc operation during block exchange */
-	f3fs_down_write2(&F3FS_I(inode)->i_gc_rwsem[WRITE]);
+	range = f3fs_down_write3(&F3FS_I(inode)->i_gc_rwsem[WRITE]);
 	filemap_invalidate_lock(mapping);
 	truncate_pagecache(inode, offset);
 
@@ -1621,7 +1626,7 @@ static int f3fs_insert_range(struct inode *inode, loff_t offset, loff_t len)
 		f3fs_unlock_op(sbi);
 	}
 	filemap_invalidate_unlock(mapping);
-	f3fs_up_write2(&F3FS_I(inode)->i_gc_rwsem[WRITE]);
+	f3fs_up_write3(range);
 
 	/* write out all moved pages, if possible */
 	filemap_invalidate_lock(mapping);
@@ -1989,6 +1994,7 @@ static int f3fs_ioc_start_atomic_write(struct file *filp)
 	struct f3fs_sb_info *sbi = F3FS_I_SB(inode);
 	struct inode *pinode;
 	int ret;
+  struct RangeLock* range = NULL;
 
 	if (!inode_owner_or_capable(mnt_userns, inode))
 		return -EACCES;
@@ -2017,7 +2023,7 @@ static int f3fs_ioc_start_atomic_write(struct file *filp)
 	if (ret)
 		goto out;
 
-	f3fs_down_write2(&fi->i_gc_rwsem[WRITE]);
+	range = f3fs_down_write3(&fi->i_gc_rwsem[WRITE]);
 
 	/*
 	 * Should wait end_io to count F3FS_WB_CP_DATA correctly by
@@ -2028,14 +2034,14 @@ static int f3fs_ioc_start_atomic_write(struct file *filp)
 			  inode->i_ino, get_dirty_pages(inode));
 	ret = filemap_write_and_wait_range(inode->i_mapping, 0, LLONG_MAX);
 	if (ret) {
-		f3fs_up_write2(&fi->i_gc_rwsem[WRITE]);
+		f3fs_up_write3(range);
 		goto out;
 	}
 
 	/* Create a COW inode for atomic write */
 	pinode = f3fs_iget(inode->i_sb, fi->i_pino);
 	if (IS_ERR(pinode)) {
-		f3fs_up_write2(&fi->i_gc_rwsem[WRITE]);
+		f3fs_up_write3(range);
 		ret = PTR_ERR(pinode);
 		goto out;
 	}
@@ -2043,7 +2049,7 @@ static int f3fs_ioc_start_atomic_write(struct file *filp)
 	ret = f3fs_get_tmpfile(mnt_userns, pinode, &fi->cow_inode);
 	iput(pinode);
 	if (ret) {
-		f3fs_up_write2(&fi->i_gc_rwsem[WRITE]);
+		f3fs_up_write3(range);
 		goto out;
 	}
 	f3fs_i_size_write(fi->cow_inode, i_size_read(inode));
@@ -2055,7 +2061,7 @@ static int f3fs_ioc_start_atomic_write(struct file *filp)
 	set_inode_flag(inode, FI_ATOMIC_FILE);
 	set_inode_flag(fi->cow_inode, FI_COW_FILE);
 	clear_inode_flag(fi->cow_inode, FI_INLINE_DATA);
-	f3fs_up_write2(&fi->i_gc_rwsem[WRITE]);
+	f3fs_up_write3(range);
 
 	f3fs_update_time(sbi, REQ_TIME);
 	fi->atomic_write_task = current;
@@ -2695,6 +2701,8 @@ static int f3fs_move_file_range(struct file *file_in, loff_t pos_in,
 	size_t olen = len, dst_max_i_size = 0;
 	size_t dst_osize;
 	int ret;
+  struct RangeLock* range_dst = NULL;
+  struct RangeLock* range_src = NULL;
 
 	if (file_in->f_path.mnt != file_out->f_path.mnt ||
 				src->i_sb != dst->i_sb)
@@ -2769,10 +2777,11 @@ static int f3fs_move_file_range(struct file *file_in, loff_t pos_in,
 
 	f3fs_balance_fs(sbi, true);
 
-	f3fs_down_write2(&F3FS_I(src)->i_gc_rwsem[WRITE]);
+	range_src = f3fs_down_write3(&F3FS_I(src)->i_gc_rwsem[WRITE]);
 	if (src != dst) {
 		ret = -EBUSY;
-		if (!f3fs_down_write_trylock2(&F3FS_I(dst)->i_gc_rwsem[WRITE]))
+    range_dst = f3fs_down_write_trylock3(&F3FS_I(dst)->i_gc_rwsem[WRITE]);
+		if (range_dst == NULL)
 			goto out_src;
 	}
 
@@ -2790,9 +2799,9 @@ static int f3fs_move_file_range(struct file *file_in, loff_t pos_in,
 	f3fs_unlock_op(sbi);
 
 	if (src != dst)
-		f3fs_up_write2(&F3FS_I(dst)->i_gc_rwsem[WRITE]);
+		f3fs_up_write3(range_dst);
 out_src:
-	f3fs_up_write2(&F3FS_I(src)->i_gc_rwsem[WRITE]);
+	f3fs_up_write3(range_src);
 out_unlock:
 	if (src != dst)
 		inode_unlock(dst);
@@ -3160,11 +3169,12 @@ int f3fs_precache_extents(struct inode *inode)
 	end = max_file_blocks(inode);
 
 	while (map.m_lblk < end) {
+    struct RangeLock* range = NULL;
 		map.m_len = end - map.m_lblk;
 
-		f3fs_down_write2(&fi->i_gc_rwsem[WRITE]);
+		range = f3fs_down_write3(&fi->i_gc_rwsem[WRITE]);
 		err = f3fs_map_blocks(inode, &map, 0, F3FS_GET_BLOCK_PRECACHE);
-		f3fs_up_write2(&fi->i_gc_rwsem[WRITE]);
+		f3fs_up_write3(range);
 		if (err)
 			return err;
 
@@ -3368,6 +3378,7 @@ static int f3fs_release_compress_blocks(struct file *filp, unsigned long arg)
 	unsigned int released_blocks = 0;
 	int ret;
 	int writecount;
+  struct RangeLock* range = NULL;
 
 	if (!f3fs_sb_has_compression(F3FS_I_SB(inode)))
 		return -EOPNOTSUPP;
@@ -3409,7 +3420,7 @@ static int f3fs_release_compress_blocks(struct file *filp, unsigned long arg)
 	if (!atomic_read(&F3FS_I(inode)->i_compr_blocks))
 		goto out;
 
-	f3fs_down_write2(&F3FS_I(inode)->i_gc_rwsem[WRITE]);
+	range = f3fs_down_write3(&F3FS_I(inode)->i_gc_rwsem[WRITE]);
 	filemap_invalidate_lock(inode->i_mapping);
 
 	last_idx = DIV_ROUND_UP(i_size_read(inode), PAGE_SIZE);
@@ -3446,7 +3457,7 @@ static int f3fs_release_compress_blocks(struct file *filp, unsigned long arg)
 	}
 
 	filemap_invalidate_unlock(inode->i_mapping);
-	f3fs_up_write2(&F3FS_I(inode)->i_gc_rwsem[WRITE]);
+	f3fs_up_write3(range);
 out:
 	inode_unlock(inode);
 
@@ -3536,6 +3547,7 @@ static int f3fs_reserve_compress_blocks(struct file *filp, unsigned long arg)
 	pgoff_t page_idx = 0, last_idx;
 	unsigned int reserved_blocks = 0;
 	int ret;
+  struct RangeLock* range = NULL;
 
 	if (!f3fs_sb_has_compression(F3FS_I_SB(inode)))
 		return -EOPNOTSUPP;
@@ -3562,7 +3574,7 @@ static int f3fs_reserve_compress_blocks(struct file *filp, unsigned long arg)
 		goto unlock_inode;
 	}
 
-	f3fs_down_write2(&F3FS_I(inode)->i_gc_rwsem[WRITE]);
+	range = f3fs_down_write3(&F3FS_I(inode)->i_gc_rwsem[WRITE]);
 	filemap_invalidate_lock(inode->i_mapping);
 
 	last_idx = DIV_ROUND_UP(i_size_read(inode), PAGE_SIZE);
@@ -3599,7 +3611,7 @@ static int f3fs_reserve_compress_blocks(struct file *filp, unsigned long arg)
 	}
 
 	filemap_invalidate_unlock(inode->i_mapping);
-	f3fs_up_write2(&F3FS_I(inode)->i_gc_rwsem[WRITE]);
+	f3fs_up_write3(range);
 
 	if (ret >= 0) {
 		clear_inode_flag(inode, FI_COMPRESS_RELEASED);
@@ -3666,6 +3678,7 @@ static int f3fs_sec_trim_file(struct file *filp, unsigned long arg)
 	loff_t end_addr;
 	bool to_end = false;
 	int ret = 0;
+  struct RangeLock* range_lock = NULL;
 
 	if (!(filp->f_mode & FMODE_WRITE))
 		return -EBADF;
@@ -3717,7 +3730,7 @@ static int f3fs_sec_trim_file(struct file *filp, unsigned long arg)
 	if (ret)
 		goto err;
 
-	f3fs_down_write2(&F3FS_I(inode)->i_gc_rwsem[WRITE]);
+	range_lock = f3fs_down_write3(&F3FS_I(inode)->i_gc_rwsem[WRITE]);
 	filemap_invalidate_lock(mapping);
 
 	ret = filemap_write_and_wait_range(mapping, range.start,
@@ -3806,7 +3819,7 @@ static int f3fs_sec_trim_file(struct file *filp, unsigned long arg)
 				prev_block, len, range.flags);
 out:
 	filemap_invalidate_unlock(mapping);
-	f3fs_up_write2(&F3FS_I(inode)->i_gc_rwsem[WRITE]);
+	f3fs_up_write3(range_lock);
 err:
 	inode_unlock(inode);
 	file_end_write(filp);
@@ -4230,6 +4243,7 @@ static ssize_t f3fs_dio_read_iter(struct kiocb *iocb, struct iov_iter *to)
 	const size_t count = iov_iter_count(to);
 	struct iomap_dio *dio;
 	ssize_t ret;
+  struct RangeLock* range = NULL;
 
 	if (count == 0)
 		return 0; /* skip atime update */
@@ -4237,12 +4251,13 @@ static ssize_t f3fs_dio_read_iter(struct kiocb *iocb, struct iov_iter *to)
 	trace_f3fs_direct_IO_enter(inode, iocb, count, READ);
 
 	if (iocb->ki_flags & IOCB_NOWAIT) {
-		if (!f3fs_down_read_trylock2(&fi->i_gc_rwsem[READ])) {
+		range = f3fs_down_read_trylock3(&fi->i_gc_rwsem[READ]);
+		if (!range) {
 			ret = -EAGAIN;
 			goto out;
 		}
 	} else {
-		f3fs_down_read2(&fi->i_gc_rwsem[READ]);
+		range = f3fs_down_read3(&fi->i_gc_rwsem[READ]);
 	}
 
 	/*
@@ -4261,7 +4276,7 @@ static ssize_t f3fs_dio_read_iter(struct kiocb *iocb, struct iov_iter *to)
 		ret = iomap_dio_complete(dio);
 	}
 
-	f3fs_up_read2(&fi->i_gc_rwsem[READ]);
+	f3fs_up_read3(range);
 
 	file_accessed(file);
 out:
@@ -4452,6 +4467,8 @@ static ssize_t f3fs_dio_write_iter(struct kiocb *iocb, struct iov_iter *from,
 	unsigned int dio_flags;
 	struct iomap_dio *dio;
 	ssize_t ret;
+  struct RangeLock* range_r = NULL;
+  struct RangeLock* range_w = NULL;
 
 	trace_f3fs_direct_IO_enter(inode, iocb, count, WRITE);
 
@@ -4463,23 +4480,27 @@ static ssize_t f3fs_dio_write_iter(struct kiocb *iocb, struct iov_iter *from,
 			goto out;
 		}
 
-		if (!f3fs_down_read_trylock2(&fi->i_gc_rwsem[WRITE])) {
+		range_w = f3fs_down_read_trylock3(&fi->i_gc_rwsem[WRITE]);
+		if (!range_w) {
 			ret = -EAGAIN;
 			goto out;
 		}
-		if (do_opu && !f3fs_down_read_trylock2(&fi->i_gc_rwsem[READ])) {
-			f3fs_up_read2(&fi->i_gc_rwsem[WRITE]);
-			ret = -EAGAIN;
-			goto out;
+		if (do_opu) {
+       range_r = f3fs_down_read_trylock3(&fi->i_gc_rwsem[READ]);
+       if (!range_r) {
+			  f3fs_up_read3(range_w);
+        ret = -EAGAIN;
+        goto out;
+       }
 		}
 	} else {
 		ret = f3fs_convert_inline_inode(inode);
 		if (ret)
 			goto out;
 
-		f3fs_down_read2(&fi->i_gc_rwsem[WRITE]);
+		range_w = f3fs_down_read3(&fi->i_gc_rwsem[WRITE]);
 		if (do_opu)
-			f3fs_down_read2(&fi->i_gc_rwsem[READ]);
+			range_r = f3fs_down_read3(&fi->i_gc_rwsem[READ]);
 	}
 
 	/*
@@ -4505,8 +4526,8 @@ static ssize_t f3fs_dio_write_iter(struct kiocb *iocb, struct iov_iter *from,
 	}
 
 	if (do_opu)
-		f3fs_up_read2(&fi->i_gc_rwsem[READ]);
-	f3fs_up_read2(&fi->i_gc_rwsem[WRITE]);
+		f3fs_up_read3(range_r);
+	f3fs_up_read3(range_w);
 
 	if (ret < 0)
 		goto out;
@@ -4629,12 +4650,12 @@ skip_write_trace:
 
 	/* Don't leave any preallocated blocks around past i_size. */
 	if (preallocated && i_size_read(inode) < target_size) {
-		f3fs_down_write2(&F3FS_I(inode)->i_gc_rwsem[WRITE]);
+		struct RangeLock* range = f3fs_down_write3(&F3FS_I(inode)->i_gc_rwsem[WRITE]);
 		filemap_invalidate_lock(inode->i_mapping);
 		if (!f3fs_truncate(inode))
 			file_dont_truncate(inode);
 		filemap_invalidate_unlock(inode->i_mapping);
-		f3fs_up_write2(&F3FS_I(inode)->i_gc_rwsem[WRITE]);
+		f3fs_up_write3(range);
 	} else {
 		file_dont_truncate(inode);
 	}

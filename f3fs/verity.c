@@ -161,6 +161,7 @@ static int f3fs_end_enable_verity(struct file *filp, const void *desc,
 		.pos = cpu_to_le64(desc_pos),
 	};
 	int err = 0, err2 = 0;
+  struct RangeLock* range = NULL;
 
 	/*
 	 * If an error already occurred (which fs/verity/ signals by passing
@@ -209,7 +210,7 @@ cleanup:
 	 * from re-instantiating cached pages we are truncating (since unlike
 	 * normal file accesses, garbage collection isn't limited by i_size).
 	 */
-	f3fs_down_write2(&F3FS_I(inode)->i_gc_rwsem[WRITE]);
+	range = f3fs_down_write3(&F3FS_I(inode)->i_gc_rwsem[WRITE]);
 	truncate_inode_pages(inode->i_mapping, inode->i_size);
 	err2 = f3fs_truncate(inode);
 	if (err2) {
@@ -217,7 +218,7 @@ cleanup:
 			 err2);
 		set_sbi_flag(sbi, SBI_NEED_FSCK);
 	}
-	f3fs_up_write2(&F3FS_I(inode)->i_gc_rwsem[WRITE]);
+	f3fs_up_write3(range);
 	clear_inode_flag(inode, FI_VERITY_IN_PROGRESS);
 	return err ?: err2;
 }

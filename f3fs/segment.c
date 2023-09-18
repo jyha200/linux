@@ -352,18 +352,19 @@ int f3fs_commit_atomic_write(struct inode *inode)
 	struct f3fs_sb_info *sbi = F3FS_I_SB(inode);
 	struct f3fs_inode_info *fi = F3FS_I(inode);
 	int err;
+  struct RangeLock* range = NULL;
 
 	err = filemap_write_and_wait_range(inode->i_mapping, 0, LLONG_MAX);
 	if (err)
 		return err;
 
-	f3fs_down_write2(&fi->i_gc_rwsem[WRITE]);
+	range = f3fs_down_write3(&fi->i_gc_rwsem[WRITE]);
 	f3fs_lock_op(sbi);
 
 	err = __f3fs_commit_atomic_write(inode);
 
 	f3fs_unlock_op(sbi);
-	f3fs_up_write2(&fi->i_gc_rwsem[WRITE]);
+	f3fs_up_write3(range);
 
 	return err;
 }
