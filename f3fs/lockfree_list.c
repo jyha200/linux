@@ -3,7 +3,7 @@
 #if IN_KERNEL2
 #define mem_alloc(size) kmalloc(size, GFP_KERNEL)
 #define mem_free(ptr) kfree(ptr)
-#define CAS(ptr, cur, next) cmpxchg(ptr, cur, next)
+#define CAS(ptr, cur, next) cmpxchg(ptr, cur, next) == cur
 
 #define RCU_LOCK() rcu_read_lock()
 #define RCU_UNLOCK() rcu_read_unlock()
@@ -47,12 +47,10 @@ int compare(struct LNode* lock1, struct LNode* lock2) {
 }
 
 int InsertNode(struct ListRL* listrl, struct LNode* lock, bool try) {
+//  RCU_LOCK();
   while (true) {
-    struct LNode** prev = &listrl->head;
-    struct LNode* cur = NULL;
-
-    RCU_LOCK();
-    cur = RCU_DREF(*prev);
+    volatile struct LNode** prev = &listrl->head;
+    struct LNode* cur = *prev;
 
     while (true) {
       if (marked(cur)){
@@ -63,38 +61,38 @@ int InsertNode(struct ListRL* listrl, struct LNode* lock, bool try) {
           struct LNode* next = unmark(cur->next);
 
           if (CAS(prev, cur, next)) {
-            RCU_KFREE(cur);
+    //        RCU_KFREE(cur);
           }
-          cur = RCU_DREF(next);
+          cur = next;
         } else {
           int ret = compare(cur, lock);
 
           if (ret == -1) {
             prev = &cur->next;
-            cur = RCU_DREF(*prev);
+            cur = *prev;
           } else if (ret == 0) {
             if (try) {
-              RCU_UNLOCK();
+            //  RCU_UNLOCK();
 
               return -1;
             }
             while (!marked(cur->next)) {
-              cur = RCU_DREF(*prev);
+              cur = *prev;
             }
           } else if (ret == 1) {
             lock->next = cur;
             if (CAS(prev, cur, lock)) {
-              RCU_UNLOCK();
+             // RCU_UNLOCK();
 
               return 0;
             }
-            cur = RCU_DREF(*prev);
+            cur = *prev;
           }
         }
       }
     }
-    RCU_UNLOCK();
   }
+//  RCU_UNLOCK();
   return -1;
 }
 
@@ -154,7 +152,7 @@ int compareRW(struct LNode* lock1, struct LNode* lock2) {
 }
 
 int w_validate(struct ListRL* listrl, struct LNode* lock) {
-  struct LNode** prev = &listrl->head;
+  volatile struct LNode** prev = &listrl->head;
   struct LNode* cur = unmark(*prev);
 
   while (true) {
@@ -183,8 +181,8 @@ int w_validate(struct ListRL* listrl, struct LNode* lock) {
   }
 }
 
-int r_validate(struct LNode* lock) {
-  struct LNode** prev = &lock->next;
+int r_validate(struct LNode* lock, bool try) {
+  volatile struct LNode** prev = &lock->next;
   struct LNode* cur = unmark(*prev);
 
   while (true) {
@@ -205,18 +203,21 @@ int r_validate(struct LNode* lock) {
       prev = &cur->next;
       cur = unmark(*prev);
     } else {
-      while (!marked(cur->next));
+      if (try) {
+        return -1;
+      }
+      while (!marked(cur->next)) {
+        cur = *prev;
+      }
     }
   }
 }
 
 int InsertNodeRW(struct ListRL* listrl, struct LNode* lock, bool try) {
+  RCU_LOCK();
   while (true) {
-    struct LNode** prev = &listrl->head;
-    struct LNode* cur = NULL;
-
-    RCU_LOCK();
-    cur = RCU_DREF(*prev);
+    volatile struct LNode** prev = &listrl->head;
+    struct LNode* cur = *prev;
 
     while (true) {
       if (marked(cur)){
@@ -229,13 +230,13 @@ int InsertNodeRW(struct ListRL* listrl, struct LNode* lock, bool try) {
           if (CAS(prev, cur, next)) {
             RCU_KFREE(cur);
           }
-          cur = RCU_DREF(next);
+          cur = next;
         } else {
           int ret = compareRW(cur, lock);
 
           if (ret == -1) {
             prev = &cur->next;
-            cur = RCU_DREF(*prev);
+            cur = *prev;
           } else if (ret == 0) {
             if (try) {
               RCU_UNLOCK();
@@ -243,14 +244,14 @@ int InsertNodeRW(struct ListRL* listrl, struct LNode* lock, bool try) {
               return -1;
             }
             while (!marked(cur->next)) {
-              cur = RCU_DREF(*prev);
+              cur = *prev;
             }
           } else if (ret == 1) {
             lock->next = cur;
             if (CAS(prev, cur, lock)) {
               int ret = 0;
               if (lock->reader) {
-                ret = r_validate(lock);
+                ret = r_validate(lock, try);
               } else {
                 ret = w_validate(listrl, lock);
               }
@@ -259,13 +260,13 @@ int InsertNodeRW(struct ListRL* listrl, struct LNode* lock, bool try) {
 
               return ret;
             }
-            cur = RCU_DREF(*prev);
+            cur = *prev;
           }
         }
       }
     }
-    RCU_UNLOCK();
   }
+  RCU_UNLOCK();
   return -1;
 }
 
@@ -281,7 +282,6 @@ struct RangeLock* RWRangeTryAcquire(
   rl->node->end = end;
   rl->node->next = NULL;
   rl->node->reader = !writer;
-
   do {
     ret = InsertNodeRW(list_rl, rl->node, true);
     if (ret < 0) {
