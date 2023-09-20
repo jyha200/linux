@@ -1558,15 +1558,21 @@ out:
 	return err;
 }
 
-static int move_data_page(struct inode *inode, block_t bidx, int gc_type,
-							unsigned int segno, int off, char dst_hint)
+static int move_data_page1(struct inode *inode, block_t bidx, int gc_type,
+							unsigned int segno, int off, char dst_hint, struct page** page)
 {
-	struct page *page;
 	int err = 0;
 
-	page = f3fs_get_lock_data_page(inode, bidx, true);
-	if (IS_ERR(page))
-		return PTR_ERR(page);
+	*page = f3fs_get_lock_data_page(inode, bidx, true);
+	if (IS_ERR(*page))
+		return PTR_ERR(*page);
+	return err;
+}
+
+static int move_data_page2(struct inode *inode, block_t bidx, int gc_type,
+							unsigned int segno, int off, char dst_hint, struct page* page)
+{
+	int err = 0;
 
 	if (!check_valid_map(F3FS_I_SB(inode), segno, off)) {
 		err = -ENOENT;
@@ -1649,6 +1655,11 @@ static int gc_data_segment(struct f3fs_sb_info *sbi, struct f3fs_summary *sum,
   struct RangeLock** range_w = kmalloc(sizeof(struct RangeLock*) * 512, GFP_KERNEL);
   struct RangeLock** range_r = kmalloc(sizeof(struct RangeLock*) * 512, GFP_KERNEL);
   bool* locked = kmalloc(sizeof(bool) * 512, GFP_KERNEL);
+  int* phase_local = kmalloc(sizeof(int) * 512, GFP_KERNEL);
+  struct inode** inode = kmalloc(sizeof(struct inode*) * 512, GFP_KERNEL);
+  int* err = kmalloc(sizeof(int) * 512, GFP_KERNEL);
+  struct page** page_arr = kmalloc(sizeof(struct page*) * 512, GFP_KERNEL);
+  int done = 0;
 
 	start_addr = START_BLOCK(sbi, segno);
 
@@ -1767,92 +1778,129 @@ next_step:
 	if (++phase < 4)
 		goto next_step;
 
+  for (off = 0; off < usable_blks_in_seg; off++, entry++) {
+    phase_local[off] = 4;
+  }
+next_step2:
 	entry = sum;
 
   for (off = 0; off < usable_blks_in_seg; off++, entry++) {
-    struct inode *inode;
     struct node_info dni; /* dnode info for the data */
     unsigned int ofs_in_node, nofs;
     block_t start_bidx;
 
-    locked[off] = false;
+    switch (phase_local[off]) {
+      case 4:
+        {
+          locked[off] = false;
 
-    /*
-     * stop BG_GC if there is not enough free sections.
-     * Or, stop GC if the segment becomes fully valid caused by
-     * race condition along with SSR block allocation.
-     */
-    if ((gc_type == BG_GC && has_not_enough_free_secs(sbi, 0, 0)) ||
-        (!force_migrate && get_valid_blocks(sbi, segno, true) ==
-         CAP_BLKS_PER_SEC(sbi)))
-      return submitted;
+          /*
+           * stop BG_GC if there is not enough free sections.
+           * Or, stop GC if the segment becomes fully valid caused by
+           * race condition along with SSR block allocation.
+           */
+          if ((gc_type == BG_GC && has_not_enough_free_secs(sbi, 0, 0)) ||
+              (!force_migrate && get_valid_blocks(sbi, segno, true) ==
+               CAP_BLKS_PER_SEC(sbi))) {
+            printk("%s %d Not supported!\n", __func__, __LINE__);
+            return submitted;
+          }
 
-    if (check_valid_map(sbi, segno, off) == 0) {
-      continue;
-    }
+          if (check_valid_map(sbi, segno, off) == 0) {
+            phase_local[off] = 6;
+            done++;
+            break;
+          }
 
-    /* Get an inode by ino with checking validity */
-    if (!is_alive(sbi, entry, &dni, start_addr + off, &nofs)) {
-      continue;
-    }
+          /* Get an inode by ino with checking validity */
+          if (!is_alive(sbi, entry, &dni, start_addr + off, &nofs)) {
+            phase_local[off] = 6;
+            done++;
+            break;
+          }
 
-    ofs_in_node = le16_to_cpu(entry->ofs_in_node);
+          ofs_in_node = le16_to_cpu(entry->ofs_in_node);
 
-    /* phase 4 */
-    inode = find_gc_inode(gc_list, dni.ino);
-    if (inode) {
-      struct f3fs_inode_info *fi = F3FS_I(inode);
-      int err;
+          /* phase 4 */
+          inode[off] = find_gc_inode(gc_list, dni.ino);
+          if (inode[off]) {
+            struct f3fs_inode_info *fi = F3FS_I(inode[off]);
 
-      start_bidx = f3fs_start_bidx_of_node(nofs, inode)
-        + ofs_in_node;
+            start_bidx = f3fs_start_bidx_of_node(nofs, inode[off])
+              + ofs_in_node;
 
-      if (S_ISREG(inode->i_mode)) {
-        range_r[off] = f3fs_down_write_range_trylock3(
-            &fi->i_gc_rwsem[READ], start_bidx, 1);
-        if (!range_r[off]) {
-          sbi->skipped_gc_rwsem++;
-          continue;
+            if (S_ISREG(inode[off]->i_mode)) {
+              range_r[off] = f3fs_down_write_range_trylock3(
+                  &fi->i_gc_rwsem[READ], start_bidx, 1);
+              if (!range_r[off]) {
+                sbi->skipped_gc_rwsem++;
+                continue;
+              }
+              range_w[off] = f3fs_down_write_range_trylock3(
+                  &fi->i_gc_rwsem[WRITE], start_bidx, 1);
+              if (!range_w[off]) {
+                f3fs_up_write_range3(range_r[off]);
+                continue;
+              }
+              locked[off] = true;
+
+              /* wait for all inflight aio data */
+              inode_dio_wait(inode[off]);
+            }
+            if (f3fs_post_read_required(inode[off])) {
+              printk("%s %d Not supported!\n", __func__, __LINE__);
+              err[off] = move_data_block(inode[off], start_bidx,
+                  gc_type, segno, off);
+            } else
+              err[off] = move_data_page1(inode[off], start_bidx, gc_type,
+                  segno, off, dst_hint, &page_arr[off]);
+            phase_local[off] = 5;
+          } else {
+            phase_local[off] = 6;
+            done++;
+          }
+
+          break;
         }
-        range_w[off] = f3fs_down_write_range_trylock3(
-            &fi->i_gc_rwsem[WRITE], start_bidx, 1);
-        if (!range_w[off]) {
-          f3fs_up_write_range3(range_r[off]);
-          continue;
+      case 5:
+        {
+          if (!err[off]) {
+            err[off] = move_data_page2(inode[off], start_bidx, gc_type,
+                segno, off, dst_hint, page_arr[off]);
+          }
+
+          if (!err[off] && (gc_type == FG_GC ||
+                f3fs_post_read_required(inode[off])))
+            submitted++;
+
+          stat_inc_data_blk_count(sbi, 1, gc_type);
+          if (locked[off]) {
+            f3fs_up_write_range3(range_w[off]);
+            f3fs_up_write_range3(range_r[off]);
+          }
+          phase_local[off] = 6;
+          done++;
+
+          break;
         }
-        locked[off] = true;
-
-        /* wait for all inflight aio data */
-        inode_dio_wait(inode);
-      }
-      if (f3fs_post_read_required(inode))
-        err = move_data_block(inode, start_bidx,
-            gc_type, segno, off);
-      else
-        err = move_data_page(inode, start_bidx, gc_type,
-            segno, off, dst_hint);
-
-      if (!err && (gc_type == FG_GC ||
-            f3fs_post_read_required(inode)))
-        submitted++;
-
-      stat_inc_data_blk_count(sbi, 1, gc_type);
+      default:
+        {
+          break;
+        }
     }
-	}
-
-	entry = sum;
-
-	for (off = 0; off < usable_blks_in_seg; off++, entry++) {
-    if (locked[off]) {
-      f3fs_up_write_range3(range_w[off]);
-      f3fs_up_write_range3(range_r[off]);
-    }
+  }
+  if (done < usable_blks_in_seg) {
+    goto next_step2;
   }
 
 //  printk("%s %d : %d %d %d %d %d %d %d %d\n", __func__, __LINE__, count[0], count[1], count[2], count[3], count[4], count[5], count[6], count[7]);
   kfree(range_w);
   kfree(range_r);
   kfree(locked);
+  kfree(phase_local);
+  kfree(inode);
+  kfree(err);
+  kfree(page_arr);
 	return submitted;
 }
 
