@@ -1197,6 +1197,78 @@ int f3fs_get_block(struct dnode_of_data *dn, pgoff_t index)
 	return f3fs_reserve_block(dn, index);
 }
 
+struct page *f3fs_get_read_data_page2(struct inode *inode, pgoff_t index,
+				     blk_opf_t op_flags, bool for_write)
+{
+	struct address_space *mapping = inode->i_mapping;
+	struct dnode_of_data dn;
+	struct page *page;
+	struct extent_info ei = {0, };
+	int err;
+
+	page = f3fs_grab_cache_page(mapping, index, for_write);
+	if (!page)
+		return ERR_PTR(-ENOMEM);
+
+	if (f3fs_lookup_extent_cache(inode, index, &ei)) {
+		dn.data_blkaddr = ei.blk + index - ei.fofs;
+		if (!f3fs_is_valid_blkaddr(F3FS_I_SB(inode), dn.data_blkaddr,
+						DATA_GENERIC_ENHANCE_READ)) {
+			err = -EFSCORRUPTED;
+			goto put_err;
+		}
+		goto got_it;
+	}
+
+	set_new_dnode(&dn, inode, NULL, NULL, 0);
+	err = f3fs_get_dnode_of_data2(&dn, index, LOOKUP_NODE);
+	if (err)
+		goto put_err;
+	f3fs_put_dnode(&dn);
+
+	if (unlikely(dn.data_blkaddr == NULL_ADDR)) {
+		err = -ENOENT;
+		goto put_err;
+	}
+	if (dn.data_blkaddr != NEW_ADDR &&
+			!f3fs_is_valid_blkaddr(F3FS_I_SB(inode),
+						dn.data_blkaddr,
+						DATA_GENERIC_ENHANCE)) {
+		err = -EFSCORRUPTED;
+		goto put_err;
+	}
+got_it:
+	if (PageUptodate(page)) {
+		unlock_page(page);
+		return page;
+	}
+
+	/*
+	 * A new dentry page is allocated but not able to be written, since its
+	 * new inode page couldn't be allocated due to -ENOSPC.
+	 * In such the case, its blkaddr can be remained as NEW_ADDR.
+	 * see, f3fs_add_link -> f3fs_get_new_data_page ->
+	 * f3fs_init_inode_metadata.
+	 */
+	if (dn.data_blkaddr == NEW_ADDR) {
+		zero_user_segment(page, 0, PAGE_SIZE);
+		if (!PageUptodate(page))
+			SetPageUptodate(page);
+		unlock_page(page);
+		return page;
+	}
+
+	err = f3fs_submit_page_read(inode, page, dn.data_blkaddr,
+						op_flags, for_write);
+	if (err)
+		goto put_err;
+	return page;
+
+put_err:
+	f3fs_put_page(page, 1);
+	return ERR_PTR(err);
+}
+
 struct page *f3fs_get_read_data_page(struct inode *inode, pgoff_t index,
 				     blk_opf_t op_flags, bool for_write)
 {
@@ -1306,6 +1378,29 @@ struct page *f3fs_get_lock_data_page(struct inode *inode, pgoff_t index,
 	struct page *page;
 repeat:
 	page = f3fs_get_read_data_page(inode, index, 0, for_write);
+	if (IS_ERR(page))
+		return page;
+
+	/* wait for read completion */
+	lock_page(page);
+	if (unlikely(page->mapping != mapping)) {
+		f3fs_put_page(page, 1);
+		goto repeat;
+	}
+	if (unlikely(!PageUptodate(page))) {
+		f3fs_put_page(page, 1);
+		return ERR_PTR(-EIO);
+	}
+	return page;
+}
+
+struct page *f3fs_get_lock_data_page2(struct inode *inode, pgoff_t index,
+							bool for_write)
+{
+	struct address_space *mapping = inode->i_mapping;
+	struct page *page;
+repeat:
+	page = f3fs_get_read_data_page2(inode, index, 0, for_write);
 	if (IS_ERR(page))
 		return page;
 

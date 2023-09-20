@@ -3668,6 +3668,7 @@ int f3fs_get_node_info(struct f3fs_sb_info *sbi, nid_t nid,
 				struct node_info *ni, bool checkpoint_context);
 pgoff_t f3fs_get_next_page_offset(struct dnode_of_data *dn, pgoff_t pgofs);
 int f3fs_get_dnode_of_data(struct dnode_of_data *dn, pgoff_t index, int mode);
+int f3fs_get_dnode_of_data2(struct dnode_of_data *dn, pgoff_t index, int mode);
 int f3fs_truncate_inode_blocks(struct inode *inode, pgoff_t from);
 int f3fs_truncate_xattr_node(struct inode *inode);
 int f3fs_wait_on_node_pages_writeback(struct f3fs_sb_info *sbi,
@@ -3875,6 +3876,8 @@ struct page *f3fs_get_read_data_page(struct inode *inode, pgoff_t index,
 			blk_opf_t op_flags, bool for_write);
 struct page *f3fs_find_data_page(struct inode *inode, pgoff_t index);
 struct page *f3fs_get_lock_data_page(struct inode *inode, pgoff_t index,
+			bool for_write);
+struct page *f3fs_get_lock_data_page2(struct inode *inode, pgoff_t index,
 			bool for_write);
 struct page *f3fs_get_new_data_page(struct inode *inode,
 			struct page *ipage, pgoff_t index, bool new_i_size);

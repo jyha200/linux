@@ -34,6 +34,13 @@
 
 #define VICTIM_COUNT (4)
 
+enum gc_state {
+  GC_STATE_START,
+  GC_STATE_READ_ONGOING,
+  GC_STATE_WRITE,
+  GC_STATE_DONE,
+};
+
 struct worker_arg {
   struct f3fs_sb_info* sbi;
   struct f3fs_gc_control* gc_control;

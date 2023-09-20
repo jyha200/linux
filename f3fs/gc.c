@@ -1563,7 +1563,7 @@ static int move_data_page1(struct inode *inode, block_t bidx, int gc_type,
 {
 	int err = 0;
 
-	*page = f3fs_get_lock_data_page(inode, bidx, true);
+	*page = f3fs_get_lock_data_page2(inode, bidx, true);
 	if (IS_ERR(*page))
 		return PTR_ERR(*page);
 	return err;
@@ -1779,7 +1779,7 @@ next_step:
 		goto next_step;
 
   for (off = 0; off < usable_blks_in_seg; off++, entry++) {
-    phase_local[off] = 4;
+    phase_local[off] = GC_STATE_START;
   }
 next_step2:
 	entry = sum;
@@ -1790,7 +1790,7 @@ next_step2:
     block_t start_bidx;
 
     switch (phase_local[off]) {
-      case 4:
+      case GC_STATE_START:
         {
           locked[off] = false;
 
@@ -1807,14 +1807,14 @@ next_step2:
           }
 
           if (check_valid_map(sbi, segno, off) == 0) {
-            phase_local[off] = 6;
+            phase_local[off] = GC_STATE_DONE;
             done++;
             break;
           }
 
           /* Get an inode by ino with checking validity */
           if (!is_alive(sbi, entry, &dni, start_addr + off, &nofs)) {
-            phase_local[off] = 6;
+            phase_local[off] = GC_STATE_DONE;
             done++;
             break;
           }
@@ -1854,15 +1854,15 @@ next_step2:
             } else
               err[off] = move_data_page1(inode[off], start_bidx, gc_type,
                   segno, off, dst_hint, &page_arr[off]);
-            phase_local[off] = 5;
+            phase_local[off] = GC_STATE_WRITE;
           } else {
-            phase_local[off] = 6;
+            phase_local[off] = GC_STATE_DONE;
             done++;
           }
 
           break;
         }
-      case 5:
+      case GC_STATE_WRITE:
         {
           if (!err[off]) {
             err[off] = move_data_page2(inode[off], start_bidx, gc_type,
@@ -1878,7 +1878,7 @@ next_step2:
             f3fs_up_write_range3(range_w[off]);
             f3fs_up_write_range3(range_r[off]);
           }
-          phase_local[off] = 6;
+          phase_local[off] = GC_STATE_DONE;
           done++;
 
           break;

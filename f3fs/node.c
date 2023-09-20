@@ -883,6 +883,134 @@ release_out:
 	return err;
 }
 
+int f3fs_get_dnode_of_data2(struct dnode_of_data *dn, pgoff_t index, int mode)
+{
+	struct f3fs_sb_info *sbi = F3FS_I_SB(dn->inode);
+	struct page *npage[4];
+	struct page *parent = NULL;
+	int offset[4];
+	unsigned int noffset[4];
+	nid_t nids[4];
+	int level, i = 0;
+	int err = 0;
+
+	level = get_node_path(dn->inode, index, offset, noffset);
+	if (level < 0)
+		return level;
+
+	nids[0] = dn->inode->i_ino;
+	npage[0] = dn->inode_page;
+
+	if (!npage[0]) {
+		npage[0] = f3fs_get_node_page(sbi, nids[0]);
+		if (IS_ERR(npage[0]))
+			return PTR_ERR(npage[0]);
+	}
+
+	/* if inline_data is set, should not report any block indices */
+	if (f3fs_has_inline_data(dn->inode) && index) {
+		err = -ENOENT;
+		f3fs_put_page(npage[0], 1);
+		goto release_out;
+	}
+
+	parent = npage[0];
+	if (level != 0)
+		nids[1] = get_nid(parent, offset[0], true);
+	dn->inode_page = npage[0];
+	dn->inode_page_locked = true;
+
+	/* get indirect or direct nodes */
+	for (i = 1; i <= level; i++) {
+		bool done = false;
+
+		if (!nids[i] && mode == ALLOC_NODE) {
+			/* alloc new node */
+			if (!f3fs_alloc_nid(sbi, &(nids[i]))) {
+				err = -ENOSPC;
+				goto release_pages;
+			}
+
+			dn->nid = nids[i];
+			npage[i] = f3fs_new_node_page(dn, noffset[i]);
+			if (IS_ERR(npage[i])) {
+				f3fs_alloc_nid_failed(sbi, nids[i]);
+				err = PTR_ERR(npage[i]);
+				goto release_pages;
+			}
+
+			set_nid(parent, offset[i - 1], nids[i], i == 1);
+			f3fs_alloc_nid_done(sbi, nids[i]);
+			done = true;
+		} else if (mode == LOOKUP_NODE_RA && i == level && level > 1) {
+			npage[i] = f3fs_get_node_page_ra(parent, offset[i - 1]);
+			if (IS_ERR(npage[i])) {
+				err = PTR_ERR(npage[i]);
+				goto release_pages;
+			}
+			done = true;
+		}
+		if (i == 1) {
+			dn->inode_page_locked = false;
+			unlock_page(parent);
+		} else {
+			f3fs_put_page(parent, 1);
+		}
+
+		if (!done) {
+			npage[i] = f3fs_get_node_page(sbi, nids[i]);
+			if (IS_ERR(npage[i])) {
+				err = PTR_ERR(npage[i]);
+				f3fs_put_page(npage[0], 0);
+				goto release_out;
+			}
+		}
+		if (i < level) {
+			parent = npage[i];
+			nids[i + 1] = get_nid(parent, offset[i], false);
+		}
+	}
+	dn->nid = nids[level];
+	dn->ofs_in_node = offset[level];
+	dn->node_page = npage[level];
+	dn->data_blkaddr = f3fs_data_blkaddr(dn);
+
+	if (is_inode_flag_set(dn->inode, FI_COMPRESSED_FILE) &&
+					f3fs_sb_has_readonly(sbi)) {
+		unsigned int c_len = f3fs_cluster_blocks_are_contiguous(dn);
+		block_t blkaddr;
+
+		if (!c_len)
+			goto out;
+
+		blkaddr = f3fs_data_blkaddr(dn);
+		if (blkaddr == COMPRESS_ADDR)
+			blkaddr = data_blkaddr(dn->inode, dn->node_page,
+						dn->ofs_in_node + 1);
+
+		f3fs_update_extent_tree_range_compressed(dn->inode,
+					index, blkaddr,
+					F3FS_I(dn->inode)->i_cluster_size,
+					c_len);
+	}
+out:
+	return 0;
+
+release_pages:
+	f3fs_put_page(parent, 1);
+	if (i > 1)
+		f3fs_put_page(npage[0], 0);
+release_out:
+	dn->inode_page = NULL;
+	dn->node_page = NULL;
+	if (err == -ENOENT) {
+		dn->cur_level = i;
+		dn->max_level = level;
+		dn->ofs_in_node = offset[level];
+	}
+	return err;
+}
+
 static int truncate_node(struct dnode_of_data *dn)
 {
 	struct f3fs_sb_info *sbi = F3FS_I_SB(dn->inode);
