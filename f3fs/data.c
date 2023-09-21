@@ -50,6 +50,14 @@ void f3fs_destroy_bioset(void)
 	bioset_exit(&f3fs_bioset);
 }
 
+struct read_data_arg {
+  enum READ_STATE read_state;
+  struct dnode_of_data dn;
+  struct page* page;
+  struct extent_info ei;
+  int err;
+};
+
 static bool __is_cp_guaranteed(struct page *page)
 {
 	struct address_space *mapping = page->mapping;
@@ -1198,100 +1206,105 @@ int f3fs_get_block(struct dnode_of_data *dn, pgoff_t index)
 }
 
 struct page *f3fs_get_read_data_page2(struct inode *inode, pgoff_t index,
-				     blk_opf_t op_flags, bool for_write)
+				     blk_opf_t op_flags, bool for_write, struct read_data_arg* arg)
 {
 	struct address_space *mapping = inode->i_mapping;
-	struct dnode_of_data dn;
-	struct page *page;
-	struct extent_info ei = {0, };
-	int err;
-  enum READ_STATE read_state = READ_STATE_START;
-  while (true) {
-    switch (read_state) {
-      case READ_STATE_GET_PAGE:
-        {
-          page = f3fs_grab_cache_page(mapping, index, for_write);
-          if (!page)
-            return ERR_PTR(-ENOMEM);
+  switch (arg->read_state) {
+    case READ_STATE_GET_PAGE:
+      {
+        arg->page = f3fs_grab_cache_page(mapping, index, for_write);
+        if (!arg->page) {
+          arg->read_state = READ_STATE_DONE;
+          return ERR_PTR(-ENOMEM);
+        }
 
-          if (f3fs_lookup_extent_cache(inode, index, &ei)) {
-            dn.data_blkaddr = ei.blk + index - ei.fofs;
-            if (!f3fs_is_valid_blkaddr(F3FS_I_SB(inode), dn.data_blkaddr,
-                  DATA_GENERIC_ENHANCE_READ)) {
-              err = -EFSCORRUPTED;
-              read_state = READ_STATE_PUT_ERR;
-              break;
-            }
-            read_state = READ_STATE_GOT_IT;
+        if (f3fs_lookup_extent_cache(inode, index, &arg->ei)) {
+          arg->dn.data_blkaddr = arg->ei.blk + index - arg->ei.fofs;
+          if (!f3fs_is_valid_blkaddr(F3FS_I_SB(inode), arg->dn.data_blkaddr,
+                DATA_GENERIC_ENHANCE_READ)) {
+            arg->err = -EFSCORRUPTED;
+            arg->read_state = READ_STATE_PUT_ERR;
             break;
           }
-
-          set_new_dnode(&dn, inode, NULL, NULL, 0);
-          err = f3fs_get_dnode_of_data2(&dn, index, LOOKUP_NODE);
-          read_state = READ_STATE_GET_DNODE;
+          arg->read_state = READ_STATE_GOT_IT;
           break;
         }
-      case READ_STATE_GET_DNODE:
-        {
-          if (err) {
-            read_state = READ_STATE_PUT_ERR;
-            break;
-          }
-          f3fs_put_dnode(&dn);
 
-          if (unlikely(dn.data_blkaddr == NULL_ADDR)) {
-            err = -ENOENT;
-            read_state = READ_STATE_PUT_ERR;
-            break;
-          }
-          if (dn.data_blkaddr != NEW_ADDR &&
-              !f3fs_is_valid_blkaddr(F3FS_I_SB(inode),
-                dn.data_blkaddr,
-                DATA_GENERIC_ENHANCE)) {
-            err = -EFSCORRUPTED;
-            read_state = READ_STATE_PUT_ERR;
-            break;
-          }
-          read_state = READ_STATE_GOT_IT;
+        set_new_dnode(&arg->dn, inode, NULL, NULL, 0);
+        arg->err = f3fs_get_dnode_of_data2(&arg->dn, index, LOOKUP_NODE);
+        arg->read_state = READ_STATE_GET_DNODE;
+        break;
+      }
+    case READ_STATE_GET_DNODE:
+      {
+        if (arg->err) {
+          arg->read_state = READ_STATE_PUT_ERR;
           break;
         }
-      case READ_STATE_GOT_IT:
-        {
-          if (PageUptodate(page)) {
-            unlock_page(page);
-            return page;
-          }
+        f3fs_put_dnode(&arg->dn);
 
-          /*
-           * A new dentry page is allocated but not able to be written, since its
-           * new inode page couldn't be allocated due to -ENOSPC.
-           * In such the case, its blkaddr can be remained as NEW_ADDR.
-           * see, f3fs_add_link -> f3fs_get_new_data_page ->
-           * f3fs_init_inode_metadata.
-           */
-          if (dn.data_blkaddr == NEW_ADDR) {
-            zero_user_segment(page, 0, PAGE_SIZE);
-            if (!PageUptodate(page))
-              SetPageUptodate(page);
-            unlock_page(page);
-            return page;
-          }
+        if (unlikely(arg->dn.data_blkaddr == NULL_ADDR)) {
+          arg->err = -ENOENT;
+          arg->read_state = READ_STATE_PUT_ERR;
+          break;
+        }
+        if (arg->dn.data_blkaddr != NEW_ADDR &&
+            !f3fs_is_valid_blkaddr(F3FS_I_SB(inode),
+              arg->dn.data_blkaddr,
+              DATA_GENERIC_ENHANCE)) {
+          arg->err = -EFSCORRUPTED;
+          arg->read_state = READ_STATE_PUT_ERR;
+          break;
+        }
+        arg->read_state = READ_STATE_GOT_IT;
+        break;
+      }
+    case READ_STATE_GOT_IT:
+      {
+        if (PageUptodate(arg->page)) {
+          unlock_page(arg->page);
+          arg->read_state = READ_STATE_DONE;
+          return arg->page;
+        }
 
-          err = f3fs_submit_page_read(inode, page, dn.data_blkaddr,
-              op_flags, for_write);
-          if (err) {
-            read_state = READ_STATE_PUT_ERR;
-            break;
-          }
-          return page;
+        /*
+         * A new dentry page is allocated but not able to be written, since its
+         * new inode page couldn't be allocated due to -ENOSPC.
+         * In such the case, its blkaddr can be remained as NEW_ADDR.
+         * see, f3fs_add_link -> f3fs_get_new_data_page ->
+         * f3fs_init_inode_metadata.
+         */
+        if (arg->dn.data_blkaddr == NEW_ADDR) {
+          zero_user_segment(arg->page, 0, PAGE_SIZE);
+          if (!PageUptodate(arg->page))
+            SetPageUptodate(arg->page);
+          unlock_page(arg->page);
+          arg->read_state = READ_STATE_DONE;
+          return arg->page;
         }
-      case READ_STATE_PUT_ERR:
-        {
-          f3fs_put_page(page, 1);
-          return ERR_PTR(err);
+
+        arg->err = f3fs_submit_page_read(inode, arg->page, arg->dn.data_blkaddr,
+            op_flags, for_write);
+        if (arg->err) {
+          arg->read_state = READ_STATE_PUT_ERR;
+          break;
         }
-    }
+        arg->read_state = READ_STATE_DONE;
+        return arg->page;
+      }
+    case READ_STATE_PUT_ERR:
+      {
+        f3fs_put_page(arg->page, 1);
+        arg->read_state = READ_STATE_DONE;
+        return ERR_PTR(arg->err);
+      }
+    default:
+      {
+        printk("%s %d wrong READ_STATE %d", __func__, __LINE__, arg->read_state);
+        break;
+      }
   }
+  return NULL;
 }
 
 struct page *f3fs_get_read_data_page(struct inode *inode, pgoff_t index,
@@ -1422,7 +1435,13 @@ repeat:
 struct page *f3fs_get_lock_data_page1(struct inode *inode, pgoff_t index,
 							bool for_write)
 {
-	struct page *page = f3fs_get_read_data_page2(inode, index, 0, for_write);
+  struct read_data_arg arg = {0,};
+  struct page* page = NULL;
+
+  do {
+    page = f3fs_get_read_data_page2(inode, index, 0, for_write, &arg);
+  } while (arg.read_state != READ_STATE_DONE);
+
   return page;
 }
 
