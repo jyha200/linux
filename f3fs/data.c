@@ -55,6 +55,7 @@ struct read_data_arg {
   struct dnode_of_data dn;
   struct page* page;
   struct extent_info ei;
+  struct get_dnode_arg get_dnode_arg;
   int err;
 };
 
@@ -1209,6 +1210,7 @@ struct page *f3fs_get_read_data_page2(struct inode *inode, pgoff_t index,
 				     blk_opf_t op_flags, bool for_write, struct read_data_arg* arg)
 {
 	struct address_space *mapping = inode->i_mapping;
+
   switch (arg->read_state) {
     case READ_STATE_GET_PAGE:
       {
@@ -1231,11 +1233,20 @@ struct page *f3fs_get_read_data_page2(struct inode *inode, pgoff_t index,
         }
 
         set_new_dnode(&arg->dn, inode, NULL, NULL, 0);
-        arg->err = f3fs_get_dnode_of_data2(&arg->dn, index, LOOKUP_NODE);
         arg->read_state = READ_STATE_GET_DNODE;
-        break;
+        fallthrough;
       }
     case READ_STATE_GET_DNODE:
+      {
+          arg->err = f3fs_get_dnode_of_data2(&arg->dn, index, LOOKUP_NODE, &arg->get_dnode_arg);
+          if (arg->get_dnode_arg.state == GET_DNODE_STATE_DONE) {
+            arg->read_state = READ_STATE_GET_DNODE_DONE;
+            fallthrough;
+          } else {
+            break;
+          }
+      }
+    case READ_STATE_GET_DNODE_DONE:
       {
         if (arg->err) {
           arg->read_state = READ_STATE_PUT_ERR;

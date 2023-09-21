@@ -48,6 +48,7 @@ enum READ_STATE {
   READ_STATE_START = 0,
   READ_STATE_GET_PAGE = READ_STATE_START,
   READ_STATE_GET_DNODE,
+  READ_STATE_GET_DNODE_DONE,
   READ_STATE_GOT_IT,
   READ_STATE_PUT_ERR,
   READ_STATE_DONE
@@ -3664,6 +3665,48 @@ void f3fs_hash_filename(const struct inode *dir, struct f3fs_filename *fname);
  */
 struct node_info;
 
+enum GET_NODE_STATE {
+  GET_NODE_STATE_START,
+  GET_NODE_STATE_REPEAT,
+  GET_NODE_STATE_WAIT,
+  GET_NODE_STATE_PAGE_HIT,
+  GET_NODE_STATE_OUT_ERR,
+  GET_NODE_STATE_OUT_PUT_ERR,
+  GET_NODE_STATE_DONE,
+};
+
+struct get_node_arg {
+  struct page* page;
+  int err;
+  enum GET_NODE_STATE state;
+};
+
+enum GET_DNODE_STATE {
+  GET_DNODE_STATE_START,
+  GET_DNODE_STATE_DO_L0,
+  GET_DNODE_STATE_WAIT_L0,
+  GET_DNODE_STATE_DO_L,
+  GET_DNODE_STATE_L_LOOP,
+  GET_DNODE_STATE_POST_L,
+  GET_DNODE_STATE_OUT,
+  GET_DNODE_STATE_RELEASE_PAGES,
+  GET_DNODE_STATE_RELEASE_OUT,
+  GET_DNODE_STATE_DONE,
+};
+
+struct get_dnode_arg {
+	struct page *npage[4];
+	struct page *parent;
+	int offset[4];
+	unsigned int noffset[4];
+  nid_t nids[4];
+  int level;
+  int i;
+  int err;
+  enum GET_DNODE_STATE state;
+  struct get_node_arg get_node_arg;
+};
+
 int f3fs_check_nid_range(struct f3fs_sb_info *sbi, nid_t nid);
 bool f3fs_available_free_memory(struct f3fs_sb_info *sbi, int type);
 bool f3fs_in_warm_node_list(struct f3fs_sb_info *sbi, struct page *page);
@@ -3677,7 +3720,7 @@ int f3fs_get_node_info(struct f3fs_sb_info *sbi, nid_t nid,
 				struct node_info *ni, bool checkpoint_context);
 pgoff_t f3fs_get_next_page_offset(struct dnode_of_data *dn, pgoff_t pgofs);
 int f3fs_get_dnode_of_data(struct dnode_of_data *dn, pgoff_t index, int mode);
-int f3fs_get_dnode_of_data2(struct dnode_of_data *dn, pgoff_t index, int mode);
+int f3fs_get_dnode_of_data2(struct dnode_of_data *dn, pgoff_t index, int mode, struct get_dnode_arg* arg);
 int f3fs_truncate_inode_blocks(struct inode *inode, pgoff_t from);
 int f3fs_truncate_xattr_node(struct inode *inode);
 int f3fs_wait_on_node_pages_writeback(struct f3fs_sb_info *sbi,
@@ -3688,7 +3731,7 @@ struct page *f3fs_new_inode_page(struct inode *inode);
 struct page *f3fs_new_node_page(struct dnode_of_data *dn, unsigned int ofs);
 void f3fs_ra_node_page(struct f3fs_sb_info *sbi, nid_t nid);
 struct page *f3fs_get_node_page(struct f3fs_sb_info *sbi, pgoff_t nid);
-struct page *f3fs_get_node_page2(struct f3fs_sb_info *sbi, pgoff_t nid);
+struct page *f3fs_get_node_page2(struct f3fs_sb_info *sbi, pgoff_t nid, struct get_node_arg* arg);
 struct page *f3fs_get_node_page_ra(struct page *parent, int start);
 int f3fs_move_node_page(struct page *node_page, int gc_type);
 void f3fs_flush_inline_data(struct f3fs_sb_info *sbi);
