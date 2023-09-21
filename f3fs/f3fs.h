@@ -3688,6 +3688,7 @@ struct page *f3fs_new_inode_page(struct inode *inode);
 struct page *f3fs_new_node_page(struct dnode_of_data *dn, unsigned int ofs);
 void f3fs_ra_node_page(struct f3fs_sb_info *sbi, nid_t nid);
 struct page *f3fs_get_node_page(struct f3fs_sb_info *sbi, pgoff_t nid);
+struct page *f3fs_get_node_page2(struct f3fs_sb_info *sbi, pgoff_t nid);
 struct page *f3fs_get_node_page_ra(struct page *parent, int start);
 int f3fs_move_node_page(struct page *node_page, int gc_type);
 void f3fs_flush_inline_data(struct f3fs_sb_info *sbi);

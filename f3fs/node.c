@@ -921,7 +921,7 @@ int f3fs_get_dnode_of_data2(struct dnode_of_data *dn, pgoff_t index, int mode)
           npage[0] = dn->inode_page;
 
           if (!npage[0]) {
-            npage[0] = f3fs_get_node_page(sbi, nids[0]);
+            npage[0] = f3fs_get_node_page2(sbi, nids[0]);
             state = GET_DNODE_STATE_WAIT_L0;
             break;
           }
@@ -935,7 +935,7 @@ int f3fs_get_dnode_of_data2(struct dnode_of_data *dn, pgoff_t index, int mode)
             return PTR_ERR(npage[0]);
           }
           state = GET_DNODE_STATE_DO_L;
-          __attribute__ ((__fallthrough__));
+          fallthrough;
         }
       case GET_DNODE_STATE_DO_L:
         {
@@ -958,7 +958,7 @@ int f3fs_get_dnode_of_data2(struct dnode_of_data *dn, pgoff_t index, int mode)
           } else {
             state = GET_DNODE_STATE_L_LOOP;
             i = 1;
-            __attribute__ ((__fallthrough__));
+            fallthrough;
           }
         }
       case GET_DNODE_STATE_L_LOOP:
@@ -1023,7 +1023,7 @@ int f3fs_get_dnode_of_data2(struct dnode_of_data *dn, pgoff_t index, int mode)
             break;
           } else {
             state = GET_DNODE_STATE_POST_L;
-            __attribute__ ((__fallthrough__));
+            fallthrough;
           }
         }
       case GET_DNODE_STATE_POST_L:
@@ -1610,6 +1610,125 @@ void f3fs_ra_node_page(struct f3fs_sb_info *sbi, nid_t nid)
 	f3fs_put_page(apage, err ? 1 : 0);
 }
 
+enum GET_NODE_STATE {
+  GET_NODE_STATE_START,
+  GET_NODE_STATE_REPEAT,
+  GET_NODE_STATE_WAIT,
+  GET_NODE_STATE_PAGE_HIT,
+  GET_NODE_STATE_OUT_ERR,
+  GET_NODE_STATE_OUT_PUT_ERR,
+  GET_NODE_STATE_DONE,
+};
+
+static struct page *__get_node_page2(struct f3fs_sb_info *sbi, pgoff_t nid,
+					struct page *parent, int start)
+{
+	struct page *page;
+	int err;
+  enum GET_NODE_STATE state = GET_NODE_STATE_START;
+
+  while (true) {
+    switch (state) {
+      case GET_NODE_STATE_START:
+        {
+          if (!nid) {
+            state = GET_NODE_STATE_DONE;
+            return ERR_PTR(-ENOENT);
+          }
+          if (f3fs_check_nid_range(sbi, nid)) {
+            state = GET_NODE_STATE_DONE;
+            return ERR_PTR(-EINVAL);
+          }
+          state = GET_NODE_STATE_REPEAT;
+          fallthrough;
+        }
+      case GET_NODE_STATE_REPEAT:
+        {
+          page = f3fs_grab_cache_page(NODE_MAPPING(sbi), nid, false);
+          if (!page) {
+            state = GET_NODE_STATE_DONE;
+            return ERR_PTR(-ENOMEM);
+          }
+
+          err = read_node_page(page, 0);
+          if (err < 0) {
+            state = GET_NODE_STATE_OUT_PUT_ERR;
+            break;
+          } else if (err == LOCKED_PAGE) {
+            err = 0;
+            state = GET_NODE_STATE_PAGE_HIT;
+            break;
+          }
+
+          if (parent)
+            f3fs_ra_node_pages(parent, start + 1, MAX_RA_NODE);
+          state = GET_NODE_STATE_WAIT;
+          break;
+        }
+      case GET_NODE_STATE_WAIT:
+        {
+          lock_page(page);
+
+          if (unlikely(page->mapping != NODE_MAPPING(sbi))) {
+            f3fs_put_page(page, 1);
+            state = GET_NODE_STATE_REPEAT;
+            break;
+          }
+
+          if (unlikely(!PageUptodate(page))) {
+            err = -EIO;
+            state = GET_NODE_STATE_OUT_ERR;
+            break;
+          }
+
+          if (!f3fs_inode_chksum_verify(sbi, page)) {
+            err = -EFSBADCRC;
+            state = GET_NODE_STATE_OUT_ERR;
+            break;
+          }
+          state = GET_NODE_STATE_PAGE_HIT;
+          fallthrough;
+        }
+      case GET_NODE_STATE_PAGE_HIT:
+        {
+          if (likely(nid == nid_of_node(page))) {
+            state = GET_NODE_STATE_DONE;
+            return page;
+          }
+
+          f3fs_warn(sbi, "inconsistent node block, nid:%lu, node_footer[nid:%u,ino:%u,ofs:%u,cpver:%llu,blkaddr:%u]",
+              nid, nid_of_node(page), ino_of_node(page),
+              ofs_of_node(page), cpver_of_node(page),
+              next_blkaddr_of_node(page));
+          set_sbi_flag(sbi, SBI_NEED_FSCK);
+          err = -EINVAL;
+          state = GET_NODE_STATE_OUT_ERR;
+          fallthrough;
+        }
+      case GET_NODE_STATE_OUT_ERR:
+        {
+          ClearPageUptodate(page);
+          state = GET_NODE_STATE_OUT_PUT_ERR;
+          fallthrough;
+        }
+      case GET_NODE_STATE_OUT_PUT_ERR:
+        {
+          /* ENOENT comes from read_node_page which is not an error. */
+          if (err != -ENOENT)
+            f3fs_handle_page_eio(sbi, page->index, NODE);
+          f3fs_put_page(page, 1);
+          state = GET_NODE_STATE_DONE;
+          return ERR_PTR(err);
+        }
+      default:
+        {
+          printk("%s %d wrong state %d\n", __func__, __LINE__, state);
+          break;
+        }
+    }
+  }
+}
+
 static struct page *__get_node_page(struct f3fs_sb_info *sbi, pgoff_t nid,
 					struct page *parent, int start)
 {
@@ -1675,6 +1794,10 @@ out_put_err:
 struct page *f3fs_get_node_page(struct f3fs_sb_info *sbi, pgoff_t nid)
 {
 	return __get_node_page(sbi, nid, NULL, 0);
+}
+struct page *f3fs_get_node_page2(struct f3fs_sb_info *sbi, pgoff_t nid)
+{
+	return __get_node_page2(sbi, nid, NULL, 0);
 }
 
 struct page *f3fs_get_node_page_ra(struct page *parent, int start)
