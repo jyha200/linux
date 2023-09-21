@@ -1394,27 +1394,27 @@ repeat:
 	return page;
 }
 
-struct page *f3fs_get_lock_data_page2(struct inode *inode, pgoff_t index,
+struct page *f3fs_get_lock_data_page1(struct inode *inode, pgoff_t index,
 							bool for_write)
 {
+	struct page *page = f3fs_get_read_data_page2(inode, index, 0, for_write);
+  return page;
+}
+
+int f3fs_get_lock_data_page2(struct inode *inode, pgoff_t index,
+							bool for_write, struct page* page)
+{
 	struct address_space *mapping = inode->i_mapping;
-	struct page *page;
-repeat:
-	page = f3fs_get_read_data_page2(inode, index, 0, for_write);
-	if (IS_ERR(page))
-		return page;
 
 	/* wait for read completion */
 	lock_page(page);
 	if (unlikely(page->mapping != mapping)) {
-		f3fs_put_page(page, 1);
-		goto repeat;
+    return -EAGAIN;
 	}
 	if (unlikely(!PageUptodate(page))) {
-		f3fs_put_page(page, 1);
-		return ERR_PTR(-EIO);
+		return -EIO;
 	}
-	return page;
+  return 0;
 }
 
 /*

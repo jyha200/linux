@@ -1562,10 +1562,11 @@ static int move_data_page1(struct inode *inode, block_t bidx, int gc_type,
 							unsigned int segno, int off, char dst_hint, struct page** page)
 {
 	int err = 0;
+	*page = f3fs_get_lock_data_page1(inode, bidx, true);
 
-	*page = f3fs_get_lock_data_page2(inode, bidx, true);
 	if (IS_ERR(*page))
 		return PTR_ERR(*page);
+
 	return err;
 }
 
@@ -1573,6 +1574,12 @@ static int move_data_page2(struct inode *inode, block_t bidx, int gc_type,
 							unsigned int segno, int off, char dst_hint, struct page* page)
 {
 	int err = 0;
+
+  err = f3fs_get_lock_data_page2(inode, bidx, true, page);
+
+	if (err) {
+    goto out;
+  }
 
 	if (!check_valid_map(F3FS_I_SB(inode), segno, off)) {
 		err = -ENOENT;
@@ -1864,12 +1871,12 @@ next_step2:
         }
       case GC_STATE_WRITE:
         {
-          if (!err[off]) {
+          if (err[off] == 0) {
             err[off] = move_data_page2(inode[off], start_bidx, gc_type,
                 segno, off, dst_hint, page_arr[off]);
           }
 
-          if (!err[off] && (gc_type == FG_GC ||
+          if (err[off] == 0 && (gc_type == FG_GC ||
                 f3fs_post_read_required(inode[off])))
             submitted++;
 

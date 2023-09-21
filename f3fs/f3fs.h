@@ -44,6 +44,14 @@ struct pagevec;
 	} while (0)
 #endif
 
+enum READ_STATE {
+  READ_STATE_START = 0,
+  READ_STATE_GET_PAGE = READ_STATE_START,
+  READ_STATE_GET_DNODE,
+  READ_STATE_GOT_IT,
+  READ_STATE_PUT_ERR,
+};
+
 enum {
 	FAULT_KMALLOC,
 	FAULT_KVMALLOC,
@@ -3877,8 +3885,10 @@ struct page *f3fs_get_read_data_page(struct inode *inode, pgoff_t index,
 struct page *f3fs_find_data_page(struct inode *inode, pgoff_t index);
 struct page *f3fs_get_lock_data_page(struct inode *inode, pgoff_t index,
 			bool for_write);
-struct page *f3fs_get_lock_data_page2(struct inode *inode, pgoff_t index,
+struct page *f3fs_get_lock_data_page1(struct inode *inode, pgoff_t index,
 			bool for_write);
+int f3fs_get_lock_data_page2(struct inode *inode, pgoff_t index,
+			bool for_write, struct page* page);
 struct page *f3fs_get_new_data_page(struct inode *inode,
 			struct page *ipage, pgoff_t index, bool new_i_size);
 int f3fs_do_write_data_page(struct f3fs_io_info *fio);
