@@ -2830,6 +2830,38 @@ static inline struct page *f3fs_grab_cache_page(struct address_space *mapping,
 	return page;
 }
 
+static inline struct page *f3fs_grab_cache_page2(struct address_space *mapping,
+						pgoff_t index, bool for_write)
+{
+	struct page *page;
+	unsigned int flags;
+
+	if (IS_ENABLED(CONFIG_F3FS_FAULT_INJECTION)) {
+		if (!for_write)
+			page = find_get_page_flags(mapping, index,
+							FGP_LOCK | FGP_ACCESSED);
+		else
+			page = find_lock_page(mapping, index);
+		if (page)
+			return page;
+
+		if (time_to_inject(F3FS_M_SB(mapping), FAULT_PAGE_ALLOC)) {
+			f3fs_show_injection_info(F3FS_M_SB(mapping),
+							FAULT_PAGE_ALLOC);
+			return NULL;
+		}
+	}
+
+	if (!for_write)
+		return grab_cache_page_nowait(mapping, index);
+
+	flags = memalloc_nofs_save();
+	page = grab_cache_page_write_begin(mapping, index);
+	memalloc_nofs_restore(flags);
+
+	return page;
+}
+
 static inline struct page *f3fs_pagecache_get_page(
 				struct address_space *mapping, pgoff_t index,
 				int fgp_flags, gfp_t gfp_mask)
@@ -3930,13 +3962,35 @@ struct page *f3fs_get_read_data_page(struct inode *inode, pgoff_t index,
 struct page *f3fs_find_data_page(struct inode *inode, pgoff_t index);
 struct page *f3fs_get_lock_data_page(struct inode *inode, pgoff_t index,
 			bool for_write);
+
+struct read_data_arg {
+  enum READ_STATE read_state;
+  struct dnode_of_data dn;
+  struct page* page;
+  struct extent_info ei;
+  struct get_dnode_arg get_dnode_arg;
+  int err;
+};
+
+enum GET_LOCK_PAGE_STATE {
+  GET_LOCK_PAGE_STATE_START,
+  GET_LOCK_PAGE_STATE_REPEAT = GET_LOCK_PAGE_STATE_START,
+  GET_LOCK_PAGE_STATE_READ_DONE,
+  GET_LOCK_PAGE_STATE_DONE,
+};
+
+struct get_lock_page_arg {
+  struct read_data_arg read_data_arg;
+  struct page* page;
+  enum GET_LOCK_PAGE_STATE state;
+};
+
 struct page *f3fs_get_lock_data_page1(struct inode *inode, pgoff_t index,
-			bool for_write);
-int f3fs_get_lock_data_page2(struct inode *inode, pgoff_t index,
-			bool for_write, struct page* page);
+			bool for_write, struct get_lock_page_arg* arg);
 struct page *f3fs_get_new_data_page(struct inode *inode,
 			struct page *ipage, pgoff_t index, bool new_i_size);
 int f3fs_do_write_data_page(struct f3fs_io_info *fio);
+int f3fs_do_write_data_page2(struct f3fs_io_info *fio);
 void f3fs_do_map_lock(struct f3fs_sb_info *sbi, int flag, bool lock);
 int f3fs_map_blocks(struct inode *inode, struct f3fs_map_blocks *map,
 			int create, int flag);

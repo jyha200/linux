@@ -50,15 +50,6 @@ void f3fs_destroy_bioset(void)
 	bioset_exit(&f3fs_bioset);
 }
 
-struct read_data_arg {
-  enum READ_STATE read_state;
-  struct dnode_of_data dn;
-  struct page* page;
-  struct extent_info ei;
-  struct get_dnode_arg get_dnode_arg;
-  int err;
-};
-
 static bool __is_cp_guaranteed(struct page *page)
 {
 	struct address_space *mapping = page->mapping;
@@ -1444,34 +1435,53 @@ repeat:
 }
 
 struct page *f3fs_get_lock_data_page1(struct inode *inode, pgoff_t index,
-							bool for_write)
+							bool for_write, struct get_lock_page_arg* arg)
 {
-  struct read_data_arg arg = {0,};
-  struct page* page = NULL;
 	struct address_space *mapping = inode->i_mapping;
 
-repeat:
+  switch (arg->state) {
+    case GET_LOCK_PAGE_STATE_REPEAT:
+      {
+        arg->page = f3fs_get_read_data_page2(inode, index, 0, for_write, &arg->read_data_arg);
+        if (arg->read_data_arg.read_state == READ_STATE_DONE) {
+          arg->state = GET_LOCK_PAGE_STATE_READ_DONE;
+          fallthrough;
+        } else {
+          break;
+        }
+      }
+    case GET_LOCK_PAGE_STATE_READ_DONE:
+      {
+        if (IS_ERR(arg->page)) {
+          arg->state = GET_LOCK_PAGE_STATE_DONE;
+          return arg->page;
+        }
 
-  do {
-    page = f3fs_get_read_data_page2(inode, index, 0, for_write, &arg);
-  } while (arg.read_state != READ_STATE_DONE);
+        /* wait for read completion */
+        lock_page(arg->page);
+        if (unlikely(arg->page->mapping != mapping)) {
+          f3fs_put_page(arg->page, 1);
+          arg->read_data_arg.read_state = READ_STATE_START;
+          arg->state = GET_LOCK_PAGE_STATE_REPEAT;
+          break;
+        }
 
-  if (IS_ERR(page))
-    return page;
+        if (unlikely(!PageUptodate(arg->page))) {
+          f3fs_put_page(arg->page, 1);
+          arg->state = GET_LOCK_PAGE_STATE_DONE;
+          return ERR_PTR(-EIO);
+        }
 
-	/* wait for read completion */
-	lock_page(page);
-	if (unlikely(page->mapping != mapping)) {
-    f3fs_put_page(page, 1);
-    goto repeat;
-	}
-
-	if (unlikely(!PageUptodate(page))) {
-    f3fs_put_page(page, 1);
-    return ERR_PTR(-EIO);
-	}
-
-  return page;
+        arg->state = GET_LOCK_PAGE_STATE_DONE;
+        return arg->page;
+      }
+    default:
+      {
+        printk("%s %d wrong READ_STATE %d", __func__, __LINE__, arg->state);
+        break;
+      }
+  }
+  return NULL;
 }
 
 /*

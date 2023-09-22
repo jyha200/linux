@@ -1558,74 +1558,127 @@ out:
 	return err;
 }
 
-static int move_data_page1(struct inode *inode, block_t bidx, int gc_type,
-							unsigned int segno, int off, char dst_hint)
-{
+enum MOVE_DATA_STATE {
+  MOVE_DATA_STATE_START,
+  MOVE_DATA_STATE_GET_LOCK_PAGE = MOVE_DATA_STATE_START,
+  MOVE_DATA_STATE_GET_LOCK_PAGE_DONE,
+  MOVE_DATA_STATE_OUT,
+  MOVE_DATA_STATE_RETRY,
+  MOVE_DATA_STATE_DONE,
+};
+
+struct move_data_arg {
   struct page *page;
-	int err = 0;
-	page = f3fs_get_lock_data_page1(inode, bidx, true);
+  int err;
+  struct get_lock_page_arg get_lock_page_arg;
+  enum MOVE_DATA_STATE state;
+  struct f3fs_io_info fio;
+  bool is_dirty;
+};
 
-	if (IS_ERR(page))
-		return PTR_ERR(page);
+static int move_data_page1(struct inode *inode, block_t bidx, int gc_type,
+							unsigned int segno, int off, char dst_hint, struct move_data_arg* arg)
+{
+  switch (arg->state) {
+    case MOVE_DATA_STATE_GET_LOCK_PAGE:
+      {
+        arg->page = f3fs_get_lock_data_page1(inode, bidx, true, &arg->get_lock_page_arg);
 
-	if (!check_valid_map(F3FS_I_SB(inode), segno, off)) {
-		err = -ENOENT;
-		goto out;
-	}
+        if (arg->get_lock_page_arg.state == GET_LOCK_PAGE_STATE_DONE) {
+          arg->state = MOVE_DATA_STATE_GET_LOCK_PAGE_DONE;
+          fallthrough;
+        } else {
+          break;
+        }
+      }
+    case MOVE_DATA_STATE_GET_LOCK_PAGE_DONE:
+      {
+        if (IS_ERR(arg->page)) {
+          arg->state = MOVE_DATA_STATE_DONE;
+          return PTR_ERR(arg->page);
+        }
 
-	err = f3fs_gc_pinned_control(inode, gc_type, segno);
-	if (err)
-		goto out;
+        if (!check_valid_map(F3FS_I_SB(inode), segno, off)) {
+          arg->err = -ENOENT;
+          arg->state = MOVE_DATA_STATE_OUT;
+          break;
+        }
 
-	if (gc_type == BG_GC) {
-		if (PageWriteback(page)) {
-			err = -EAGAIN;
-			goto out;
-		}
-		set_page_dirty(page);
-		set_page_private_gcing(page);
-	} else {
-		struct f3fs_io_info fio = {
-			.sbi = F3FS_I_SB(inode),
-			.ino = inode->i_ino,
-			.type = DATA,
-			.temp = COLD_GC_START + dst_hint,
-			.op = REQ_OP_WRITE,
-			.op_flags = REQ_SYNC,
-			.old_blkaddr = NULL_ADDR,
-			.page = page,
-			.encrypted_page = NULL,
-			.need_lock = LOCK_REQ,
-			.io_type = FS_GC_DATA_IO,
-      .dst_hint = dst_hint,
-		};
-		bool is_dirty = PageDirty(page);
+        arg->err = f3fs_gc_pinned_control(inode, gc_type, segno);
+        if (arg->err) {
+          arg->state = MOVE_DATA_STATE_OUT;
+          break;
+        }
 
-retry:
-		f3fs_wait_on_page_writeback(page, DATA, true, true);
+        if (gc_type == BG_GC) {
+          if (PageWriteback(arg->page)) {
+            arg->err = -EAGAIN;
+            arg->state = MOVE_DATA_STATE_OUT;
+            break;
+          }
+          set_page_dirty(arg->page);
+          set_page_private_gcing(arg->page);
+          arg->state = MOVE_DATA_STATE_OUT;
+          break;
+        } else {
+          arg->fio.sbi = F3FS_I_SB(inode);
+          arg->fio.ino = inode->i_ino;
+          arg->fio.type = DATA;
+          arg->fio.temp = COLD_GC_START + dst_hint;
+          arg->fio.op = REQ_OP_WRITE;
+          arg->fio.op_flags = REQ_SYNC;
+          arg->fio.old_blkaddr = NULL_ADDR;
+          arg->fio.page = arg->page;
+          arg->fio.encrypted_page = NULL;
+          arg->fio.need_lock = LOCK_REQ;
+          arg->fio.io_type = FS_GC_DATA_IO;
+          arg->fio.dst_hint = dst_hint;
 
-		set_page_dirty(page);
-		if (clear_page_dirty_for_io(page)) {
-			inode_dec_dirty_pages(inode);
-			f3fs_remove_dirty_inode(inode);
-		}
+          arg->is_dirty = PageDirty(arg->page);
+          arg->state = MOVE_DATA_STATE_RETRY;
+          fallthrough;
+        }
+      }
+    case MOVE_DATA_STATE_RETRY:
+      {
+        f3fs_wait_on_page_writeback(arg->page, DATA, true, true);
 
-		set_page_private_gcing(page);
+        set_page_dirty(arg->page);
+        if (clear_page_dirty_for_io(arg->page)) {
+          inode_dec_dirty_pages(inode);
+          f3fs_remove_dirty_inode(inode);
+        }
 
-		err = f3fs_do_write_data_page(&fio);
-		if (err) {
-			clear_page_private_gcing(page);
-			if (err == -ENOMEM) {
-				memalloc_retry_wait(GFP_NOFS);
-				goto retry;
-			}
-			if (is_dirty)
-				set_page_dirty(page);
-		}
-	}
-out:
-	f3fs_put_page(page, 1);
-	return err;
+        set_page_private_gcing(arg->page);
+
+        arg->err = f3fs_do_write_data_page(&arg->fio);
+        if (arg->err) {
+          clear_page_private_gcing(arg->page);
+          if (arg->err == -ENOMEM) {
+            memalloc_retry_wait(GFP_NOFS);
+            arg->state = MOVE_DATA_STATE_RETRY;
+            break;
+          }
+          if (arg->is_dirty)
+            set_page_dirty(arg->page);
+        }
+        arg->state = MOVE_DATA_STATE_OUT;
+        fallthrough;
+      }
+    case MOVE_DATA_STATE_OUT:
+      {
+        f3fs_put_page(arg->page, 1);
+        arg->state = MOVE_DATA_STATE_DONE;
+        return arg->err;
+      }
+    default:
+      {
+        printk("%s %d wrong READ_STATE %d", __func__, __LINE__, arg->state);
+        break;
+      }
+  }
+
+  return 0;
 }
 
 struct gc_data_arg {
@@ -1637,6 +1690,7 @@ struct gc_data_arg {
   int err;
   struct page* page;
   block_t start_bidx;
+  struct move_data_arg move_data_arg;
 };
 
 /*
@@ -1833,14 +1887,17 @@ next_step2:
               args[off].range_r = f3fs_down_write_range_trylock3(
                   &fi->i_gc_rwsem[READ], args[off].start_bidx, 1);
               if (!args[off].range_r) {
-                sbi->skipped_gc_rwsem++;
-                continue;
+                args[off].state = GC_STATE_DONE;
+                done++;
+                break;
               }
               args[off].range_w = f3fs_down_write_range_trylock3(
                   &fi->i_gc_rwsem[WRITE], args[off].start_bidx, 1);
               if (!args[off].range_w) {
                 f3fs_up_write_range3(args[off].range_r);
-                continue;
+                args[off].state = GC_STATE_DONE;
+                done++;
+                break;
               }
               args[off].locked = true;
 
@@ -1852,23 +1909,25 @@ next_step2:
               args[off].err = move_data_block(args[off].inode, args[off].start_bidx,
                   gc_type, segno, off);
               args[off].state = GC_STATE_MOVE_DONE;
+              break;
             } else {
               args[off].state = GC_STATE_MOVE;
+              fallthrough;
             }
-            break;
           } else {
             args[off].state = GC_STATE_DONE;
             done++;
+            break;
           }
           break;
         }
       case GC_STATE_MOVE:
         {
-          args[off].err = move_data_page1(args[off].inode, args[off].start_bidx, gc_type,
-              segno, off, dst_hint);
+          do {
+            args[off].err = move_data_page1(args[off].inode, args[off].start_bidx, gc_type, segno, off, dst_hint, &args[off].move_data_arg);
+          } while (args[off].move_data_arg.state != MOVE_DATA_STATE_DONE);
           args[off].state = GC_STATE_MOVE_DONE;
-
-          break;
+          fallthrough;
         }
       case GC_STATE_MOVE_DONE:
         {

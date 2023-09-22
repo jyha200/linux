@@ -910,10 +910,14 @@ int f3fs_get_dnode_of_data2(struct dnode_of_data *dn, pgoff_t index, int mode,
           if (arg->get_node_arg.state == GET_NODE_STATE_DONE) {
             arg->npage[0] = temp;
             arg->state = GET_DNODE_STATE_WAIT_L0;
+            fallthrough;
+          } else {
+            break;
           }
+        } else {
+          arg->state = GET_DNODE_STATE_DO_L;
           break;
         }
-        arg->state = GET_DNODE_STATE_DO_L;
         break;
       }
     case GET_DNODE_STATE_WAIT_L0:
@@ -1616,10 +1620,10 @@ static struct page *__get_node_page2(struct f3fs_sb_info *sbi, pgoff_t nid,
       }
     case GET_NODE_STATE_REPEAT:
       {
-        arg->page = f3fs_grab_cache_page(NODE_MAPPING(sbi), nid, false);
+        arg->page = f3fs_grab_cache_page2(NODE_MAPPING(sbi), nid, false);
         if (!arg->page) {
-          arg->state = GET_NODE_STATE_DONE;
-          return ERR_PTR(-ENOMEM);
+          arg->state = GET_NODE_STATE_REPEAT;
+          break;
         }
 
         arg->err = read_node_page(arg->page, 0);
