@@ -1448,28 +1448,30 @@ struct page *f3fs_get_lock_data_page1(struct inode *inode, pgoff_t index,
 {
   struct read_data_arg arg = {0,};
   struct page* page = NULL;
+	struct address_space *mapping = inode->i_mapping;
+
+repeat:
 
   do {
     page = f3fs_get_read_data_page2(inode, index, 0, for_write, &arg);
   } while (arg.read_state != READ_STATE_DONE);
 
-  return page;
-}
-
-int f3fs_get_lock_data_page2(struct inode *inode, pgoff_t index,
-							bool for_write, struct page* page)
-{
-	struct address_space *mapping = inode->i_mapping;
+  if (IS_ERR(page))
+    return page;
 
 	/* wait for read completion */
 	lock_page(page);
 	if (unlikely(page->mapping != mapping)) {
-    return -EAGAIN;
+    f3fs_put_page(page, 1);
+    goto repeat;
 	}
+
 	if (unlikely(!PageUptodate(page))) {
-		return -EIO;
+    f3fs_put_page(page, 1);
+    return ERR_PTR(-EIO);
 	}
-  return 0;
+
+  return page;
 }
 
 /*

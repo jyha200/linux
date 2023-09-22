@@ -34,10 +34,10 @@
 
 #define VICTIM_COUNT (4)
 
-enum gc_state {
+enum GC_STATE {
   GC_STATE_START,
-  GC_STATE_READ_ONGOING,
-  GC_STATE_WRITE,
+  GC_STATE_MOVE,
+  GC_STATE_MOVE_DONE,
   GC_STATE_DONE,
 };
 

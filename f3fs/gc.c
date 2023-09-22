@@ -1559,27 +1559,14 @@ out:
 }
 
 static int move_data_page1(struct inode *inode, block_t bidx, int gc_type,
-							unsigned int segno, int off, char dst_hint, struct page** page)
+							unsigned int segno, int off, char dst_hint)
 {
+  struct page *page;
 	int err = 0;
-	*page = f3fs_get_lock_data_page1(inode, bidx, true);
+	page = f3fs_get_lock_data_page1(inode, bidx, true);
 
-	if (IS_ERR(*page))
-		return PTR_ERR(*page);
-
-	return err;
-}
-
-static int move_data_page2(struct inode *inode, block_t bidx, int gc_type,
-							unsigned int segno, int off, char dst_hint, struct page* page)
-{
-	int err = 0;
-
-  err = f3fs_get_lock_data_page2(inode, bidx, true, page);
-
-	if (err) {
-    goto out;
-  }
+	if (IS_ERR(page))
+		return PTR_ERR(page);
 
 	if (!check_valid_map(F3FS_I_SB(inode), segno, off)) {
 		err = -ENOENT;
@@ -1641,6 +1628,17 @@ out:
 	return err;
 }
 
+struct gc_data_arg {
+  struct RangeLock* range_w;
+  struct RangeLock* range_r;
+  bool locked;
+  enum GC_STATE state;
+  struct inode* inode;
+  int err;
+  struct page* page;
+  block_t start_bidx;
+};
+
 /*
  * This function tries to get parent node of victim data block, and identifies
  * data block validity. If the block is valid, copy that with cold status and
@@ -1659,14 +1657,10 @@ static int gc_data_segment(struct f3fs_sb_info *sbi, struct f3fs_summary *sum,
 	int phase = 0;
 	int submitted = 0;
 	unsigned int usable_blks_in_seg = f3fs_usable_blks_in_seg(sbi, segno);
-  struct RangeLock** range_w = kmalloc(sizeof(struct RangeLock*) * 512, GFP_KERNEL);
-  struct RangeLock** range_r = kmalloc(sizeof(struct RangeLock*) * 512, GFP_KERNEL);
-  bool* locked = kmalloc(sizeof(bool) * 512, GFP_KERNEL);
-  int* phase_local = kmalloc(sizeof(int) * 512, GFP_KERNEL);
-  struct inode** inode = kmalloc(sizeof(struct inode*) * 512, GFP_KERNEL);
-  int* err = kmalloc(sizeof(int) * 512, GFP_KERNEL);
-  struct page** page_arr = kmalloc(sizeof(struct page*) * 512, GFP_KERNEL);
+  struct gc_data_arg* args = kmalloc(512 * sizeof(struct gc_data_arg), GFP_KERNEL);
   int done = 0;
+
+  memset(args, 0, sizeof(struct gc_data_arg) * 512);
 
 	start_addr = START_BLOCK(sbi, segno);
 
@@ -1742,12 +1736,12 @@ next_step:
 			start_bidx = f3fs_start_bidx_of_node(nofs, inode) +
 								ofs_in_node;
 
-			range_w[off] = f3fs_down_write_range_trylock3(
+			args[off].range_w = f3fs_down_write_range_trylock3(
         &F3FS_I(inode)->i_gc_rwsem[WRITE],
         start_bidx,
         1);
 
-			if (!range_w[off]) {
+			if (!args[off].range_w) {
 				iput(inode);
 				sbi->skipped_gc_rwsem++;
         //count[3]++;
@@ -1756,7 +1750,7 @@ next_step:
 
 			if (f3fs_post_read_required(inode)) {
 				int err = ra_data_block(inode, start_bidx);
-				f3fs_up_write_range3(range_w[off]);
+				f3fs_up_write_range3(args[off].range_w);
 
 				if (err) {
 					iput(inode);
@@ -1768,7 +1762,7 @@ next_step:
 
 			data_page = f3fs_get_read_data_page(inode,
 						start_bidx, REQ_RAHEAD, true);
-			f3fs_up_write_range3(range_w[off]);
+			f3fs_up_write_range3(args[off].range_w);
 
 			if (IS_ERR(data_page)) {
         //count[4]++;
@@ -1786,7 +1780,7 @@ next_step:
 		goto next_step;
 
   for (off = 0; off < usable_blks_in_seg; off++, entry++) {
-    phase_local[off] = GC_STATE_START;
+    args[off].state = GC_STATE_START;
   }
 next_step2:
 	entry = sum;
@@ -1794,12 +1788,11 @@ next_step2:
   for (off = 0; off < usable_blks_in_seg; off++, entry++) {
     struct node_info dni; /* dnode info for the data */
     unsigned int ofs_in_node, nofs;
-    block_t start_bidx;
 
-    switch (phase_local[off]) {
+    switch (args[off].state) {
       case GC_STATE_START:
         {
-          locked[off] = false;
+          args[off].locked = false;
 
           /*
            * stop BG_GC if there is not enough free sections.
@@ -1814,14 +1807,14 @@ next_step2:
           }
 
           if (check_valid_map(sbi, segno, off) == 0) {
-            phase_local[off] = GC_STATE_DONE;
+            args[off].state = GC_STATE_DONE;
             done++;
             break;
           }
 
           /* Get an inode by ino with checking validity */
           if (!is_alive(sbi, entry, &dni, start_addr + off, &nofs)) {
-            phase_local[off] = GC_STATE_DONE;
+            args[off].state = GC_STATE_DONE;
             done++;
             break;
           }
@@ -1829,63 +1822,66 @@ next_step2:
           ofs_in_node = le16_to_cpu(entry->ofs_in_node);
 
           /* phase 4 */
-          inode[off] = find_gc_inode(gc_list, dni.ino);
-          if (inode[off]) {
-            struct f3fs_inode_info *fi = F3FS_I(inode[off]);
+          args[off].inode = find_gc_inode(gc_list, dni.ino);
+          if (args[off].inode) {
+            struct f3fs_inode_info *fi = F3FS_I(args[off].inode);
 
-            start_bidx = f3fs_start_bidx_of_node(nofs, inode[off])
+            args[off].start_bidx = f3fs_start_bidx_of_node(nofs, args[off].inode)
               + ofs_in_node;
 
-            if (S_ISREG(inode[off]->i_mode)) {
-              range_r[off] = f3fs_down_write_range_trylock3(
-                  &fi->i_gc_rwsem[READ], start_bidx, 1);
-              if (!range_r[off]) {
+            if (S_ISREG(args[off].inode->i_mode)) {
+              args[off].range_r = f3fs_down_write_range_trylock3(
+                  &fi->i_gc_rwsem[READ], args[off].start_bidx, 1);
+              if (!args[off].range_r) {
                 sbi->skipped_gc_rwsem++;
                 continue;
               }
-              range_w[off] = f3fs_down_write_range_trylock3(
-                  &fi->i_gc_rwsem[WRITE], start_bidx, 1);
-              if (!range_w[off]) {
-                f3fs_up_write_range3(range_r[off]);
+              args[off].range_w = f3fs_down_write_range_trylock3(
+                  &fi->i_gc_rwsem[WRITE], args[off].start_bidx, 1);
+              if (!args[off].range_w) {
+                f3fs_up_write_range3(args[off].range_r);
                 continue;
               }
-              locked[off] = true;
+              args[off].locked = true;
 
               /* wait for all inflight aio data */
-              inode_dio_wait(inode[off]);
+              inode_dio_wait(args[off].inode);
             }
-            if (f3fs_post_read_required(inode[off])) {
+            if (f3fs_post_read_required(args[off].inode)) {
               printk("%s %d Not supported!\n", __func__, __LINE__);
-              err[off] = move_data_block(inode[off], start_bidx,
+              args[off].err = move_data_block(args[off].inode, args[off].start_bidx,
                   gc_type, segno, off);
-            } else
-              err[off] = move_data_page1(inode[off], start_bidx, gc_type,
-                  segno, off, dst_hint, &page_arr[off]);
-            phase_local[off] = GC_STATE_WRITE;
+              args[off].state = GC_STATE_MOVE_DONE;
+            } else {
+              args[off].state = GC_STATE_MOVE;
+            }
+            break;
           } else {
-            phase_local[off] = GC_STATE_DONE;
+            args[off].state = GC_STATE_DONE;
             done++;
           }
+          break;
+        }
+      case GC_STATE_MOVE:
+        {
+          args[off].err = move_data_page1(args[off].inode, args[off].start_bidx, gc_type,
+              segno, off, dst_hint);
+          args[off].state = GC_STATE_MOVE_DONE;
 
           break;
         }
-      case GC_STATE_WRITE:
+      case GC_STATE_MOVE_DONE:
         {
-          if (err[off] == 0) {
-            err[off] = move_data_page2(inode[off], start_bidx, gc_type,
-                segno, off, dst_hint, page_arr[off]);
-          }
-
-          if (err[off] == 0 && (gc_type == FG_GC ||
-                f3fs_post_read_required(inode[off])))
+          if (args[off].err == 0 && (gc_type == FG_GC ||
+                f3fs_post_read_required(args[off].inode)))
             submitted++;
 
           stat_inc_data_blk_count(sbi, 1, gc_type);
-          if (locked[off]) {
-            f3fs_up_write_range3(range_w[off]);
-            f3fs_up_write_range3(range_r[off]);
+          if (args[off].locked) {
+            f3fs_up_write_range3(args[off].range_w);
+            f3fs_up_write_range3(args[off].range_r);
           }
-          phase_local[off] = GC_STATE_DONE;
+          args[off].state = GC_STATE_DONE;
           done++;
 
           break;
@@ -1901,13 +1897,7 @@ next_step2:
   }
 
 //  printk("%s %d : %d %d %d %d %d %d %d %d\n", __func__, __LINE__, count[0], count[1], count[2], count[3], count[4], count[5], count[6], count[7]);
-  kfree(range_w);
-  kfree(range_r);
-  kfree(locked);
-  kfree(phase_local);
-  kfree(inode);
-  kfree(err);
-  kfree(page_arr);
+  kfree(args);
 	return submitted;
 }
 
