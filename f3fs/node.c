@@ -887,197 +887,201 @@ int f3fs_get_dnode_of_data2(struct dnode_of_data *dn, pgoff_t index, int mode,
   struct get_dnode_arg* arg)
 {
 	struct f3fs_sb_info *sbi = F3FS_I_SB(dn->inode);
-	
-  switch (arg->state) {
-    case GET_DNODE_STATE_START:
-      {
-        arg->level = get_node_path(dn->inode, index, arg->offset, arg->noffset);
-        if (arg->level < 0) {
-          arg->state = GET_DNODE_STATE_DONE;
-          return arg->level;
+  bool escape = false;
+
+  while (!escape) {  	
+    switch (arg->state) {
+      case GET_DNODE_STATE_START:
+        {
+          arg->level = get_node_path(dn->inode, index, arg->offset, arg->noffset);
+          if (arg->level < 0) {
+            arg->state = GET_DNODE_STATE_DONE;
+            return arg->level;
+          }
+
+          arg->nids[0] = dn->inode->i_ino;
+          arg->npage[0] = dn->inode_page;
+          arg->state = GET_DNODE_STATE_DO_L0;
+          fallthrough;
         }
+      case GET_DNODE_STATE_DO_L0:
+        {
+          if (!arg->npage[0]) {
+            struct page* temp = f3fs_get_node_page2(sbi, arg->nids[0], &arg->get_node_arg);
 
-        arg->nids[0] = dn->inode->i_ino;
-        arg->npage[0] = dn->inode_page;
-        arg->state = GET_DNODE_STATE_DO_L0;
-        fallthrough;
-      }
-    case GET_DNODE_STATE_DO_L0:
-      {
-        if (!arg->npage[0]) {
-          struct page* temp = f3fs_get_node_page2(sbi, arg->nids[0], &arg->get_node_arg);
-
-          if (arg->get_node_arg.state == GET_NODE_STATE_DONE) {
-            arg->npage[0] = temp;
-            arg->state = GET_DNODE_STATE_WAIT_L0;
-            fallthrough;
+            if (arg->get_node_arg.state == GET_NODE_STATE_DONE) {
+              arg->npage[0] = temp;
+              arg->state = GET_DNODE_STATE_WAIT_L0;
+              break;
+            } else {
+              escape = true;
+              break;
+            }
           } else {
+            arg->state = GET_DNODE_STATE_DO_L;
             break;
           }
-        } else {
+          break;
+        }
+      case GET_DNODE_STATE_WAIT_L0:
+        {
+          if (IS_ERR(arg->npage[0])) {
+            arg->state = GET_DNODE_STATE_DONE;
+            return PTR_ERR(arg->npage[0]);
+          }
           arg->state = GET_DNODE_STATE_DO_L;
-          break;
-        }
-        break;
-      }
-    case GET_DNODE_STATE_WAIT_L0:
-      {
-        if (IS_ERR(arg->npage[0])) {
-          arg->state = GET_DNODE_STATE_DONE;
-          return PTR_ERR(arg->npage[0]);
-        }
-        arg->state = GET_DNODE_STATE_DO_L;
-        fallthrough;
-      }
-    case GET_DNODE_STATE_DO_L:
-      {
-        /* if inline_data is set, should not report any block indices */
-        if (f3fs_has_inline_data(dn->inode) && index) {
-          arg->err = -ENOENT;
-          f3fs_put_page(arg->npage[0], 1);
-          arg->state = GET_DNODE_STATE_RELEASE_OUT;
-          break;
-        }
-
-        arg->parent = arg->npage[0];
-        if (arg->level != 0)
-          arg->nids[1] = get_nid(arg->parent, arg->offset[0], true);
-        dn->inode_page = arg->npage[0];
-        dn->inode_page_locked = true;
-        if (arg->level == 0) {
-          arg->state = GET_DNODE_STATE_POST_L;
-          break;
-        } else {
-          arg->state = GET_DNODE_STATE_L_LOOP;
-          arg->i = 1;
           fallthrough;
         }
-      }
-    case GET_DNODE_STATE_L_LOOP:
-      {
-        /* get indirect or direct nodes */
-        bool done = false;
-
-        if (!arg->nids[arg->i] && mode == ALLOC_NODE) {
-          /* alloc new node */
-          if (!f3fs_alloc_nid(sbi, &(arg->nids[arg->i]))) {
-            arg->err = -ENOSPC;
-
+      case GET_DNODE_STATE_DO_L:
+        {
+          /* if inline_data is set, should not report any block indices */
+          if (f3fs_has_inline_data(dn->inode) && index) {
+            arg->err = -ENOENT;
+            f3fs_put_page(arg->npage[0], 1);
             arg->state = GET_DNODE_STATE_RELEASE_OUT;
             break;
           }
 
-          dn->nid = arg->nids[arg->i];
-          arg->npage[arg->i] = f3fs_new_node_page(dn, arg->noffset[arg->i]);
-          if (IS_ERR(arg->npage[arg->i])) {
-            f3fs_alloc_nid_failed(sbi, arg->nids[arg->i]);
-            arg->err = PTR_ERR(arg->npage[arg->i]);
-            arg->state = GET_DNODE_STATE_RELEASE_OUT;
+          arg->parent = arg->npage[0];
+          if (arg->level != 0)
+            arg->nids[1] = get_nid(arg->parent, arg->offset[0], true);
+          dn->inode_page = arg->npage[0];
+          dn->inode_page_locked = true;
+          if (arg->level == 0) {
+            arg->state = GET_DNODE_STATE_POST_L;
             break;
-          }
-
-          set_nid(arg->parent, arg->offset[arg->i - 1], arg->nids[arg->i], arg->i == 1);
-          f3fs_alloc_nid_done(sbi, arg->nids[arg->i]);
-          done = true;
-        } else if (mode == LOOKUP_NODE_RA && arg->i == arg->level && arg->level > 1) {
-          arg->npage[arg->i] = f3fs_get_node_page_ra(arg->parent, arg->offset[arg->i - 1]);
-          if (IS_ERR(arg->npage[arg->i])) {
-            arg->err = PTR_ERR(arg->npage[arg->i]);
-            arg->state = GET_DNODE_STATE_RELEASE_OUT;
-            break;
-          }
-          done = true;
-        }
-        if (arg->i == 1) {
-          dn->inode_page_locked = false;
-          unlock_page(arg->parent);
-        } else {
-          f3fs_put_page(arg->parent, 1);
-        }
-
-        if (!done) {
-          arg->npage[arg->i] = f3fs_get_node_page(sbi, arg->nids[arg->i]);
-          if (IS_ERR(arg->npage[arg->i])) {
-            arg->err = PTR_ERR(arg->npage[arg->i]);
-            f3fs_put_page(arg->npage[0], 0);
-            arg->state = GET_DNODE_STATE_RELEASE_OUT;
-            break;
+          } else {
+            arg->state = GET_DNODE_STATE_L_LOOP;
+            arg->i = 1;
+            fallthrough;
           }
         }
-        if (arg->i < arg->level) {
-          arg->parent = arg->npage[arg->i];
-          arg->nids[arg->i + 1] = get_nid(arg->parent, arg->offset[arg->i], false);
-        }
+      case GET_DNODE_STATE_L_LOOP:
+        {
+          /* get indirect or direct nodes */
+          bool done = false;
 
-        arg->i++;
-        if (arg->i <= arg->level) {
-          arg->state = GET_DNODE_STATE_L_LOOP;
-          break;
-        } else {
-          arg->state = GET_DNODE_STATE_POST_L;
-          fallthrough;
-        }
-      }
-    case GET_DNODE_STATE_POST_L:
-      {
-        dn->nid = arg->nids[arg->level];
-        dn->ofs_in_node = arg->offset[arg->level];
-        dn->node_page = arg->npage[arg->level];
-        dn->data_blkaddr = f3fs_data_blkaddr(dn);
+          if (!arg->nids[arg->i] && mode == ALLOC_NODE) {
+            /* alloc new node */
+            if (!f3fs_alloc_nid(sbi, &(arg->nids[arg->i]))) {
+              arg->err = -ENOSPC;
 
-        if (is_inode_flag_set(dn->inode, FI_COMPRESSED_FILE) &&
-            f3fs_sb_has_readonly(sbi)) {
-          unsigned int c_len = f3fs_cluster_blocks_are_contiguous(dn);
-          block_t blkaddr;
+              arg->state = GET_DNODE_STATE_RELEASE_OUT;
+              break;
+            }
 
-          if (!c_len) {
-            arg->state = GET_DNODE_STATE_OUT;
-            break;
+            dn->nid = arg->nids[arg->i];
+            arg->npage[arg->i] = f3fs_new_node_page(dn, arg->noffset[arg->i]);
+            if (IS_ERR(arg->npage[arg->i])) {
+              f3fs_alloc_nid_failed(sbi, arg->nids[arg->i]);
+              arg->err = PTR_ERR(arg->npage[arg->i]);
+              arg->state = GET_DNODE_STATE_RELEASE_OUT;
+              break;
+            }
+
+            set_nid(arg->parent, arg->offset[arg->i - 1], arg->nids[arg->i], arg->i == 1);
+            f3fs_alloc_nid_done(sbi, arg->nids[arg->i]);
+            done = true;
+          } else if (mode == LOOKUP_NODE_RA && arg->i == arg->level && arg->level > 1) {
+            arg->npage[arg->i] = f3fs_get_node_page_ra(arg->parent, arg->offset[arg->i - 1]);
+            if (IS_ERR(arg->npage[arg->i])) {
+              arg->err = PTR_ERR(arg->npage[arg->i]);
+              arg->state = GET_DNODE_STATE_RELEASE_OUT;
+              break;
+            }
+            done = true;
+          }
+          if (arg->i == 1) {
+            dn->inode_page_locked = false;
+            unlock_page(arg->parent);
+          } else {
+            f3fs_put_page(arg->parent, 1);
           }
 
-          blkaddr = f3fs_data_blkaddr(dn);
-          if (blkaddr == COMPRESS_ADDR)
-            blkaddr = data_blkaddr(dn->inode, dn->node_page,
-                dn->ofs_in_node + 1);
+          if (!done) {
+            arg->npage[arg->i] = f3fs_get_node_page(sbi, arg->nids[arg->i]);
+            if (IS_ERR(arg->npage[arg->i])) {
+              arg->err = PTR_ERR(arg->npage[arg->i]);
+              f3fs_put_page(arg->npage[0], 0);
+              arg->state = GET_DNODE_STATE_RELEASE_OUT;
+              break;
+            }
+          }
+          if (arg->i < arg->level) {
+            arg->parent = arg->npage[arg->i];
+            arg->nids[arg->i + 1] = get_nid(arg->parent, arg->offset[arg->i], false);
+          }
 
-          f3fs_update_extent_tree_range_compressed(dn->inode,
-              index, blkaddr,
-              F3FS_I(dn->inode)->i_cluster_size,
-              c_len);
+          arg->i++;
+          if (arg->i <= arg->level) {
+            arg->state = GET_DNODE_STATE_L_LOOP;
+            break;
+          } else {
+            arg->state = GET_DNODE_STATE_POST_L;
+            fallthrough;
+          }
         }
-        arg->state = GET_DNODE_STATE_OUT;
-        fallthrough;
-      }
-    case GET_DNODE_STATE_OUT:
-      {
-        arg->state = GET_DNODE_STATE_DONE;
-        return 0;
-      }
-    case GET_DNODE_STATE_RELEASE_PAGES:
-      {
-        f3fs_put_page(arg->parent, 1);
-        if (arg->i > 1)
-          f3fs_put_page(arg->npage[0], 0);
-        arg->state = GET_DNODE_STATE_RELEASE_OUT;
-        fallthrough;
-      }
-    case GET_DNODE_STATE_RELEASE_OUT:
-      {
-        dn->inode_page = NULL;
-        dn->node_page = NULL;
-        if (arg->err == -ENOENT) {
-          dn->cur_level = arg->i;
-          dn->max_level = arg->level;
+      case GET_DNODE_STATE_POST_L:
+        {
+          dn->nid = arg->nids[arg->level];
           dn->ofs_in_node = arg->offset[arg->level];
+          dn->node_page = arg->npage[arg->level];
+          dn->data_blkaddr = f3fs_data_blkaddr(dn);
+
+          if (is_inode_flag_set(dn->inode, FI_COMPRESSED_FILE) &&
+              f3fs_sb_has_readonly(sbi)) {
+            unsigned int c_len = f3fs_cluster_blocks_are_contiguous(dn);
+            block_t blkaddr;
+
+            if (!c_len) {
+              arg->state = GET_DNODE_STATE_OUT;
+              break;
+            }
+
+            blkaddr = f3fs_data_blkaddr(dn);
+            if (blkaddr == COMPRESS_ADDR)
+              blkaddr = data_blkaddr(dn->inode, dn->node_page,
+                  dn->ofs_in_node + 1);
+
+            f3fs_update_extent_tree_range_compressed(dn->inode,
+                index, blkaddr,
+                F3FS_I(dn->inode)->i_cluster_size,
+                c_len);
+          }
+          arg->state = GET_DNODE_STATE_OUT;
+          fallthrough;
         }
-        arg->state = GET_DNODE_STATE_DONE;
-        return arg->err;
-      }
-    default:
-      {
-        printk("%s %d wrong state %d\n", __func__, __LINE__, arg->state);
-        break;
-      }
+      case GET_DNODE_STATE_OUT:
+        {
+          arg->state = GET_DNODE_STATE_DONE;
+          return 0;
+        }
+      case GET_DNODE_STATE_RELEASE_PAGES:
+        {
+          f3fs_put_page(arg->parent, 1);
+          if (arg->i > 1)
+            f3fs_put_page(arg->npage[0], 0);
+          arg->state = GET_DNODE_STATE_RELEASE_OUT;
+          fallthrough;
+        }
+      case GET_DNODE_STATE_RELEASE_OUT:
+        {
+          dn->inode_page = NULL;
+          dn->node_page = NULL;
+          if (arg->err == -ENOENT) {
+            dn->cur_level = arg->i;
+            dn->max_level = arg->level;
+            dn->ofs_in_node = arg->offset[arg->level];
+          }
+          arg->state = GET_DNODE_STATE_DONE;
+          return arg->err;
+        }
+      default:
+        {
+          printk("%s %d wrong state %d\n", __func__, __LINE__, arg->state);
+          break;
+        }
+    }
   }
   return 0;
 }
@@ -1604,103 +1608,110 @@ void f3fs_ra_node_page(struct f3fs_sb_info *sbi, nid_t nid)
 static struct page *__get_node_page2(struct f3fs_sb_info *sbi, pgoff_t nid,
 					struct page *parent, int start, struct get_node_arg* arg)
 {
-  switch (arg->state) {
-    case GET_NODE_STATE_START:
-      {
-        if (!nid) {
-          arg->state = GET_NODE_STATE_DONE;
-          return ERR_PTR(-ENOENT);
-        }
-        if (f3fs_check_nid_range(sbi, nid)) {
-          arg->state = GET_NODE_STATE_DONE;
-          return ERR_PTR(-EINVAL);
-        }
-        arg->state = GET_NODE_STATE_REPEAT;
-        fallthrough;
-      }
-    case GET_NODE_STATE_REPEAT:
-      {
-        arg->page = f3fs_grab_cache_page2(NODE_MAPPING(sbi), nid, false);
-        if (!arg->page) {
+  bool escape = false;
+  while (!escape) {
+    switch (arg->state) {
+      case GET_NODE_STATE_START:
+        {
+          if (!nid) {
+            arg->state = GET_NODE_STATE_DONE;
+            return ERR_PTR(-ENOENT);
+          }
+          if (f3fs_check_nid_range(sbi, nid)) {
+            arg->state = GET_NODE_STATE_DONE;
+            return ERR_PTR(-EINVAL);
+          }
           arg->state = GET_NODE_STATE_REPEAT;
+          fallthrough;
+        }
+      case GET_NODE_STATE_REPEAT:
+        {
+          arg->page = f3fs_grab_cache_page2(NODE_MAPPING(sbi), nid, false);
+          if (!arg->page) {
+            arg->state = GET_NODE_STATE_REPEAT;
+            escape = true;
+            break;
+          }
+
+          arg->err = read_node_page(arg->page, 0);
+          if (arg->err < 0) {
+            arg->state = GET_NODE_STATE_OUT_PUT_ERR;
+            break;
+          } else if (arg->err == LOCKED_PAGE) {
+            arg->err = 0;
+            arg->state = GET_NODE_STATE_PAGE_HIT;
+            break;
+          }
+
+          if (parent)
+            f3fs_ra_node_pages(parent, start + 1, MAX_RA_NODE);
+          arg->state = GET_NODE_STATE_WAIT;
+          escape = true; // wait submitted bio
           break;
         }
+      case GET_NODE_STATE_WAIT:
+        {
+          lock_page(arg->page);
 
-        arg->err = read_node_page(arg->page, 0);
-        if (arg->err < 0) {
-          arg->state = GET_NODE_STATE_OUT_PUT_ERR;
-          break;
-        } else if (arg->err == LOCKED_PAGE) {
-          arg->err = 0;
+          if (unlikely(arg->page->mapping != NODE_MAPPING(sbi))) {
+            f3fs_put_page(arg->page, 1);
+            arg->state = GET_NODE_STATE_REPEAT;
+            break;
+          }
+
+          if (unlikely(!PageUptodate(arg->page))) {
+            arg->err = -EIO;
+            arg->state = GET_NODE_STATE_OUT_ERR;
+            break;
+          }
+
+          if (!f3fs_inode_chksum_verify(sbi, arg->page)) {
+            arg->err = -EFSBADCRC;
+            arg->state = GET_NODE_STATE_OUT_ERR;
+            break;
+          }
           arg->state = GET_NODE_STATE_PAGE_HIT;
-          break;
+          fallthrough;
         }
+      case GET_NODE_STATE_PAGE_HIT:
+        {
+          if (likely(nid == nid_of_node(arg->page))) {
+            arg->state = GET_NODE_STATE_DONE;
+            escape = true;
+            return arg->page;
+          }
 
-        if (parent)
-          f3fs_ra_node_pages(parent, start + 1, MAX_RA_NODE);
-        arg->state = GET_NODE_STATE_WAIT;
-        break;
-      }
-    case GET_NODE_STATE_WAIT:
-      {
-        lock_page(arg->page);
-
-        if (unlikely(arg->page->mapping != NODE_MAPPING(sbi))) {
+          f3fs_warn(sbi, "inconsistent node block, nid:%lu, node_footer[nid:%u,ino:%u,ofs:%u,cpver:%llu,blkaddr:%u]",
+              nid, nid_of_node(arg->page), ino_of_node(arg->page),
+              ofs_of_node(arg->page), cpver_of_node(arg->page),
+              next_blkaddr_of_node(arg->page));
+          set_sbi_flag(sbi, SBI_NEED_FSCK);
+          arg->err = -EINVAL;
+          arg->state = GET_NODE_STATE_OUT_ERR;
+          fallthrough;
+        }
+      case GET_NODE_STATE_OUT_ERR:
+        {
+          ClearPageUptodate(arg->page);
+          arg->state = GET_NODE_STATE_OUT_PUT_ERR;
+          fallthrough;
+        }
+      case GET_NODE_STATE_OUT_PUT_ERR:
+        {
+          /* ENOENT comes from read_node_page which is not an error. */
+          if (arg->err != -ENOENT)
+            f3fs_handle_page_eio(sbi, arg->page->index, NODE);
           f3fs_put_page(arg->page, 1);
-          arg->state = GET_NODE_STATE_REPEAT;
-          break;
-        }
-
-        if (unlikely(!PageUptodate(arg->page))) {
-          arg->err = -EIO;
-          arg->state = GET_NODE_STATE_OUT_ERR;
-          break;
-        }
-
-        if (!f3fs_inode_chksum_verify(sbi, arg->page)) {
-          arg->err = -EFSBADCRC;
-          arg->state = GET_NODE_STATE_OUT_ERR;
-          break;
-        }
-        arg->state = GET_NODE_STATE_PAGE_HIT;
-        fallthrough;
-      }
-    case GET_NODE_STATE_PAGE_HIT:
-      {
-        if (likely(nid == nid_of_node(arg->page))) {
           arg->state = GET_NODE_STATE_DONE;
-          return arg->page;
+          escape = true;
+          return ERR_PTR(arg->err);
         }
-
-        f3fs_warn(sbi, "inconsistent node block, nid:%lu, node_footer[nid:%u,ino:%u,ofs:%u,cpver:%llu,blkaddr:%u]",
-            nid, nid_of_node(arg->page), ino_of_node(arg->page),
-            ofs_of_node(arg->page), cpver_of_node(arg->page),
-            next_blkaddr_of_node(arg->page));
-        set_sbi_flag(sbi, SBI_NEED_FSCK);
-        arg->err = -EINVAL;
-        arg->state = GET_NODE_STATE_OUT_ERR;
-        fallthrough;
-      }
-    case GET_NODE_STATE_OUT_ERR:
-      {
-        ClearPageUptodate(arg->page);
-        arg->state = GET_NODE_STATE_OUT_PUT_ERR;
-        fallthrough;
-      }
-    case GET_NODE_STATE_OUT_PUT_ERR:
-      {
-        /* ENOENT comes from read_node_page which is not an error. */
-        if (arg->err != -ENOENT)
-          f3fs_handle_page_eio(sbi, arg->page->index, NODE);
-        f3fs_put_page(arg->page, 1);
-        arg->state = GET_NODE_STATE_DONE;
-        return ERR_PTR(arg->err);
-      }
-    default:
-      {
-        printk("%s %d wrong state %d\n", __func__, __LINE__, arg->state);
-        break;
-      }
+      default:
+        {
+          printk("%s %d wrong state %d\n", __func__, __LINE__, arg->state);
+          break;
+        }
+    }
   }
   return NULL;
 }

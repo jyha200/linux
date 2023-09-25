@@ -1586,96 +1586,109 @@ static int move_data_page1(struct inode *inode, block_t bidx, int gc_type,
 
         if (arg->get_lock_page_arg.state == GET_LOCK_PAGE_STATE_DONE) {
           arg->state = MOVE_DATA_STATE_GET_LOCK_PAGE_DONE;
-          fallthrough;
-        } else {
-          break;
         }
-      }
-    case MOVE_DATA_STATE_GET_LOCK_PAGE_DONE:
-      {
-        if (IS_ERR(arg->page)) {
-          arg->state = MOVE_DATA_STATE_DONE;
-          return PTR_ERR(arg->page);
-        }
-
-        if (!check_valid_map(F3FS_I_SB(inode), segno, off)) {
-          arg->err = -ENOENT;
-          arg->state = MOVE_DATA_STATE_OUT;
-          break;
-        }
-
-        arg->err = f3fs_gc_pinned_control(inode, gc_type, segno);
-        if (arg->err) {
-          arg->state = MOVE_DATA_STATE_OUT;
-          break;
-        }
-
-        if (gc_type == BG_GC) {
-          if (PageWriteback(arg->page)) {
-            arg->err = -EAGAIN;
-            arg->state = MOVE_DATA_STATE_OUT;
-            break;
-          }
-          set_page_dirty(arg->page);
-          set_page_private_gcing(arg->page);
-          arg->state = MOVE_DATA_STATE_OUT;
-          break;
-        } else {
-          arg->fio.sbi = F3FS_I_SB(inode);
-          arg->fio.ino = inode->i_ino;
-          arg->fio.type = DATA;
-          arg->fio.temp = COLD_GC_START + dst_hint;
-          arg->fio.op = REQ_OP_WRITE;
-          arg->fio.op_flags = REQ_SYNC;
-          arg->fio.old_blkaddr = NULL_ADDR;
-          arg->fio.page = arg->page;
-          arg->fio.encrypted_page = NULL;
-          arg->fio.need_lock = LOCK_REQ;
-          arg->fio.io_type = FS_GC_DATA_IO;
-          arg->fio.dst_hint = dst_hint;
-
-          arg->is_dirty = PageDirty(arg->page);
-          arg->state = MOVE_DATA_STATE_RETRY;
-          fallthrough;
-        }
-      }
-    case MOVE_DATA_STATE_RETRY:
-      {
-        f3fs_wait_on_page_writeback(arg->page, DATA, true, true);
-
-        set_page_dirty(arg->page);
-        if (clear_page_dirty_for_io(arg->page)) {
-          inode_dec_dirty_pages(inode);
-          f3fs_remove_dirty_inode(inode);
-        }
-
-        set_page_private_gcing(arg->page);
-
-        arg->err = f3fs_do_write_data_page(&arg->fio);
-        if (arg->err) {
-          clear_page_private_gcing(arg->page);
-          if (arg->err == -ENOMEM) {
-            memalloc_retry_wait(GFP_NOFS);
-            arg->state = MOVE_DATA_STATE_RETRY;
-            break;
-          }
-          if (arg->is_dirty)
-            set_page_dirty(arg->page);
-        }
-        arg->state = MOVE_DATA_STATE_OUT;
-        fallthrough;
-      }
-    case MOVE_DATA_STATE_OUT:
-      {
-        f3fs_put_page(arg->page, 1);
-        arg->state = MOVE_DATA_STATE_DONE;
-        return arg->err;
+        break;
       }
     default:
       {
         printk("%s %d wrong READ_STATE %d", __func__, __LINE__, arg->state);
         break;
       }
+  }
+  return 0;
+}
+
+static int move_data_page2(struct inode *inode, block_t bidx, int gc_type,
+							unsigned int segno, int off, char dst_hint, struct move_data_arg* arg)
+{
+  while (true) {
+    switch(arg->state) {
+      case MOVE_DATA_STATE_GET_LOCK_PAGE_DONE:
+        {
+          if (IS_ERR(arg->page)) {
+            arg->state = MOVE_DATA_STATE_DONE;
+            return PTR_ERR(arg->page);
+          }
+
+          if (!check_valid_map(F3FS_I_SB(inode), segno, off)) {
+            arg->err = -ENOENT;
+            arg->state = MOVE_DATA_STATE_OUT;
+            break;
+          }
+
+          arg->err = f3fs_gc_pinned_control(inode, gc_type, segno);
+          if (arg->err) {
+            arg->state = MOVE_DATA_STATE_OUT;
+            break;
+          }
+
+          if (gc_type == BG_GC) {
+            if (PageWriteback(arg->page)) {
+              arg->err = -EAGAIN;
+              arg->state = MOVE_DATA_STATE_OUT;
+              break;
+            }
+            set_page_dirty(arg->page);
+            set_page_private_gcing(arg->page);
+            arg->state = MOVE_DATA_STATE_OUT;
+            break;
+          } else {
+            arg->fio.sbi = F3FS_I_SB(inode);
+            arg->fio.ino = inode->i_ino;
+            arg->fio.type = DATA;
+            arg->fio.temp = COLD_GC_START + dst_hint;
+            arg->fio.op = REQ_OP_WRITE;
+            arg->fio.op_flags = REQ_SYNC;
+            arg->fio.old_blkaddr = NULL_ADDR;
+            arg->fio.page = arg->page;
+            arg->fio.encrypted_page = NULL;
+            arg->fio.need_lock = LOCK_REQ;
+            arg->fio.io_type = FS_GC_DATA_IO;
+            arg->fio.dst_hint = dst_hint;
+
+            arg->is_dirty = PageDirty(arg->page);
+            arg->state = MOVE_DATA_STATE_RETRY;
+            fallthrough;
+          }
+        }
+      case MOVE_DATA_STATE_RETRY:
+        {
+          f3fs_wait_on_page_writeback(arg->page, DATA, true, true);
+
+          set_page_dirty(arg->page);
+          if (clear_page_dirty_for_io(arg->page)) {
+            inode_dec_dirty_pages(inode);
+            f3fs_remove_dirty_inode(inode);
+          }
+
+          set_page_private_gcing(arg->page);
+
+          arg->err = f3fs_do_write_data_page(&arg->fio);
+          if (arg->err) {
+            clear_page_private_gcing(arg->page);
+            if (arg->err == -ENOMEM) {
+              memalloc_retry_wait(GFP_NOFS);
+              arg->state = MOVE_DATA_STATE_RETRY;
+              break;
+            }
+            if (arg->is_dirty)
+              set_page_dirty(arg->page);
+          }
+          arg->state = MOVE_DATA_STATE_OUT;
+          fallthrough;
+        }
+      case MOVE_DATA_STATE_OUT:
+        {
+          f3fs_put_page(arg->page, 1);
+          arg->state = MOVE_DATA_STATE_DONE;
+          return arg->err;
+        }
+      default:
+        {
+          printk("%s %d wrong READ_STATE %d", __func__, __LINE__, arg->state);
+          break;
+        }
+    }
   }
 
   return 0;
@@ -1713,6 +1726,7 @@ static int gc_data_segment(struct f3fs_sb_info *sbi, struct f3fs_summary *sum,
 	unsigned int usable_blks_in_seg = f3fs_usable_blks_in_seg(sbi, segno);
   struct gc_data_arg* args = kmalloc(512 * sizeof(struct gc_data_arg), GFP_KERNEL);
   int done = 0;
+  int read_count = 0;
 
   memset(args, 0, sizeof(struct gc_data_arg) * 512);
 
@@ -1912,6 +1926,7 @@ next_step2:
               break;
             } else {
               args[off].state = GC_STATE_MOVE;
+              read_count++;
               fallthrough;
             }
           } else {
@@ -1923,14 +1938,24 @@ next_step2:
         }
       case GC_STATE_MOVE:
         {
-          do {
             args[off].err = move_data_page1(args[off].inode, args[off].start_bidx, gc_type, segno, off, dst_hint, &args[off].move_data_arg);
-          } while (args[off].move_data_arg.state != MOVE_DATA_STATE_DONE);
-          args[off].state = GC_STATE_MOVE_DONE;
-          fallthrough;
+          if (args[off].move_data_arg.state == MOVE_DATA_STATE_GET_LOCK_PAGE_DONE) {
+            read_count--;
+            args[off].state = GC_STATE_MOVE_DONE;
+            fallthrough;
+          } else {
+            break;
+          }
         }
       case GC_STATE_MOVE_DONE:
         {
+          if (read_count > 0) {
+            break;
+          }
+          do {
+            args[off].err = move_data_page2(args[off].inode, args[off].start_bidx, gc_type, segno, off, dst_hint, &args[off].move_data_arg);
+          } while (args[off].move_data_arg.state != MOVE_DATA_STATE_DONE);
+
           if (args[off].err == 0 && (gc_type == FG_GC ||
                 f3fs_post_read_required(args[off].inode)))
             submitted++;

@@ -1201,7 +1201,9 @@ struct page *f3fs_get_read_data_page2(struct inode *inode, pgoff_t index,
 				     blk_opf_t op_flags, bool for_write, struct read_data_arg* arg)
 {
 	struct address_space *mapping = inode->i_mapping;
+  bool escape = false;
 
+  while (!escape) {
   switch (arg->read_state) {
     case READ_STATE_GET_PAGE:
       {
@@ -1229,13 +1231,14 @@ struct page *f3fs_get_read_data_page2(struct inode *inode, pgoff_t index,
       }
     case READ_STATE_GET_DNODE:
       {
-          arg->err = f3fs_get_dnode_of_data2(&arg->dn, index, LOOKUP_NODE, &arg->get_dnode_arg);
-          if (arg->get_dnode_arg.state == GET_DNODE_STATE_DONE) {
-            arg->read_state = READ_STATE_GET_DNODE_DONE;
-            fallthrough;
-          } else {
-            break;
-          }
+        arg->err = f3fs_get_dnode_of_data2(&arg->dn, index, LOOKUP_NODE, &arg->get_dnode_arg);
+        if (arg->get_dnode_arg.state == GET_DNODE_STATE_DONE) {
+          arg->read_state = READ_STATE_GET_DNODE_DONE;
+          fallthrough;
+        } else {
+          escape = true;
+          break;
+        }
       }
     case READ_STATE_GET_DNODE_DONE:
       {
@@ -1305,6 +1308,7 @@ struct page *f3fs_get_read_data_page2(struct inode *inode, pgoff_t index,
         printk("%s %d wrong READ_STATE %d", __func__, __LINE__, arg->read_state);
         break;
       }
+  }
   }
   return NULL;
 }
@@ -1437,50 +1441,55 @@ repeat:
 struct page *f3fs_get_lock_data_page1(struct inode *inode, pgoff_t index,
 							bool for_write, struct get_lock_page_arg* arg)
 {
-	struct address_space *mapping = inode->i_mapping;
+  struct address_space *mapping = inode->i_mapping;
+  bool escape = false;
 
-  switch (arg->state) {
-    case GET_LOCK_PAGE_STATE_REPEAT:
-      {
-        arg->page = f3fs_get_read_data_page2(inode, index, 0, for_write, &arg->read_data_arg);
-        if (arg->read_data_arg.read_state == READ_STATE_DONE) {
-          arg->state = GET_LOCK_PAGE_STATE_READ_DONE;
-          fallthrough;
-        } else {
-          break;
+  while (!escape) {
+    switch (arg->state) {
+      case GET_LOCK_PAGE_STATE_REPEAT:
+        {
+          arg->page = f3fs_get_read_data_page2(inode, index, 0, for_write, &arg->read_data_arg);
+          if (arg->read_data_arg.read_state == READ_STATE_DONE) {
+            arg->state = GET_LOCK_PAGE_STATE_READ_DONE;
+            fallthrough;
+          } else {
+            escape = true;
+            break;
+          }
         }
-      }
-    case GET_LOCK_PAGE_STATE_READ_DONE:
-      {
-        if (IS_ERR(arg->page)) {
+      case GET_LOCK_PAGE_STATE_READ_DONE:
+        {
+          if (IS_ERR(arg->page)) {
+            arg->state = GET_LOCK_PAGE_STATE_DONE;
+            return arg->page;
+          }
+
+          /* wait for read completion */
+          lock_page(arg->page);
+          if (unlikely(arg->page->mapping != mapping)) {
+            f3fs_put_page(arg->page, 1);
+            arg->read_data_arg.read_state = READ_STATE_START;
+            arg->state = GET_LOCK_PAGE_STATE_REPEAT;
+            break;
+          }
+
+          if (unlikely(!PageUptodate(arg->page))) {
+            f3fs_put_page(arg->page, 1);
+            arg->state = GET_LOCK_PAGE_STATE_DONE;
+            return ERR_PTR(-EIO);
+          }
+
           arg->state = GET_LOCK_PAGE_STATE_DONE;
           return arg->page;
         }
-
-        /* wait for read completion */
-        lock_page(arg->page);
-        if (unlikely(arg->page->mapping != mapping)) {
-          f3fs_put_page(arg->page, 1);
-          arg->read_data_arg.read_state = READ_STATE_START;
-          arg->state = GET_LOCK_PAGE_STATE_REPEAT;
+      default:
+        {
+          printk("%s %d wrong READ_STATE %d", __func__, __LINE__, arg->state);
           break;
         }
-
-        if (unlikely(!PageUptodate(arg->page))) {
-          f3fs_put_page(arg->page, 1);
-          arg->state = GET_LOCK_PAGE_STATE_DONE;
-          return ERR_PTR(-EIO);
-        }
-
-        arg->state = GET_LOCK_PAGE_STATE_DONE;
-        return arg->page;
-      }
-    default:
-      {
-        printk("%s %d wrong READ_STATE %d", __func__, __LINE__, arg->state);
-        break;
-      }
+    }
   }
+
   return NULL;
 }
 
