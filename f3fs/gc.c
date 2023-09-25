@@ -1304,94 +1304,6 @@ static bool is_alive(struct f3fs_sb_info *sbi, struct f3fs_summary *sum,
 	return true;
 }
 
-static int ra_data_block(struct inode *inode, pgoff_t index)
-{
-	struct f3fs_sb_info *sbi = F3FS_I_SB(inode);
-	struct address_space *mapping = inode->i_mapping;
-	struct dnode_of_data dn;
-	struct page *page;
-	struct extent_info ei = {0, 0, 0};
-	struct f3fs_io_info fio = {
-		.sbi = sbi,
-		.ino = inode->i_ino,
-		.type = DATA,
-		.temp = COLD,
-		.op = REQ_OP_READ,
-		.op_flags = 0,
-		.encrypted_page = NULL,
-		.in_list = false,
-		.retry = false,
-    .dst_hint = -1,
-	};
-	int err;
-
-	page = f3fs_grab_cache_page(mapping, index, true);
-	if (!page)
-		return -ENOMEM;
-
-	if (f3fs_lookup_extent_cache(inode, index, &ei)) {
-		dn.data_blkaddr = ei.blk + index - ei.fofs;
-		if (unlikely(!f3fs_is_valid_blkaddr(sbi, dn.data_blkaddr,
-						DATA_GENERIC_ENHANCE_READ))) {
-			err = -EFSCORRUPTED;
-			goto put_page;
-		}
-		goto got_it;
-	}
-
-	set_new_dnode(&dn, inode, NULL, NULL, 0);
-	err = f3fs_get_dnode_of_data(&dn, index, LOOKUP_NODE);
-	if (err)
-		goto put_page;
-	f3fs_put_dnode(&dn);
-
-	if (!__is_valid_data_blkaddr(dn.data_blkaddr)) {
-		err = -ENOENT;
-		goto put_page;
-	}
-	if (unlikely(!f3fs_is_valid_blkaddr(sbi, dn.data_blkaddr,
-						DATA_GENERIC_ENHANCE))) {
-		err = -EFSCORRUPTED;
-		goto put_page;
-	}
-got_it:
-	/* read page */
-	fio.page = page;
-	fio.new_blkaddr = fio.old_blkaddr = dn.data_blkaddr;
-
-	/*
-	 * don't cache encrypted data into meta inode until previous dirty
-	 * data were writebacked to avoid racing between GC and flush.
-	 */
-	f3fs_wait_on_page_writeback(page, DATA, true, true);
-
-	f3fs_wait_on_block_writeback(inode, dn.data_blkaddr);
-
-	fio.encrypted_page = f3fs_pagecache_get_page(META_MAPPING(sbi),
-					dn.data_blkaddr,
-					FGP_LOCK | FGP_CREAT, GFP_NOFS);
-	if (!fio.encrypted_page) {
-		err = -ENOMEM;
-		goto put_page;
-	}
-
-	err = f3fs_submit_page_bio(&fio);
-	if (err)
-		goto put_encrypted_page;
-	f3fs_put_page(fio.encrypted_page, 0);
-	f3fs_put_page(page, 1);
-
-	f3fs_update_iostat(sbi, FS_DATA_READ_IO, F3FS_BLKSIZE);
-	f3fs_update_iostat(sbi, FS_GDATA_READ_IO, F3FS_BLKSIZE);
-
-	return 0;
-put_encrypted_page:
-	f3fs_put_page(fio.encrypted_page, 1);
-put_page:
-	f3fs_put_page(page, 1);
-	return err;
-}
-
 /*
  * Move data block via META_MAPPING while keeping locked data page.
  * This can be used to move blocks, aka LBAs, directly on disk.
@@ -1648,6 +1560,7 @@ static int gc_data_segment(struct f3fs_sb_info *sbi, struct f3fs_summary *sum,
 	unsigned int usable_blks_in_seg = f3fs_usable_blks_in_seg(sbi, segno);
   struct RangeLock* range_w = NULL;
   struct RangeLock* range_r = NULL;
+  bool off_done[512] = {0,};
 //  int count[8] = {0,};
 
 	start_addr = START_BLOCK(sbi, segno);
@@ -1656,7 +1569,6 @@ next_step:
 	entry = sum;
 
 	for (off = 0; off < usable_blks_in_seg; off++, entry++) {
-		struct page *data_page;
 		struct inode *inode;
 		struct node_info dni; /* dnode info for the data */
 		unsigned int ofs_in_node, nofs;
@@ -1673,10 +1585,12 @@ next_step:
 							CAP_BLKS_PER_SEC(sbi)))
 			return submitted;
 
+    if (off_done[off]) {
+      continue;
+    }
+
 		if (check_valid_map(sbi, segno, off) == 0) {
-      if (phase == 4) {
-        //count[0]++;
-      }
+      off_done[off] = true;
 			continue;
     }
 
@@ -1694,6 +1608,7 @@ next_step:
 		/* Get an inode by ino with checking validity */
 		if (!is_alive(sbi, entry, &dni, start_addr + off, &nofs)) {
       //count[1]++;
+      off_done[off] = true;
 			continue;
     }
 
@@ -1704,12 +1619,13 @@ next_step:
 
 		ofs_in_node = le16_to_cpu(entry->ofs_in_node);
 
-		if (phase == 3) {
+    {
 			int err;
 
 			inode = f3fs_iget(sb, dni.ino);
 			if (IS_ERR(inode) || is_bad_inode(inode) ||
 					special_file(inode->i_mode)) {
+        off_done[off] = true;
         //count[2]++;
 				continue;
       }
@@ -1720,102 +1636,60 @@ next_step:
         printk("%s %d err EAGAIN", __func__, __LINE__);
 				return submitted;
 			}
+      add_gc_inode(gc_list, inode);
 
-			start_bidx = f3fs_start_bidx_of_node(nofs, inode) +
-								ofs_in_node;
+      {
+        struct f3fs_inode_info *fi = F3FS_I(inode);
+        bool locked = false;
+        int err;
 
-			range_w = f3fs_down_write_range_trylock3(
-        &F3FS_I(inode)->i_gc_rwsem[WRITE],
-        start_bidx,
-        1);
+        start_bidx = f3fs_start_bidx_of_node(nofs, inode)
+          + ofs_in_node;
 
-			if (!range_w) {
-				iput(inode);
-				sbi->skipped_gc_rwsem++;
-        //count[3]++;
-				continue;
-			}
+        if (S_ISREG(inode->i_mode)) {
+          range_r = f3fs_down_write_range_trylock3(
+              &fi->i_gc_rwsem[READ], start_bidx, 1);
+          if (!range_r) {
+            sbi->skipped_gc_rwsem++;
+            off_done[off] = true;
+            //count[6]++;
+            continue;
+          }
+          range_w = f3fs_down_write_range_trylock3(
+              &fi->i_gc_rwsem[WRITE], start_bidx, 1);
+          if (!range_w) {
+            f3fs_up_write_range3(range_r);
+            //count[7]++;
+            off_done[off] = true;
+            continue;
+          }
+          locked = true;
 
-			if (f3fs_post_read_required(inode)) {
-				int err = ra_data_block(inode, start_bidx);
-				f3fs_up_write_range3(range_w);
+          /* wait for all inflight aio data */
+          inode_dio_wait(inode);
+        }
+        if (f3fs_post_read_required(inode))
+          err = move_data_block(inode, start_bidx,
+              gc_type, segno, off);
+        else
+          err = move_data_page(inode, start_bidx, gc_type,
+              segno, off, dst_hint);
 
-				if (err) {
-					iput(inode);
-					continue;
-				}
-				add_gc_inode(gc_list, inode);
-				continue;
-			}
+        if (!err && (gc_type == FG_GC ||
+              f3fs_post_read_required(inode)))
+          submitted++;
 
-			data_page = f3fs_get_read_data_page(inode,
-						start_bidx, REQ_RAHEAD, true);
-			f3fs_up_write_range3(range_w);
-
-			if (IS_ERR(data_page)) {
-        //count[4]++;
-				iput(inode);
-				continue;
-			}
-
-			f3fs_put_page(data_page, 0);
-			add_gc_inode(gc_list, inode);
-			continue;
-		}
-
-		/* phase 4 */
-		inode = find_gc_inode(gc_list, dni.ino);
-		if (inode) {
-			struct f3fs_inode_info *fi = F3FS_I(inode);
-			bool locked = false;
-			int err;
-
-			start_bidx = f3fs_start_bidx_of_node(nofs, inode)
-								+ ofs_in_node;
-
-			if (S_ISREG(inode->i_mode)) {
-        range_r = f3fs_down_write_range_trylock3(
-          &fi->i_gc_rwsem[READ], start_bidx, 1);
-        if (!range_r) {
-					sbi->skipped_gc_rwsem++;
-        //count[6]++;
-					continue;
-				}
-        range_w = f3fs_down_write_range_trylock3(
-						&fi->i_gc_rwsem[WRITE], start_bidx, 1);
-        if (!range_w) {
+        if (locked) {
+          f3fs_up_write_range3(range_w);
           f3fs_up_write_range3(range_r);
-        //count[7]++;
-					continue;
-				}
-				locked = true;
+        }
 
-				/* wait for all inflight aio data */
-				inode_dio_wait(inode);
-			}
-			if (f3fs_post_read_required(inode))
-				err = move_data_block(inode, start_bidx,
-							gc_type, segno, off);
-			else
-				err = move_data_page(inode, start_bidx, gc_type,
-								segno, off, dst_hint);
-
-			if (!err && (gc_type == FG_GC ||
-					f3fs_post_read_required(inode)))
-				submitted++;
-
-			if (locked) {
-				f3fs_up_write_range3(range_w);
-				f3fs_up_write_range3(range_r);
-			}
-
-			stat_inc_data_blk_count(sbi, 1, gc_type);
-		}else {
-        //count[5]++;
+        stat_inc_data_blk_count(sbi, 1, gc_type);
+      }
     }
-	}
+  }
 
-	if (++phase < 5)
+	if (++phase < 4)
 		goto next_step;
 
 //  printk("%s %d : %d %d %d %d %d %d %d %d\n", __func__, __LINE__, count[0], count[1], count[2], count[3], count[4], count[5], count[6], count[7]);
