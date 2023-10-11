@@ -1197,6 +1197,81 @@ int f3fs_get_block(struct dnode_of_data *dn, pgoff_t index)
 	return f3fs_reserve_block(dn, index);
 }
 
+struct page *f3fs_get_read_data_page_load_dn(struct inode *inode, pgoff_t index,
+				     blk_opf_t op_flags, bool for_write, struct dnode_of_data* dn)
+{
+	struct address_space *mapping = inode->i_mapping;
+	struct page *page;
+	struct extent_info ei = {0, };
+	int err;
+
+	page = f3fs_grab_cache_page(mapping, index, for_write);
+	if (!page)
+		return ERR_PTR(-ENOMEM);
+
+	if (f3fs_lookup_extent_cache(inode, index, &ei)) {
+		dn->data_blkaddr = ei.blk + index - ei.fofs;
+		if (!f3fs_is_valid_blkaddr(F3FS_I_SB(inode), dn->data_blkaddr,
+						DATA_GENERIC_ENHANCE_READ)) {
+			err = -EFSCORRUPTED;
+			goto put_err;
+		}
+		goto got_it;
+	}
+
+	set_new_dnode(dn, inode, NULL, NULL, 0);
+	err = f3fs_get_dnode_of_data(dn, index, LOOKUP_NODE);
+	if (err)
+		goto put_err;
+  dn->need_put = true;
+
+	if (unlikely(dn->data_blkaddr == NULL_ADDR)) {
+		err = -ENOENT;
+		goto put_err;
+	}
+	if (dn->data_blkaddr != NEW_ADDR &&
+			!f3fs_is_valid_blkaddr(F3FS_I_SB(inode),
+						dn->data_blkaddr,
+						DATA_GENERIC_ENHANCE)) {
+		err = -EFSCORRUPTED;
+		goto put_err;
+	}
+got_it:
+	if (PageUptodate(page)) {
+		unlock_page(page);
+		return page;
+	}
+
+	/*
+	 * A new dentry page is allocated but not able to be written, since its
+	 * new inode page couldn't be allocated due to -ENOSPC.
+	 * In such the case, its blkaddr can be remained as NEW_ADDR.
+	 * see, f3fs_add_link -> f3fs_get_new_data_page ->
+	 * f3fs_init_inode_metadata.
+	 */
+	if (dn->data_blkaddr == NEW_ADDR) {
+		zero_user_segment(page, 0, PAGE_SIZE);
+		if (!PageUptodate(page))
+			SetPageUptodate(page);
+		unlock_page(page);
+		return page;
+	}
+
+	err = f3fs_submit_page_read(inode, page, dn->data_blkaddr,
+						op_flags, for_write);
+	if (err)
+		goto put_err;
+	return page;
+
+put_err:
+  if (dn->need_put) {
+    f3fs_put_dnode(dn);
+    dn->need_put = false;
+  }
+	f3fs_put_page(page, 1);
+	return ERR_PTR(err);
+}
+
 struct page *f3fs_get_read_data_page(struct inode *inode, pgoff_t index,
 				     blk_opf_t op_flags, bool for_write)
 {
@@ -1316,6 +1391,38 @@ repeat:
 		goto repeat;
 	}
 	if (unlikely(!PageUptodate(page))) {
+		f3fs_put_page(page, 1);
+		return ERR_PTR(-EIO);
+	}
+	return page;
+}
+
+struct page *f3fs_get_lock_data_page_load_dn(struct inode *inode, pgoff_t index,
+							bool for_write, struct dnode_of_data* dn)
+{
+	struct address_space *mapping = inode->i_mapping;
+	struct page *page;
+repeat:
+	page = f3fs_get_read_data_page_load_dn(inode, index, 0, for_write, dn);
+	if (IS_ERR(page))
+		return page;
+
+	/* wait for read completion */
+	lock_page(page);
+	if (unlikely(page->mapping != mapping)) {
+    if (dn->need_put) {
+      f3fs_put_dnode(dn);
+      dn->need_put = false;
+    }
+		f3fs_put_page(page, 1);
+		goto repeat;
+	}
+	if (unlikely(!PageUptodate(page))) {
+    if (dn->need_put) {
+      f3fs_put_dnode(dn);
+      dn->need_put = false;
+    }
+
 		f3fs_put_page(page, 1);
 		return ERR_PTR(-EIO);
 	}
@@ -2594,6 +2701,123 @@ static inline bool need_inplace_update(struct f3fs_io_info *fio)
 		return false;
 
 	return f3fs_should_update_inplace(inode, fio);
+}
+
+int f3fs_do_write_data_page_with_dn(struct f3fs_io_info *fio,
+  struct dnode_of_data* dn)
+{
+	struct page *page = fio->page;
+	struct inode *inode = page->mapping->host;
+	struct extent_info ei = {0, };
+	struct node_info ni;
+	bool ipu_force = false;
+	int err = 0;
+
+	if (need_inplace_update(fio) &&
+			f3fs_lookup_extent_cache(inode, page->index, &ei)) {
+		fio->old_blkaddr = ei.blk + page->index - ei.fofs;
+
+		if (!f3fs_is_valid_blkaddr(fio->sbi, fio->old_blkaddr,
+						DATA_GENERIC_ENHANCE))
+			return -EFSCORRUPTED;
+
+		ipu_force = true;
+		fio->need_lock = LOCK_DONE;
+		goto got_it;
+	}
+
+	/* Deadlock due to between page->lock and f3fs_lock_op */
+	if (fio->need_lock == LOCK_REQ && !f3fs_trylock_op(fio->sbi))
+		return -EAGAIN;
+
+  if (dn->need_put == false) {
+    err = f3fs_get_dnode_of_data(dn, page->index, LOOKUP_NODE);
+    if (err)
+      goto out;
+    dn->need_put = true;
+  }
+
+  fio->old_blkaddr = dn->data_blkaddr;
+
+	/* This page is already truncated */
+	if (fio->old_blkaddr == NULL_ADDR) {
+		ClearPageUptodate(page);
+		clear_page_private_gcing(page);
+		goto out_writepage;
+	}
+got_it:
+	if (__is_valid_data_blkaddr(fio->old_blkaddr) &&
+		!f3fs_is_valid_blkaddr(fio->sbi, fio->old_blkaddr,
+						DATA_GENERIC_ENHANCE)) {
+		err = -EFSCORRUPTED;
+		goto out_writepage;
+	}
+
+	/*
+	 * If current allocation needs SSR,
+	 * it had better in-place writes for updated data.
+	 */
+	if (ipu_force ||
+		(__is_valid_data_blkaddr(fio->old_blkaddr) &&
+					need_inplace_update(fio))) {
+		err = f3fs_encrypt_one_page(fio);
+		if (err)
+			goto out_writepage;
+
+		set_page_writeback(page);
+		ClearPageError(page);
+		f3fs_put_dnode(dn);
+		if (fio->need_lock == LOCK_REQ)
+			f3fs_unlock_op(fio->sbi);
+		err = f3fs_inplace_write_data(fio);
+		if (err) {
+			if (fscrypt_inode_uses_fs_layer_crypto(inode))
+				fscrypt_finalize_bounce_page(&fio->encrypted_page);
+			if (PageWriteback(page))
+				end_page_writeback(page);
+		} else {
+			set_inode_flag(inode, FI_UPDATE_WRITE);
+		}
+		trace_f3fs_do_write_data_page(fio->page, IPU);
+		return err;
+	}
+
+	if (fio->need_lock == LOCK_RETRY) {
+		if (!f3fs_trylock_op(fio->sbi)) {
+			err = -EAGAIN;
+			goto out_writepage;
+		}
+		fio->need_lock = LOCK_REQ;
+	}
+
+	err = f3fs_get_node_info(fio->sbi, dn->nid, &ni, false);
+	if (err)
+		goto out_writepage;
+
+	fio->version = ni.version;
+
+	err = f3fs_encrypt_one_page(fio);
+	if (err)
+		goto out_writepage;
+
+	set_page_writeback(page);
+	ClearPageError(page);
+
+	if (fio->compr_blocks && fio->old_blkaddr == COMPRESS_ADDR)
+		f3fs_i_compr_blocks_update(inode, fio->compr_blocks - 1, false);
+
+	/* LFS mode write path */
+	f3fs_outplace_write_data(dn, fio);
+	trace_f3fs_do_write_data_page(page, OPU);
+	set_inode_flag(inode, FI_APPEND_WRITE);
+	if (page->index == 0)
+		set_inode_flag(inode, FI_FIRST_BLOCK_WRITTEN);
+out_writepage:
+	f3fs_put_dnode(dn);
+out:
+	if (fio->need_lock == LOCK_REQ)
+		f3fs_unlock_op(fio->sbi);
+	return err;
 }
 
 int f3fs_do_write_data_page(struct f3fs_io_info *fio)
