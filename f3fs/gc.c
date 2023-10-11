@@ -1563,8 +1563,10 @@ static int move_data_page(struct inode *inode, block_t bidx, int gc_type,
 {
 	struct page *page;
 	int err = 0;
+  struct dnode_of_data dn = {0,};
 
-	page = f3fs_get_lock_data_page(inode, bidx, true);
+	page = f3fs_get_lock_data_page_load_dn(inode, bidx, true, &dn);
+
 	if (IS_ERR(page))
 		return PTR_ERR(page);
 
@@ -1612,7 +1614,7 @@ retry:
 
 		set_page_private_gcing(page);
 
-		err = f3fs_do_write_data_page(&fio);
+		err = f3fs_do_write_data_page_with_dn(&fio, &dn);
 		if (err) {
 			clear_page_private_gcing(page);
 			if (err == -ENOMEM) {
@@ -1624,6 +1626,10 @@ retry:
 		}
 	}
 out:
+  if (dn.need_put) {
+    f3fs_put_dnode(&dn);
+    dn.need_put = false;
+  }
 	f3fs_put_page(page, 1);
 	return err;
 }
