@@ -196,7 +196,8 @@ struct seg_entry {
 	unsigned int type:6;		/* segment type like CURSEG_XXX_TYPE */
 	unsigned int valid_blocks:10;	/* # of valid blocks */
 	unsigned int ckpt_valid_blocks:10;	/* # of valid blocks last cp */
-	unsigned int padding:6;		/* padding */
+	unsigned int curseg:1;
+	unsigned int padding:5;		/* padding */
 	unsigned char cur_valid_map[SIT_VBLOCK_MAP_SIZE];	/* validity bitmap of blocks */
 	/*
 	 * # of valid blocks and the validity bitmap stored in the last
@@ -336,6 +337,14 @@ static inline struct curseg_info *CURSEG_I(struct f3fs_sb_info *sbi, int type)
 {
 	return (struct curseg_info *)(SM_I(sbi)->curseg_array + type);
 }
+
+static inline struct seg_entry *get_seg_entry(struct f3fs_sb_info *sbi,
+						unsigned int segno)
+{
+	struct sit_info *sit_i = SIT_I(sbi);
+	return &sit_i->sentries[segno];
+}
+
 #if 0
 #define IS_CURSEG(sbi, seg)						\
 	(((seg) == CURSEG_I(sbi, CURSEG_HOT_DATA)->segno) ||	\
@@ -348,6 +357,8 @@ static inline struct curseg_info *CURSEG_I(struct f3fs_sb_info *sbi, int type)
 	 ((seg) == CURSEG_I(sbi, CURSEG_ALL_DATA_ATGC)->segno))
 #else
 static inline bool IS_CURSEG(struct f3fs_sb_info *sbi, unsigned short seg) {
+  return get_seg_entry(sbi, seg)->curseg;
+#if 0
 	bool ret = (((seg) == CURSEG_I(sbi, CURSEG_HOT_DATA)->segno) ||	\
 	 ((seg) == CURSEG_I(sbi, CURSEG_WARM_DATA)->segno) ||	\
 	 ((seg) == CURSEG_I(sbi, CURSEG_COLD_DATA)->segno) ||	\
@@ -365,15 +376,9 @@ static inline bool IS_CURSEG(struct f3fs_sb_info *sbi, unsigned short seg) {
     }
   }
   return ret;
+#endif
 }
 #endif
-
-static inline struct seg_entry *get_seg_entry(struct f3fs_sb_info *sbi,
-						unsigned int segno)
-{
-	struct sit_info *sit_i = SIT_I(sbi);
-	return &sit_i->sentries[segno];
-}
 
 static inline struct sec_entry *get_sec_entry(struct f3fs_sb_info *sbi,
 						unsigned int segno)
