@@ -2524,6 +2524,7 @@ static void new_curseg(struct f3fs_sb_info *sbi, int type, bool new_sec)
 	unsigned short seg_type = curseg->seg_type;
 	unsigned int segno = curseg->segno;
 	int dir = ALLOC_LEFT;
+  get_seg_entry(sbi, segno)->curseg = 0;
 
 	if (curseg->inited)
 		write_sum_page(sbi, curseg->sum_blk,
@@ -2538,6 +2539,7 @@ static void new_curseg(struct f3fs_sb_info *sbi, int type, bool new_sec)
 	segno = __get_next_segno(sbi, type);
 	get_new_segment(sbi, &segno, new_sec, dir);
 	curseg->next_segno = segno;
+  get_seg_entry(sbi, segno)->curseg = 1;
 	reset_curseg(sbi, type, 1);
 	curseg->alloc_type = LFS;
 	if (F3FS_OPTION(sbi).fs_mode == FS_MODE_FRAGMENT_BLK)
