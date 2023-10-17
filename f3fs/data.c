@@ -269,6 +269,18 @@ static void f3fs_post_read_work(struct work_struct *work)
 	f3fs_verify_and_finish_bio(ctx->bio, true);
 }
 
+static void f3fs_read_end_io2(struct bio* bio)
+{
+  struct bio_vec *bv;
+  struct bvec_iter_all iter_all;
+
+  bio_for_each_segment_all(bv, bio, iter_all) {
+    struct page *page = bv->bv_page;
+    unlock_page(page);
+  }
+  bio_put(bio);
+}
+
 static void f3fs_read_end_io(struct bio *bio)
 {
 	struct f3fs_sb_info *sbi = F3FS_P_SB(bio_first_page_all(bio));
@@ -1195,6 +1207,84 @@ int f3fs_get_block(struct dnode_of_data *dn, pgoff_t index)
 	}
 
 	return f3fs_reserve_block(dn, index);
+}
+struct page *f3fs_get_read_data_page_without_cache(struct inode *inode, pgoff_t index,
+    blk_opf_t op_flags, bool for_write)
+{
+  struct dnode_of_data dn;
+  struct page *page;
+  int err;
+  struct f3fs_sb_info* sbi = F3FS_I_SB(inode);
+  struct block_device *bdev;
+  sector_t sector;
+  block_t blkaddr;
+  struct bio* bio;
+  struct extent_info ei = {0, };
+  struct page *cpage = NULL;
+  struct address_space *mapping = inode->i_mapping;
+  page = alloc_page(GFP_NOIO);
+
+  if (page == NULL) {
+    return NULL;
+  }
+  lock_page(page);
+
+  if (f3fs_lookup_extent_cache(inode, index, &ei)) {
+    dn.data_blkaddr = ei.blk + index - ei.fofs;
+    if (!f3fs_is_valid_blkaddr(F3FS_I_SB(inode), dn.data_blkaddr,
+          DATA_GENERIC_ENHANCE_READ)) {
+      err = -EFSCORRUPTED;
+      goto put_err;
+    }
+    goto got_it;
+  }
+
+  set_new_dnode(&dn, inode, NULL, NULL, 0);
+  err = f3fs_get_dnode_of_data(&dn, index, LOOKUP_NODE);
+  if (err)
+    goto put_err;
+  f3fs_put_dnode(&dn);
+
+got_it:
+  blkaddr = dn.data_blkaddr;
+
+  cpage = find_lock_page(mapping, index);
+  if (cpage) {
+    if (PageUptodate(cpage)) {
+      memcpy(page_address(page), page_address(cpage), 4096);
+    }
+    f3fs_put_page(cpage, 1);
+    unlock_page(page);
+  } else {
+    bdev = f3fs_target_device(sbi, blkaddr, &sector);
+    bio = bio_alloc_bioset(bdev, 1, REQ_OP_READ, GFP_NOIO, &f3fs_bioset);
+    if (bio == NULL) {
+      goto put_err;
+    }
+    bio->bi_iter.bi_sector = sector;
+    f3fs_set_bio_crypt_ctx(bio, inode, index, NULL, GFP_NOFS);
+    bio->bi_end_io = f3fs_read_end_io2;
+    if (bio_add_page(bio, page, PAGE_SIZE, 0) < PAGE_SIZE) {
+      goto put_err;
+    }
+
+    submit_bio(bio);
+  }
+
+  return page;
+
+put_err:
+  printk("%s %d daba_blkaddr %d bidx %ld err %d\n", __func__, __LINE__, dn.data_blkaddr, index, err);
+  if (bio) {
+    bio_put(bio);
+  }
+
+  if (page) {
+    unlock_page(page);
+    __free_page(page);
+  }
+
+  return NULL;
 }
 
 struct page *f3fs_get_read_data_page_load_dn(struct inode *inode, pgoff_t index,

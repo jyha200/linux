@@ -1654,7 +1654,7 @@ static int gc_data_segment(struct f3fs_sb_info *sbi, struct f3fs_summary *sum,
 	unsigned int usable_blks_in_seg = f3fs_usable_blks_in_seg(sbi, segno);
   struct RangeLock* range_w = NULL;
   struct RangeLock* range_r = NULL;
-//  int count[8] = {0,};
+  struct page** gc_buf = kmalloc(512 * sizeof(struct page*), GFP_KERNEL);
 
 	start_addr = START_BLOCK(sbi, segno);
 
@@ -1756,6 +1756,8 @@ next_step:
 
 			data_page = f3fs_get_read_data_page(inode,
 						start_bidx, REQ_RAHEAD, true);
+			gc_buf[off] = f3fs_get_read_data_page_without_cache(inode,
+						start_bidx, REQ_RAHEAD, true);
 			f3fs_up_write_range3(range_w);
 
 			if (IS_ERR(data_page)) {
@@ -1763,6 +1765,20 @@ next_step:
 				iput(inode);
 				continue;
 			}
+
+      if (gc_buf[off]) {
+        int ret = 0;
+        lock_page(data_page);
+        lock_page(gc_buf[off]);
+        ret = memcmp(page_address(data_page), page_address(gc_buf[off]), 4096);
+        if (ret != 0) {
+          printk("%s %d not verified\n", __func__, __LINE__);
+        } else {
+        }
+        unlock_page(gc_buf[off]);
+        __free_page(gc_buf[off]);
+        unlock_page(data_page);
+      }
 
 			f3fs_put_page(data_page, 0);
 			add_gc_inode(gc_list, inode);
@@ -1824,7 +1840,8 @@ next_step:
 	if (++phase < 5)
 		goto next_step;
 
-//  printk("%s %d : %d %d %d %d %d %d %d %d\n", __func__, __LINE__, count[0], count[1], count[2], count[3], count[4], count[5], count[6], count[7]);
+  kfree(gc_buf);
+
 	return submitted;
 }
 
