@@ -1220,6 +1220,7 @@ struct f3fs_io_info {
 	sector_t *last_block;		/* last block number in bio */
 	unsigned char version;		/* version of the node */
   char dst_hint;
+  struct inode* inode;
 };
 
 struct bio_entry {
@@ -3751,6 +3752,8 @@ void f3fs_do_write_meta_page(struct f3fs_sb_info *sbi, struct page *page,
 void f3fs_do_write_node_page(unsigned int nid, struct f3fs_io_info *fio);
 void f3fs_outplace_write_data(struct dnode_of_data *dn,
 			struct f3fs_io_info *fio);
+void f3fs_outplace_write_data2(struct dnode_of_data *dn,
+			struct f3fs_io_info *fio);
 int f3fs_inplace_write_data(struct f3fs_io_info *fio);
 void f3fs_do_replace_block(struct f3fs_sb_info *sbi, struct f3fs_summary *sum,
 			block_t old_blkaddr, block_t new_blkaddr,
@@ -3863,6 +3866,7 @@ void f3fs_flush_merged_writes(struct f3fs_sb_info *sbi);
 int f3fs_submit_page_bio(struct f3fs_io_info *fio);
 int f3fs_merge_page_bio(struct f3fs_io_info *fio);
 void f3fs_submit_page_write(struct f3fs_io_info *fio);
+void f3fs_submit_page_write2(struct f3fs_io_info *fio);
 struct block_device *f3fs_target_device(struct f3fs_sb_info *sbi,
 		block_t blk_addr, sector_t *sector);
 int f3fs_target_device_index(struct f3fs_sb_info *sbi, block_t blkaddr);
@@ -3874,6 +3878,8 @@ int f3fs_get_block(struct dnode_of_data *dn, pgoff_t index);
 int f3fs_reserve_block(struct dnode_of_data *dn, pgoff_t index);
 struct page *f3fs_get_read_data_page(struct inode *inode, pgoff_t index,
 			blk_opf_t op_flags, bool for_write);
+struct page *f3fs_get_read_data_page_without_cache(struct inode *inode, pgoff_t index,
+			blk_opf_t op_flags, bool for_write);
 struct page *f3fs_get_read_data_page_load_dn(struct inode *inode, pgoff_t index,
 			blk_opf_t op_flags, bool for_write, struct dnode_of_data* dn);
 struct page *f3fs_find_data_page(struct inode *inode, pgoff_t index);
@@ -3884,6 +3890,7 @@ struct page *f3fs_get_lock_data_page_load_dn(struct inode *inode, pgoff_t index,
 struct page *f3fs_get_new_data_page(struct inode *inode,
 			struct page *ipage, pgoff_t index, bool new_i_size);
 int f3fs_do_write_data_page(struct f3fs_io_info *fio);
+int f3fs_do_write_data_page2(struct f3fs_io_info *fio, block_t index);
 int f3fs_do_write_data_page_with_dn(struct f3fs_io_info *fio,
   struct dnode_of_data* dn);
 void f3fs_do_map_lock(struct f3fs_sb_info *sbi, int flag, bool lock);
