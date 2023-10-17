@@ -1383,7 +1383,7 @@ out:
 }
 
 static int move_data_page(struct inode *inode, block_t bidx, int gc_type,
-							unsigned int segno, int off)
+							unsigned int segno, int off, struct page* gc_buf, block_t read_blkaddr)
 {
 	struct page *page;
 	int err = 0;
@@ -1426,6 +1426,7 @@ static int move_data_page(struct inode *inode, block_t bidx, int gc_type,
 
 retry:
 		f3fs_wait_on_page_writeback(page, DATA, true, true);
+    
 
 		set_page_dirty(page);
 		if (clear_page_dirty_for_io(page)) {
@@ -1434,7 +1435,19 @@ retry:
 		}
 
 		set_page_private_gcing(page);
-
+    if (gc_buf) {
+      int ret = 0;
+      lock_page(gc_buf);
+      ret = memcmp(page_address(page), page_address(gc_buf), 4096);
+      if (ret != 0) {
+        printk("%s %d %d not verified %d bidx %d\n", __func__, __LINE__, ret, read_blkaddr, bidx);
+      } else {
+        //printk("%s %d %d verified %d bidx %d\n", __func__, __LINE__, ret, read_blkaddr, bidx);
+      }
+      unlock_page(gc_buf);
+      __free_page(gc_buf);
+      gc_buf = NULL;
+    }
 		err = f3fs_do_write_data_page(&fio);
 		if (err) {
 			clear_page_private_gcing(page);
@@ -1469,6 +1482,8 @@ static int gc_data_segment(struct f3fs_sb_info *sbi, struct f3fs_summary *sum,
 	int phase = 0;
 	int submitted = 0;
 	unsigned int usable_blks_in_seg = f3fs_usable_blks_in_seg(sbi, segno);
+  struct page** gc_buf = kmalloc(512 * sizeof(struct page*), GFP_KERNEL);
+  block_t* read_blkaddr = kmalloc(512 * sizeof(block_t), GFP_KERNEL);
 
 	start_addr = START_BLOCK(sbi, segno);
 
@@ -1553,10 +1568,12 @@ next_step:
 				add_gc_inode(gc_list, inode);
 				continue;
 			}
-
 			data_page = f3fs_get_read_data_page(inode,
 						start_bidx, REQ_RAHEAD, true);
+			gc_buf[off] = f3fs_get_read_data_page_without_cache(inode,
+						start_bidx, REQ_RAHEAD, true, &read_blkaddr[off]);
 			f3fs_up_write(&F3FS_I(inode)->i_gc_rwsem[WRITE]);
+
 			if (IS_ERR(data_page)) {
 				iput(inode);
 				continue;
@@ -1577,12 +1594,22 @@ next_step:
 			if (S_ISREG(inode->i_mode)) {
 				if (!f3fs_down_write_trylock(&fi->i_gc_rwsem[READ])) {
 					sbi->skipped_gc_rwsem++;
+          if (gc_buf[off]) {
+            lock_page(gc_buf[off]);
+            unlock_page(gc_buf[off]);
+            __free_page(gc_buf[off]);
+          }
 					continue;
 				}
 				if (!f3fs_down_write_trylock(
 						&fi->i_gc_rwsem[WRITE])) {
 					sbi->skipped_gc_rwsem++;
 					f3fs_up_write(&fi->i_gc_rwsem[READ]);
+          if (gc_buf[off]) {
+            lock_page(gc_buf[off]);
+            unlock_page(gc_buf[off]);
+            __free_page(gc_buf[off]);
+          }
 					continue;
 				}
 				locked = true;
@@ -1598,7 +1625,7 @@ next_step:
 							gc_type, segno, off);
 			else
 				err = move_data_page(inode, start_bidx, gc_type,
-								segno, off);
+								segno, off, gc_buf[off], read_blkaddr[off]);
 
 			if (!err && (gc_type == FG_GC ||
 					f3fs_post_read_required(inode)))
@@ -1615,7 +1642,8 @@ next_step:
 
 	if (++phase < 5)
 		goto next_step;
-
+  kfree(read_blkaddr);
+  kfree(gc_buf);
 	return submitted;
 }
 

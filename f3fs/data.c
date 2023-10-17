@@ -145,6 +145,7 @@ static void f3fs_finish_read_bio(struct bio *bio, bool in_task)
 			/* will re-read again later */
 			ClearPageError(page);
 		} else {
+//printk("%s %d %p\n", __func__, __LINE__, page);
 			SetPageUptodate(page);
 		}
 		dec_page_count(F3FS_P_SB(page), __read_io_type(page));
@@ -267,6 +268,18 @@ static void f3fs_post_read_work(struct work_struct *work)
 		f3fs_handle_step_decompress(ctx, true);
 
 	f3fs_verify_and_finish_bio(ctx->bio, true);
+}
+
+static void f3fs_read_end_io2(struct bio* bio)
+{
+  struct bio_vec *bv;
+  struct bvec_iter_all iter_all;
+
+  bio_for_each_segment_all(bv, bio, iter_all) {
+    struct page *page = bv->bv_page;
+    unlock_page(page);
+  }
+  bio_put(bio);
 }
 
 static void f3fs_read_end_io(struct bio *bio)
@@ -1197,8 +1210,91 @@ int f3fs_get_block(struct dnode_of_data *dn, pgoff_t index)
 	return f3fs_reserve_block(dn, index);
 }
 
-struct page *f3fs_get_read_data_page(struct inode *inode, pgoff_t index,
-				     blk_opf_t op_flags, bool for_write)
+struct page *f3fs_get_read_data_page_without_cache(struct inode *inode, pgoff_t index,
+    blk_opf_t op_flags, bool for_write, block_t* read_blkaddr)
+{
+  struct dnode_of_data dn;
+  struct page *page;
+  int err;
+  struct f3fs_sb_info* sbi = F3FS_I_SB(inode);
+  struct block_device *bdev;
+  sector_t sector;
+  block_t blkaddr;
+  struct bio* bio;
+  struct extent_info ei = {0, };
+  struct page *cpage = NULL;
+	struct address_space *mapping = inode->i_mapping;
+  page = alloc_page(GFP_NOIO);
+
+  if (page == NULL) {
+    return NULL;
+  }
+  lock_page(page);
+
+  if (f3fs_lookup_extent_cache(inode, index, &ei)) {
+    dn.data_blkaddr = ei.blk + index - ei.fofs;
+    if (!f3fs_is_valid_blkaddr(F3FS_I_SB(inode), dn.data_blkaddr,
+          DATA_GENERIC_ENHANCE_READ)) {
+      err = -EFSCORRUPTED;
+      goto put_err;
+    }
+    goto got_it;
+  }
+
+  set_new_dnode(&dn, inode, NULL, NULL, 0);
+  err = f3fs_get_dnode_of_data(&dn, index, LOOKUP_NODE);
+  if (err)
+    goto put_err;
+  f3fs_put_dnode(&dn);
+
+got_it:
+  blkaddr = dn.data_blkaddr;
+  *read_blkaddr = blkaddr;
+
+  cpage = find_lock_page(mapping, index);
+  if (cpage) {
+    if (PageUptodate(cpage)) {
+      //printk("%s %d daba_blkaddr %d bidx %ld\n", __func__, __LINE__, dn.data_blkaddr, index);
+      memcpy(page_address(page), page_address(cpage), 4096);
+      //printk("%s %d daba_blkaddr %d bidx %ld\n", __func__, __LINE__, dn.data_blkaddr, index);
+    }
+    f3fs_put_page(cpage, 1);
+    unlock_page(page);
+  } else {
+    bdev = f3fs_target_device(sbi, blkaddr, &sector);
+    bio = bio_alloc_bioset(bdev, 1, REQ_OP_READ, GFP_NOIO, &f3fs_bioset);
+    if (bio == NULL) {
+      goto put_err;
+    }
+    bio->bi_iter.bi_sector = sector;
+    f3fs_set_bio_crypt_ctx(bio, inode, index, NULL, GFP_NOFS);
+    bio->bi_end_io = f3fs_read_end_io2;
+//    f3fs_wait_on_block_writeback(inode, blkaddr);
+    if (bio_add_page(bio, page, PAGE_SIZE, 0) < PAGE_SIZE) {
+      goto put_err;
+    }
+
+    submit_bio(bio);
+  }
+
+  return page;
+
+put_err:
+  printk("%s %d daba_blkaddr %d bidx %ld err %d\n", __func__, __LINE__, dn.data_blkaddr, index, err);
+  if (bio) {
+    bio_put(bio);
+  }
+
+  if (page) {
+    unlock_page(page);
+    __free_page(page);
+  }
+
+  return NULL;
+}
+
+struct page *f3fs_get_read_data_page2(struct inode *inode, pgoff_t index,
+				     blk_opf_t op_flags, bool for_write, block_t* blkaddr)
 {
 	struct address_space *mapping = inode->i_mapping;
 	struct dnode_of_data dn;
@@ -1238,6 +1334,84 @@ struct page *f3fs_get_read_data_page(struct inode *inode, pgoff_t index,
 		goto put_err;
 	}
 got_it:
+  *blkaddr = dn.data_blkaddr;
+	if (PageUptodate(page)) {
+		unlock_page(page);
+		return page;
+	}
+
+	/*
+	 * A new dentry page is allocated but not able to be written, since its
+	 * new inode page couldn't be allocated due to -ENOSPC.
+	 * In such the case, its blkaddr can be remained as NEW_ADDR.
+	 * see, f3fs_add_link -> f3fs_get_new_data_page ->
+	 * f3fs_init_inode_metadata.
+	 */
+	if (dn.data_blkaddr == NEW_ADDR) {
+		zero_user_segment(page, 0, PAGE_SIZE);
+		if (!PageUptodate(page))
+			SetPageUptodate(page); 
+
+		unlock_page(page);
+		return page;
+	}
+
+	err = f3fs_submit_page_read(inode, page, dn.data_blkaddr,
+						op_flags, for_write);
+	if (err)
+		goto put_err;
+	return page;
+
+put_err:
+	f3fs_put_page(page, 1);
+	return ERR_PTR(err);
+}
+
+struct page *f3fs_get_read_data_page(struct inode *inode, pgoff_t index,
+				     blk_opf_t op_flags, bool for_write)
+{
+	struct address_space *mapping = inode->i_mapping;
+	struct dnode_of_data dn;
+	struct page *page;
+	struct extent_info ei = {0, };
+	int err;
+
+	page = f3fs_grab_cache_page(mapping, index, for_write);
+	if (!page) {
+  printk("%s %d daba_blkaddr %d bidx %ld\n", __func__, __LINE__, dn.data_blkaddr, index);
+		return ERR_PTR(-ENOMEM);
+}
+
+	if (f3fs_lookup_extent_cache(inode, index, &ei)) {
+		dn.data_blkaddr = ei.blk + index - ei.fofs;
+		if (!f3fs_is_valid_blkaddr(F3FS_I_SB(inode), dn.data_blkaddr,
+						DATA_GENERIC_ENHANCE_READ)) {
+			err = -EFSCORRUPTED;
+  printk("%s %d daba_blkaddr %d bidx %ld\n", __func__, __LINE__, dn.data_blkaddr, index);
+			goto put_err;
+		}
+  printk("%s %d daba_blkaddr %d bidx %ld\n", __func__, __LINE__, dn.data_blkaddr, index);
+		goto got_it;
+	}
+
+	set_new_dnode(&dn, inode, NULL, NULL, 0);
+	err = f3fs_get_dnode_of_data(&dn, index, LOOKUP_NODE);
+	if (err)
+		goto put_err;
+	f3fs_put_dnode(&dn);
+
+	if (unlikely(dn.data_blkaddr == NULL_ADDR)) {
+		err = -ENOENT;
+		goto put_err;
+	}
+	if (dn.data_blkaddr != NEW_ADDR &&
+			!f3fs_is_valid_blkaddr(F3FS_I_SB(inode),
+						dn.data_blkaddr,
+						DATA_GENERIC_ENHANCE)) {
+		err = -EFSCORRUPTED;
+		goto put_err;
+	}
+got_it:
 	if (PageUptodate(page)) {
 		unlock_page(page);
 		return page;
@@ -1254,6 +1428,7 @@ got_it:
 		zero_user_segment(page, 0, PAGE_SIZE);
 		if (!PageUptodate(page))
 			SetPageUptodate(page);
+
 		unlock_page(page);
 		return page;
 	}
@@ -1304,8 +1479,10 @@ struct page *f3fs_get_lock_data_page(struct inode *inode, pgoff_t index,
 {
 	struct address_space *mapping = inode->i_mapping;
 	struct page *page;
+  block_t blkaddr;
+
 repeat:
-	page = f3fs_get_read_data_page(inode, index, 0, for_write);
+	page = f3fs_get_read_data_page2(inode, index, 0, for_write, &blkaddr);
 	if (IS_ERR(page))
 		return page;
 
@@ -1363,8 +1540,10 @@ struct page *f3fs_get_new_data_page(struct inode *inode,
 
 	if (dn.data_blkaddr == NEW_ADDR) {
 		zero_user_segment(page, 0, PAGE_SIZE);
-		if (!PageUptodate(page))
+		if (!PageUptodate(page)) {
+printk("%s %d %p\n", __func__, __LINE__, page);
 			SetPageUptodate(page);
+}
 	} else {
 		f3fs_put_page(page, 1);
 
@@ -2084,8 +2263,10 @@ zero_out:
 			ret = -EIO;
 			goto out;
 		}
-		if (!PageUptodate(page))
+		if (!PageUptodate(page)) {
+printk("%s %d %p\n", __func__, __LINE__, page);
 			SetPageUptodate(page);
+}
 		unlock_page(page);
 		goto out;
 	}
@@ -2162,8 +2343,10 @@ int f3fs_read_multi_pages(struct compress_ctx *cc, struct bio **bio_ret,
 			continue;
 		if ((sector_t)page->index >= last_block_in_file) {
 			zero_user_segment(page, 0, PAGE_SIZE);
-			if (!PageUptodate(page))
+			if (!PageUptodate(page)) {
+printk("%s %d %p\n", __func__, __LINE__, page);
 				SetPageUptodate(page);
+}
 		} else if (!PageUptodate(page)) {
 			continue;
 		}
@@ -3600,8 +3783,9 @@ static int f3fs_write_end(struct file *file,
 	if (!PageUptodate(page)) {
 		if (unlikely(copied != len))
 			copied = 0;
-		else
+		else {
 			SetPageUptodate(page);
+}
 	}
 
 #ifdef CONFIG_F3FS_FS_COMPRESSION

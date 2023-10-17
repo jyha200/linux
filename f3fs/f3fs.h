@@ -3779,6 +3779,10 @@ int f3fs_get_block(struct dnode_of_data *dn, pgoff_t index);
 int f3fs_reserve_block(struct dnode_of_data *dn, pgoff_t index);
 struct page *f3fs_get_read_data_page(struct inode *inode, pgoff_t index,
 			blk_opf_t op_flags, bool for_write);
+struct page *f3fs_get_read_data_page2(struct inode *inode, pgoff_t index,
+			blk_opf_t op_flags, bool for_write, block_t* blkaddr);
+struct page *f3fs_get_read_data_page_without_cache(struct inode *inode, pgoff_t index,
+      blk_opf_t op_flags, bool for_write, block_t* read_blkaddr);
 struct page *f3fs_find_data_page(struct inode *inode, pgoff_t index);
 struct page *f3fs_get_lock_data_page(struct inode *inode, pgoff_t index,
 			bool for_write);
