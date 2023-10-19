@@ -1220,6 +1220,7 @@ struct f3fs_io_info {
 	sector_t *last_block;		/* last block number in bio */
 	unsigned char version;		/* version of the node */
   char dst_hint;
+  struct inode* inode;
 };
 
 struct bio_entry {
@@ -3889,7 +3890,7 @@ struct page *f3fs_get_lock_data_page_load_dn(struct inode *inode, pgoff_t index,
 struct page *f3fs_get_new_data_page(struct inode *inode,
 			struct page *ipage, pgoff_t index, bool new_i_size);
 int f3fs_do_write_data_page(struct f3fs_io_info *fio);
-int f3fs_do_write_data_page2(struct f3fs_io_info *fio);
+int f3fs_do_write_data_page2(struct f3fs_io_info *fio, block_t index);
 int f3fs_do_write_data_page_with_dn(struct f3fs_io_info *fio,
   struct dnode_of_data* dn);
 void f3fs_do_map_lock(struct f3fs_sb_info *sbi, int flag, bool lock);

@@ -1559,73 +1559,119 @@ out:
 }
 
 static int move_data_page(struct inode *inode, block_t bidx, int gc_type,
-							unsigned int segno, int off, char dst_hint)
+							unsigned int segno, int off, char dst_hint, struct page* gc_buf)
 {
 	struct page *page;
 	int err = 0;
-	page = f3fs_get_lock_data_page(inode, bidx, true);
 
-	if (IS_ERR(page))
-		return PTR_ERR(page);
-
-	if (!check_valid_map(F3FS_I_SB(inode), segno, off)) {
-		err = -ENOENT;
-		goto out;
-	}
-
-	err = f3fs_gc_pinned_control(inode, gc_type, segno);
-	if (err)
-		goto out;
-
-	if (gc_type == BG_GC) {
-		if (PageWriteback(page)) {
-			err = -EAGAIN;
-			goto out;
-		}
-		set_page_dirty(page);
-		set_page_private_gcing(page);
-	} else {
-		struct f3fs_io_info fio = {
-			.sbi = F3FS_I_SB(inode),
-			.ino = inode->i_ino,
-			.type = DATA,
-			.temp = COLD_GC_START + dst_hint,
-			.op = REQ_OP_WRITE,
-			.op_flags = REQ_SYNC,
-			.old_blkaddr = NULL_ADDR,
-			.page = page,
-			.encrypted_page = NULL,
-			.need_lock = LOCK_REQ,
-			.io_type = FS_GC_DATA_IO,
+  if (gc_buf) {
+    struct f3fs_io_info fio = {
+      .sbi = F3FS_I_SB(inode),
+      .ino = inode->i_ino,
+      .type = DATA,
+      .temp = COLD_GC_START + dst_hint,
+      .op = REQ_OP_WRITE,
+      .op_flags = REQ_SYNC,
+      .old_blkaddr = NULL_ADDR,
+      .page = gc_buf,
+      .encrypted_page = NULL,
+      .need_lock = LOCK_REQ,
+      .io_type = FS_GC_DATA_IO,
       .dst_hint = dst_hint,
-		};
-		bool is_dirty = PageDirty(page);
+      .inode = inode,
+    };
+
+    if (!check_valid_map(F3FS_I_SB(inode), segno, off)) {
+      lock_page(gc_buf);
+      unlock_page(gc_buf);
+      __free_page(gc_buf);
+      gc_buf = NULL;
+
+      return -ENOENT;
+    }
+
+    err = f3fs_gc_pinned_control(inode, gc_type, segno);
+    if (err) {
+      lock_page(gc_buf);
+      unlock_page(gc_buf);
+      __free_page(gc_buf);
+      gc_buf = NULL;
+
+      return err;
+    }
+    lock_page(gc_buf);
+retry2:
+
+		err = f3fs_do_write_data_page2(&fio, bidx);
+    if (err == -ENOMEM) {
+      goto retry2;
+    }
+    return err;
+  } else {
+    page = f3fs_get_lock_data_page(inode, bidx, true);
+
+    if (IS_ERR(page))
+      return PTR_ERR(page);
+
+    if (!check_valid_map(F3FS_I_SB(inode), segno, off)) {
+      err = -ENOENT;
+      goto out;
+    }
+
+    err = f3fs_gc_pinned_control(inode, gc_type, segno);
+    if (err)
+      goto out;
+
+    if (gc_type == BG_GC) {
+      if (PageWriteback(page)) {
+        err = -EAGAIN;
+        goto out;
+      }
+      set_page_dirty(page);
+      set_page_private_gcing(page);
+    } else {
+      struct f3fs_io_info fio = {
+        .sbi = F3FS_I_SB(inode),
+        .ino = inode->i_ino,
+        .type = DATA,
+        .temp = COLD_GC_START + dst_hint,
+        .op = REQ_OP_WRITE,
+        .op_flags = REQ_SYNC,
+        .old_blkaddr = NULL_ADDR,
+        .page = page,
+        .encrypted_page = NULL,
+        .need_lock = LOCK_REQ,
+        .io_type = FS_GC_DATA_IO,
+        .dst_hint = dst_hint,
+      };
+      bool is_dirty = PageDirty(page);
 
 retry:
-		f3fs_wait_on_page_writeback(page, DATA, true, true);
+      f3fs_wait_on_page_writeback(page, DATA, true, true);
 
-		set_page_dirty(page);
-		if (clear_page_dirty_for_io(page)) {
-			inode_dec_dirty_pages(inode);
-			f3fs_remove_dirty_inode(inode);
-		}
+      set_page_dirty(page);
+      if (clear_page_dirty_for_io(page)) {
+        inode_dec_dirty_pages(inode);
+        f3fs_remove_dirty_inode(inode);
+      }
 
-		set_page_private_gcing(page);
+      set_page_private_gcing(page);
 
-		err = f3fs_do_write_data_page2(&fio);
-		if (err) {
-			clear_page_private_gcing(page);
-			if (err == -ENOMEM) {
-				memalloc_retry_wait(GFP_NOFS);
-				goto retry;
-			}
-			if (is_dirty)
-				set_page_dirty(page);
-		}
-	}
+      err = f3fs_do_write_data_page(&fio);
+      if (err) {
+        clear_page_private_gcing(page);
+        if (err == -ENOMEM) {
+          memalloc_retry_wait(GFP_NOFS);
+          goto retry;
+        }
+        if (is_dirty)
+          set_page_dirty(page);
+      }
+    }
 out:
-	f3fs_put_page(page, 1);
-	return err;
+    f3fs_put_page(page, 1);
+    return err;
+  }
 }
 
 /*
@@ -1748,34 +1794,21 @@ next_step:
 				continue;
 			}
 
-			data_page = f3fs_get_read_data_page(inode,
-						start_bidx, REQ_RAHEAD, true);
 			gc_buf[off] = f3fs_get_read_data_page_without_cache(inode,
 						start_bidx, REQ_RAHEAD, true);
-			f3fs_up_write_range3(range_w);
+      if (gc_buf[off] == NULL) {
+          printk("%s %d\n", __func__, __LINE__);
+			  data_page = f3fs_get_read_data_page(inode,
+            start_bidx, REQ_RAHEAD, true);
 
-			if (IS_ERR(data_page)) {
-        //count[4]++;
-				iput(inode);
-				continue;
-			}
-/*
-      if (gc_buf[off]) {
-        int ret = 0;
-        lock_page(data_page);
-        lock_page(gc_buf[off]);
-        ret = memcmp(page_address(data_page), page_address(gc_buf[off]), 4096);
-        if (ret != 0) {
-          printk("%s %d not verified\n", __func__, __LINE__);
-        } else {
+        if (IS_ERR(data_page)) {
+          //count[4]++;
+          iput(inode);
+          continue;
         }
-        unlock_page(gc_buf[off]);
-        __free_page(gc_buf[off]);
-        unlock_page(data_page);
+        f3fs_put_page(data_page, 0);
       }
-*/
-
-			f3fs_put_page(data_page, 0);
+			f3fs_up_write_range3(range_w);
 			add_gc_inode(gc_list, inode);
 			continue;
 		}
@@ -1813,9 +1846,11 @@ next_step:
 			if (f3fs_post_read_required(inode))
 				err = move_data_block(inode, start_bidx,
 							gc_type, segno, off);
-			else
+			else {
 				err = move_data_page(inode, start_bidx, gc_type,
-								segno, off, dst_hint);
+								segno, off, dst_hint, gc_buf[off]);
+        gc_buf[off] = NULL;
+      }
 
 			if (!err && (gc_type == FG_GC ||
 					f3fs_post_read_required(inode)))
@@ -1925,7 +1960,7 @@ static int do_garbage_collect(struct f3fs_sb_info *sbi,
 	unsigned char type = IS_DATASEG(get_seg_entry(sbi, segno)->type) ?
 						SUM_TYPE_DATA : SUM_TYPE_NODE;
 	int submitted = 0;
-
+//printk("%s %d\n", __func__, __LINE__);
 	if (__is_large_section(sbi))
 		end_segno = rounddown(end_segno, sbi->segs_per_sec);
 
@@ -1996,6 +2031,7 @@ static int do_garbage_collect(struct f3fs_sb_info *sbi,
 		 *   - down_read(sentry_lock)     - change_curseg()
 		 *                                  - lock_page(sum_page)
 		 */
+//printk("%s %d\n", __func__, __LINE__);
 		if (type == SUM_TYPE_NODE)
 			submitted += gc_node_segment(sbi, sum->entries, segno,
 								gc_type);
@@ -2003,15 +2039,18 @@ static int do_garbage_collect(struct f3fs_sb_info *sbi,
 			submitted += gc_data_segment(sbi, sum->entries, gc_list,
 							segno, gc_type,
 							force_migrate, dst_hint);
+//printk("%s %d\n", __func__, __LINE__);
 
 		stat_inc_seg_count(sbi, type, gc_type);
 		sbi->gc_reclaimed_segs[sbi->gc_mode]++;
 		migrated++;
 
 freed:
+//printk("%s %d\n", __func__, __LINE__);
 		if (gc_type == FG_GC &&
 				get_valid_blocks(sbi, segno, false) == 0)
 			seg_freed++;
+//printk("%s %d\n", __func__, __LINE__);
 
 		if (__is_large_section(sbi) && segno + 1 < end_segno)
 			sbi->next_victim_seg[gc_type] = segno + 1;
@@ -2027,6 +2066,7 @@ skip:
 
 	stat_inc_call_count(sbi->stat_info);
 
+//printk("%s %d\n", __func__, __LINE__);
 	return seg_freed;
 }
 
@@ -2090,7 +2130,9 @@ gc_more:
 		goto stop;
 	}
 retry:
+//printk("%s %d\n", __func__, __LINE__);
 	ret = __get_victim(sbi, &segno, gc_type, multiple_victim);
+//printk("%s %d\n", __func__, __LINE__);
 	if (ret) {
 		/* allow to search victim from sections has pinned data */
 		if (ret == -ENODATA && gc_type == FG_GC &&

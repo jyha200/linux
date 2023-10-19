@@ -349,17 +349,10 @@ static void f3fs_write_end_io2(struct bio *bio)
 			continue;
 		}
 
-		fscrypt_finalize_bounce_page(&page);
-
-#ifdef CONFIG_F3FS_FS_COMPRESSION
-		if (f3fs_is_compressed_page(page)) {
-			f3fs_compress_write_end_io(bio, page);
-			continue;
-		}
-#endif
+//		fscrypt_finalize_bounce_page(&page);
 
 		if (unlikely(bio->bi_status)) {
-			mapping_set_error(page->mapping, -EIO);
+      //	mapping_set_error(page->mapping, -EIO);
 			if (type == F3FS_WB_CP_DATA)
 				f3fs_stop_checkpoint(sbi, true);
 		}
@@ -368,10 +361,8 @@ static void f3fs_write_end_io2(struct bio *bio)
 					page->index != nid_of_node(page));
 
 		dec_page_count(sbi, type);
-		if (f3fs_in_warm_node_list(sbi, page))
-			f3fs_del_fsync_node_entry(sbi, page);
-		clear_page_private_gcing(page);
-		end_page_writeback(page);
+    unlock_page(page);
+    __free_page(page);
 	}
 	if (!get_pages(sbi, F3FS_WB_CP_DATA) &&
 				wq_has_sleeper(&sbi->cp_wait))
@@ -585,6 +576,52 @@ static bool f3fs_crypt_mergeable_bio(struct bio *bio, const struct inode *inode,
 
 	return fscrypt_mergeable_bio(bio, inode, next_idx);
 }
+static inline void __submit_bio2(struct f3fs_sb_info *sbi,
+				struct bio *bio, enum page_type type)
+{
+	if (!is_read_io(bio_op(bio))) {
+		unsigned int start;
+
+		if (type != DATA && type != NODE)
+			goto submit_io;
+
+		if (f3fs_lfs_mode(sbi) && current->plug)
+			blk_finish_plug(current->plug);
+
+		if (!F3FS_IO_ALIGNED(sbi))
+			goto submit_io;
+
+		start = bio->bi_iter.bi_size >> F3FS_BLKSIZE_BITS;
+		start %= F3FS_IO_SIZE(sbi);
+
+		if (start == 0)
+			goto submit_io;
+
+		/* fill dummy pages */
+		for (; start < F3FS_IO_SIZE(sbi); start++) {
+			struct page *page =
+				mempool_alloc(sbi->write_io_dummy,
+					      GFP_NOIO | __GFP_NOFAIL);
+			f3fs_bug_on(sbi, !page);
+
+			lock_page(page);
+
+			zero_user_segment(page, 0, PAGE_SIZE);
+			set_page_private_dummy(page);
+
+			if (bio_add_page(bio, page, PAGE_SIZE, 0) < PAGE_SIZE)
+				f3fs_bug_on(sbi, 1);
+		}
+		/*
+		 * In the NODE case, we lose next block address chain. So, we
+		 * need to do checkpoint in f3fs_sync_file.
+		 */
+		if (type == NODE)
+			set_sbi_flag(sbi, SBI_NEED_CP);
+	}
+submit_io:
+	submit_bio(bio);
+}
 
 static inline void __submit_bio(struct f3fs_sb_info *sbi,
 				struct bio *bio, enum page_type type)
@@ -643,6 +680,17 @@ void f3fs_submit_bio(struct f3fs_sb_info *sbi,
 				struct bio *bio, enum page_type type)
 {
 	__submit_bio(sbi, bio, type);
+}
+
+static void __submit_merged_bio2(struct f3fs_bio_info *io)
+{
+	struct f3fs_io_info *fio = &io->fio;
+
+	if (!io->bio)
+		return;
+
+	__submit_bio2(io->sbi, io->bio, fio->type);
+	io->bio = NULL;
 }
 
 static void __submit_merged_bio(struct f3fs_bio_info *io)
@@ -1075,7 +1123,7 @@ next:
 			      fio->new_blkaddr) ||
 	     !f3fs_crypt_mergeable_bio(io->bio, fio->page->mapping->host,
 				       bio_page->index, fio)))
-		__submit_merged_bio(io);
+		__submit_merged_bio2(io);
 alloc_new:
 	if (io->bio == NULL) {
 		if (F3FS_IO_ALIGNED(sbi) &&
@@ -1086,29 +1134,29 @@ alloc_new:
 			goto skip;
 		}
 		io->bio = __bio_alloc2(fio, BIO_MAX_VECS);
-		f3fs_set_bio_crypt_ctx(io->bio, fio->page->mapping->host,
-				       bio_page->index, fio, GFP_NOIO);
+		//f3fs_set_bio_crypt_ctx(io->bio, fio->page->mapping->host,
+//				       bio_page->index, fio, GFP_NOIO);
 		io->fio = *fio;
 	}
 
 	if (bio_add_page(io->bio, bio_page, PAGE_SIZE, 0) < PAGE_SIZE) {
-		__submit_merged_bio(io);
+		__submit_merged_bio2(io);
 		goto alloc_new;
 	}
-
+/*
 	if (fio->io_wbc)
 		wbc_account_cgroup_owner(fio->io_wbc, bio_page, PAGE_SIZE);
-
+*/
 	io->last_block_in_bio = fio->new_blkaddr;
 
-	trace_f3fs_submit_page_write(fio->page, fio);
+//	trace_f3fs_submit_page_write(fio->page, fio);
 skip:
 	if (fio->in_list)
 		goto next;
 out:
 	if (is_sbi_flag_set(sbi, SBI_IS_SHUTDOWN) ||
 				!f3fs_is_checkpoint_ready(sbi))
-		__submit_merged_bio(io);
+		__submit_merged_bio2(io);
 	f3fs_up_write(&io->io_rwsem);
 }
 
@@ -3075,15 +3123,14 @@ out:
 	return err;
 }
 
-int f3fs_do_write_data_page2(struct f3fs_io_info *fio)
+int f3fs_do_write_data_page2(struct f3fs_io_info *fio, block_t index)
 {
 	struct page *page = fio->page;
-	struct inode *inode = page->mapping->host;
+	struct inode *inode = fio->inode;
 	struct dnode_of_data dn;
-	struct extent_info ei = {0, };
 	struct node_info ni;
-	bool ipu_force = false;
 	int err = 0;
+  bool submitted = false;
 
 	/* Use COW inode to make dnode_of_data for atomic write */
 	if (f3fs_is_atomic_file(inode))
@@ -3091,108 +3138,57 @@ int f3fs_do_write_data_page2(struct f3fs_io_info *fio)
 	else
 		set_new_dnode(&dn, inode, NULL, NULL, 0);
 
-	if (need_inplace_update(fio) &&
-			f3fs_lookup_extent_cache(inode, page->index, &ei)) {
-		fio->old_blkaddr = ei.blk + page->index - ei.fofs;
-
-		if (!f3fs_is_valid_blkaddr(fio->sbi, fio->old_blkaddr,
-						DATA_GENERIC_ENHANCE))
-			return -EFSCORRUPTED;
-
-		ipu_force = true;
-		fio->need_lock = LOCK_DONE;
-		goto got_it;
-	}
-
 	/* Deadlock due to between page->lock and f3fs_lock_op */
-	if (fio->need_lock == LOCK_REQ && !f3fs_trylock_op(fio->sbi))
-		return -EAGAIN;
+  if (fio->need_lock == LOCK_REQ && !f3fs_trylock_op(fio->sbi)) {
+    err = -EAGAIN;
+    goto out3;
+  }
 
-	err = f3fs_get_dnode_of_data(&dn, page->index, LOOKUP_NODE);
-	if (err)
-		goto out;
+	err = f3fs_get_dnode_of_data(&dn, index, LOOKUP_NODE);
+	if (err) {
+		goto out2;
+  }
 
 	fio->old_blkaddr = dn.data_blkaddr;
 
 	/* This page is already truncated */
 	if (fio->old_blkaddr == NULL_ADDR) {
-		ClearPageUptodate(page);
-		clear_page_private_gcing(page);
-		goto out_writepage;
-	}
-got_it:
-	if (__is_valid_data_blkaddr(fio->old_blkaddr) &&
-		!f3fs_is_valid_blkaddr(fio->sbi, fio->old_blkaddr,
-						DATA_GENERIC_ENHANCE)) {
-		err = -EFSCORRUPTED;
-		goto out_writepage;
+		goto out_writepage2;
 	}
 
-	/*
-	 * If current allocation needs SSR,
-	 * it had better in-place writes for updated data.
-	 */
-	if (ipu_force ||
-		(__is_valid_data_blkaddr(fio->old_blkaddr) &&
-					need_inplace_update(fio))) {
-		err = f3fs_encrypt_one_page(fio);
-		if (err)
-			goto out_writepage;
-
-		set_page_writeback(page);
-		ClearPageError(page);
-		f3fs_put_dnode(&dn);
-		if (fio->need_lock == LOCK_REQ)
-			f3fs_unlock_op(fio->sbi);
-		err = f3fs_inplace_write_data(fio);
-		if (err) {
-			if (fscrypt_inode_uses_fs_layer_crypto(inode))
-				fscrypt_finalize_bounce_page(&fio->encrypted_page);
-			if (PageWriteback(page))
-				end_page_writeback(page);
-		} else {
-			set_inode_flag(inode, FI_UPDATE_WRITE);
-		}
-		trace_f3fs_do_write_data_page(fio->page, IPU);
-		return err;
-	}
-
-	if (fio->need_lock == LOCK_RETRY) {
-		if (!f3fs_trylock_op(fio->sbi)) {
-			err = -EAGAIN;
-			goto out_writepage;
-		}
-		fio->need_lock = LOCK_REQ;
-	}
+  if (__is_valid_data_blkaddr(fio->old_blkaddr) &&
+      !f3fs_is_valid_blkaddr(fio->sbi, fio->old_blkaddr,
+        DATA_GENERIC_ENHANCE)) {
+    err = -EFSCORRUPTED;
+    goto out_writepage2;
+  }
 
 	err = f3fs_get_node_info(fio->sbi, dn.nid, &ni, false);
 	if (err)
-		goto out_writepage;
+		goto out_writepage2;
 
 	fio->version = ni.version;
 
-	err = f3fs_encrypt_one_page(fio);
-	if (err)
-		goto out_writepage;
-
-	set_page_writeback(page);
-	ClearPageError(page);
-
-	if (fio->compr_blocks && fio->old_blkaddr == COMPRESS_ADDR)
-		f3fs_i_compr_blocks_update(inode, fio->compr_blocks - 1, false);
-
 	/* LFS mode write path */
 	f3fs_outplace_write_data2(&dn, fio);
-	trace_f3fs_do_write_data_page(page, OPU);
+  submitted = true;
 	set_inode_flag(inode, FI_APPEND_WRITE);
-	if (page->index == 0)
+	if (index == 0)
 		set_inode_flag(inode, FI_FIRST_BLOCK_WRITTEN);
-out_writepage:
+
+out_writepage2:
 	f3fs_put_dnode(&dn);
-out:
+out2:
 	if (fio->need_lock == LOCK_REQ)
 		f3fs_unlock_op(fio->sbi);
-	return err;
+
+out3:
+  if (submitted == false) {
+    unlock_page(fio->page);
+    __free_page(fio->page);
+    fio->page = NULL;
+  }
+  return err;
 }
 
 int f3fs_do_write_data_page(struct f3fs_io_info *fio)
