@@ -3384,6 +3384,36 @@ void f3fs_update_device_state(struct f3fs_sb_info *sbi, nid_t ino,
 	}
 }
 
+static void do_write_page2(struct f3fs_summary *sum, struct f3fs_io_info *fio)
+{
+	int type = __get_segment_type(fio);
+	bool keep_order = (f3fs_lfs_mode(fio->sbi) && (type == CURSEG_COLD_DATA ||
+    (type >= CURSEG_COLD_GC_DATA_START && type <= CURSEG_COLD_GC_DATA_END)));
+
+	if (keep_order)
+		f3fs_down_read(&fio->sbi->io_order_lock);
+reallocate:
+	f3fs_allocate_data_block2(fio->sbi, fio->page, fio->old_blkaddr,
+			&fio->new_blkaddr, sum, type, fio);
+	if (GET_SEGNO(fio->sbi, fio->old_blkaddr) != NULL_SEGNO) {
+		invalidate_mapping_pages(META_MAPPING(fio->sbi),
+					fio->old_blkaddr, fio->old_blkaddr);
+		f3fs_invalidate_compress_page(fio->sbi, fio->old_blkaddr);
+	}
+
+	/* writeout dirty page into bdev */
+	f3fs_submit_page_write2(fio);
+	if (fio->retry) {
+		fio->old_blkaddr = fio->new_blkaddr;
+		goto reallocate;
+	}
+
+	f3fs_update_device_state(fio->sbi, fio->ino, fio->new_blkaddr, 1);
+
+	if (keep_order)
+		f3fs_up_read(&fio->sbi->io_order_lock);
+}
+
 static void do_write_page(struct f3fs_summary *sum, struct f3fs_io_info *fio)
 {
 	int type = __get_segment_type(fio);
@@ -3450,6 +3480,20 @@ void f3fs_do_write_node_page(unsigned int nid, struct f3fs_io_info *fio)
 	do_write_page(&sum, fio);
 
 	f3fs_update_iostat(fio->sbi, fio->io_type, F3FS_BLKSIZE);
+}
+
+void f3fs_outplace_write_data2(struct dnode_of_data *dn,
+					struct f3fs_io_info *fio)
+{
+	struct f3fs_sb_info *sbi = fio->sbi;
+	struct f3fs_summary sum;
+
+	f3fs_bug_on(sbi, dn->data_blkaddr == NULL_ADDR);
+	set_summary(&sum, dn->nid, dn->ofs_in_node, fio->version);
+	do_write_page2(&sum, fio);
+	f3fs_update_data_blkaddr(dn, fio->new_blkaddr);
+
+	f3fs_update_iostat(sbi, fio->io_type, F3FS_BLKSIZE);
 }
 
 void f3fs_outplace_write_data(struct dnode_of_data *dn,

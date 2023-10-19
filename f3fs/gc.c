@@ -1563,9 +1563,7 @@ static int move_data_page(struct inode *inode, block_t bidx, int gc_type,
 {
 	struct page *page;
 	int err = 0;
-  struct dnode_of_data dn = {0,};
-
-	page = f3fs_get_lock_data_page_load_dn(inode, bidx, true, &dn);
+	page = f3fs_get_lock_data_page(inode, bidx, true);
 
 	if (IS_ERR(page))
 		return PTR_ERR(page);
@@ -1614,7 +1612,7 @@ retry:
 
 		set_page_private_gcing(page);
 
-		err = f3fs_do_write_data_page_with_dn(&fio, &dn);
+		err = f3fs_do_write_data_page2(&fio);
 		if (err) {
 			clear_page_private_gcing(page);
 			if (err == -ENOMEM) {
@@ -1626,10 +1624,6 @@ retry:
 		}
 	}
 out:
-  if (dn.need_put) {
-    f3fs_put_dnode(&dn);
-    dn.need_put = false;
-  }
 	f3fs_put_page(page, 1);
 	return err;
 }
@@ -1765,7 +1759,7 @@ next_step:
 				iput(inode);
 				continue;
 			}
-
+/*
       if (gc_buf[off]) {
         int ret = 0;
         lock_page(data_page);
@@ -1779,6 +1773,7 @@ next_step:
         __free_page(gc_buf[off]);
         unlock_page(data_page);
       }
+*/
 
 			f3fs_put_page(data_page, 0);
 			add_gc_inode(gc_list, inode);
@@ -1840,6 +1835,13 @@ next_step:
 	if (++phase < 5)
 		goto next_step;
 
+  for (int off = 0 ; off < 512 ; off++) {
+    if (gc_buf[off]) {
+      lock_page(gc_buf[off]);
+      unlock_page(gc_buf[off]);
+      __free_page(gc_buf[off]);
+    }
+  }
   kfree(gc_buf);
 
 	return submitted;
