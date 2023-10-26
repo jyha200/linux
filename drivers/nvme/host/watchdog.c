@@ -255,7 +255,7 @@ int watchdog_fn(void* arg) {
         }
 #endif
         if (ret == -4) {
-          msleep(500);
+          msleep(4000);
           if (validate_path(validated_device_path[idx])) {
             if (rl_on) {
               reward = REWARD_NOT_CORRECT;
