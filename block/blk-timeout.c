@@ -141,6 +141,9 @@ void blk_add_timer(struct request *req)
 
 	expiry = jiffies + req->timeout;
 	WRITE_ONCE(req->deadline, expiry);
+  if (req->q->mq_ops->special_timeout) {
+    req->end_time = ktime_get_raw() + req->timeout;
+  }
 
 	/*
 	 * If the timer isn't already pending or this timeout is earlier

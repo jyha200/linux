@@ -544,6 +544,10 @@ struct request_queue {
 
 	bool			mq_sysfs_init_done;
 
+  bool special_blocked;
+  struct task_struct* special_thread;
+  wait_queue_head_t special_wq;
+
 	/**
 	 * @srcu: Sleepable RCU. Use as lock when type of the request queue
 	 * is blocking (BLK_MQ_F_BLOCKING). Must be the last member

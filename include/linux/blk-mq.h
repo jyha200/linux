@@ -196,6 +196,7 @@ struct request {
 	 */
 	rq_end_io_fn *end_io;
 	void *end_io_data;
+  ktime_t end_time;
 };
 
 static inline enum req_op req_op(const struct request *req)
@@ -639,6 +640,7 @@ struct blk_mq_ops {
 	 */
 	void (*show_rq)(struct seq_file *m, struct request *rq);
 #endif
+  void (*special_timeout)(struct request * rq);
 };
 
 enum {

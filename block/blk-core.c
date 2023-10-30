@@ -429,6 +429,9 @@ struct request_queue *blk_alloc_queue(int node_id, bool alloc_srcu)
 	blk_queue_dma_alignment(q, 511);
 	blk_set_default_limits(&q->limits);
 	q->nr_requests = BLKDEV_DEFAULT_RQ;
+  q->special_blocked = false;
+  q->special_thread = NULL;
+  init_waitqueue_head(&q->special_wq);
 
 	return q;
 

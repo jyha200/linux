@@ -241,6 +241,11 @@ int watchdog_fn(void* arg) {
           timeout = msecs_to_jiffies(timeout_ms);
         }
         start_time = ktime_get();
+        if (ctrl->admin_q->tag_set) {
+          if (ctrl->admin_q->tag_set->ops) {
+//            printk("%s %d %p\n", __func__, __LINE__, ctrl->admin_q->tag_set->ops->special_timeout);
+          }
+        }
         ret = nvme_submit_user_cmd(ctrl->admin_q, &c, NULL, 0, NULL, 0, 0, &result, timeout, false);
 				end_time = ktime_get();
 				time_diff = ktime_to_ns(ktime_sub(end_time, start_time));
@@ -255,7 +260,7 @@ int watchdog_fn(void* arg) {
         }
 #endif
         if (ret == -4) {
-          msleep(4000);
+          msleep(8000);
           if (validate_path(validated_device_path[idx])) {
             if (rl_on) {
               reward = REWARD_NOT_CORRECT;

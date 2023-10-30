@@ -144,6 +144,7 @@ int nvme_try_sched_reset(struct nvme_ctrl *ctrl)
 {
 	if (ctrl->state != NVME_CTRL_RESETTING)
 		return -EBUSY;
+  printk("%s %d\n", __func__, __LINE__);
 	if (!queue_work(nvme_reset_wq, &ctrl->reset_work))
 		return -EBUSY;
 	return 0;
@@ -186,6 +187,7 @@ int nvme_reset_ctrl(struct nvme_ctrl *ctrl)
 {
 	if (!nvme_change_ctrl_state(ctrl, NVME_CTRL_RESETTING))
 		return -EBUSY;
+  printk("%s %d\n", __func__, __LINE__);
 	if (!queue_work(nvme_reset_wq, &ctrl->reset_work))
 		return -EBUSY;
 	return 0;
@@ -197,6 +199,7 @@ int nvme_reset_ctrl_sync(struct nvme_ctrl *ctrl)
 	int ret;
 
 	ret = nvme_reset_ctrl(ctrl);
+  printk("%s %d\n", __func__, __LINE__);
 	if (!ret) {
 		flush_work(&ctrl->reset_work);
 		if (ctrl->state != NVME_CTRL_LIVE)
@@ -211,6 +214,7 @@ static void nvme_do_delete_ctrl(struct nvme_ctrl *ctrl)
 	dev_info(ctrl->device,
 		 "Removing ctrl: NQN \"%s\"\n", nvmf_ctrl_subsysnqn(ctrl));
 
+    printk("%s %d\n", __func__, __LINE__);
 	flush_work(&ctrl->reset_work);
 	nvme_stop_ctrl(ctrl);
 	nvme_remove_namespaces(ctrl);
@@ -3078,6 +3082,7 @@ static int nvme_init_identify(struct nvme_ctrl *ctrl)
 	bool prev_apst_enabled;
 	int ret;
 
+  printk("%s %d\n", __func__, __LINE__);
 	ret = nvme_identify_ctrl(ctrl, &id);
 	if (ret) {
 		dev_err(ctrl->device, "Identify Controller failed (%d)\n", ret);
@@ -3155,10 +3160,11 @@ static int nvme_init_identify(struct nvme_ctrl *ctrl)
 		ctrl->shutdown_timeout = clamp_t(unsigned int, transition_time,
 						 shutdown_timeout, 60);
 
-		if (ctrl->shutdown_timeout != shutdown_timeout)
+		if (ctrl->shutdown_timeout != shutdown_timeout) {
 			dev_info(ctrl->device,
 				 "Shutdown timeout set to %u seconds\n",
 				 ctrl->shutdown_timeout);
+    }
 	} else
 		ctrl->shutdown_timeout = shutdown_timeout;
 
@@ -3220,6 +3226,7 @@ static int nvme_init_identify(struct nvme_ctrl *ctrl)
 
 out_free:
 	kfree(id);
+  printk("%s %d\n", __func__, __LINE__);
 	return ret;
 }
 

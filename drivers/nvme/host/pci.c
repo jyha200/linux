@@ -1031,8 +1031,13 @@ static __always_inline void nvme_pci_unmap_rq(struct request *req)
 
 static void nvme_pci_complete_rq(struct request *req)
 {
-	nvme_pci_unmap_rq(req);
-	nvme_complete_rq(req);
+  if (req->q->mq_ops->special_timeout && nvme_req(req)->cmd->common.opcode == 0xFF) {
+    printk("%s %d preemtable %d\n", __func__, __LINE__, in_atomic_preempt_off());
+    req->q->mq_ops->special_timeout(req);
+  } else {
+    nvme_pci_unmap_rq(req);
+    nvme_complete_rq(req);
+  }
 }
 
 static void nvme_pci_complete_batch(struct io_comp_batch *iob)
@@ -1339,22 +1344,27 @@ static enum blk_eh_timer_return nvme_timeout(struct request *req)
 	struct nvme_dev *dev = nvmeq->dev;
 	struct request *abort_req;
 	struct nvme_command cmd = { };
+  bool is_special_cmd = nvme_req(req)->cmd->common.opcode == 0xFF;
 	u32 csts = readl(dev->bar + NVME_REG_CSTS);
 
+  printk("%s %d\n", __func__, __LINE__);
 	/* If PCI error recovery process is happening, we cannot reset or
 	 * the recovery mechanism will surely fail.
 	 */
 	mb();
-	if (pci_channel_offline(to_pci_dev(dev->dev)))
+	if (pci_channel_offline(to_pci_dev(dev->dev))) {
+  printk("%s %d\n", __func__, __LINE__);
 		return BLK_EH_RESET_TIMER;
+}
 
 	/*
 	 * Reset immediately if the controller is failed
 	 */
-	if (nvme_should_reset(dev, csts)) {
+	if (!is_special_cmd && nvme_should_reset(dev, csts)) {
 		nvme_warn_reset(dev, csts);
 		nvme_dev_disable(dev, false);
 		nvme_reset_ctrl(&dev->ctrl);
+  printk("%s %d\n", __func__, __LINE__);
 		return BLK_EH_DONE;
 	}
 
@@ -1366,10 +1376,11 @@ static enum blk_eh_timer_return nvme_timeout(struct request *req)
 	else
 		nvme_poll_irqdisable(nvmeq);
 
-	if (blk_mq_request_completed(req)) {
+	if (!is_special_cmd && blk_mq_request_completed(req)) {
 		dev_warn(dev->ctrl.device,
 			 "I/O %d QID %d timeout, completion polled\n",
 			 req->tag, nvmeq->qid);
+  printk("%s %d\n", __func__, __LINE__);
 		return BLK_EH_DONE;
 	}
 
@@ -1401,19 +1412,24 @@ static enum blk_eh_timer_return nvme_timeout(struct request *req)
 	 * command was already aborted once before and still hasn't been
 	 * returned to the driver, or if this is the admin queue.
 	 */
+  printk("%s %d\n", __func__, __LINE__);
 	if (!nvmeq->qid || iod->aborted) {
 		dev_warn(dev->ctrl.device,
 			 "I/O %d QID %d timeout, reset controller\n",
 			 req->tag, nvmeq->qid);
+    printk("%s %d\n", __func__, __LINE__);
 		nvme_req(req)->flags |= NVME_REQ_CANCELLED;
 		nvme_dev_disable(dev, false);
 		nvme_reset_ctrl(&dev->ctrl);
 
+  printk("%s %d\n", __func__, __LINE__);
 		return BLK_EH_DONE;
 	}
+  printk("%s %d\n", __func__, __LINE__);
 
 	if (atomic_dec_return(&dev->ctrl.abort_limit) < 0) {
 		atomic_inc(&dev->ctrl.abort_limit);
+  printk("%s %d\n", __func__, __LINE__);
 		return BLK_EH_RESET_TIMER;
 	}
 	iod->aborted = 1;
@@ -1432,6 +1448,7 @@ static enum blk_eh_timer_return nvme_timeout(struct request *req)
 					 BLK_MQ_REQ_NOWAIT);
 	if (IS_ERR(abort_req)) {
 		atomic_inc(&dev->ctrl.abort_limit);
+  printk("%s %d\n", __func__, __LINE__);
 		return BLK_EH_RESET_TIMER;
 	}
 	nvme_init_request(abort_req, &cmd);
@@ -1446,7 +1463,37 @@ static enum blk_eh_timer_return nvme_timeout(struct request *req)
 	 * We enable the timer again. If hit twice, it'll cause a device reset,
 	 * as the device then is in a faulty state.
 	 */
+  printk("%s %d\n", __func__, __LINE__);
 	return BLK_EH_RESET_TIMER;
+}
+
+static void nvme_special_timeout(struct request* rq)
+{
+
+  ktime_t now_time = ktime_get_raw();
+  if (rq->end_time < now_time) {
+    printk("%s %d expired %lld %lld %lld\n", __func__, __LINE__, rq->end_time, now_time, now_time - rq->end_time + rq->timeout);
+    rq->q->special_blocked = true;
+    if (rq->q->special_thread == NULL) {
+      printk("%s %d no special thread\n", __func__, __LINE__);
+    } else {
+      wake_up(&rq->q->special_wq);
+    }
+
+    // TODO: should be deleted after reset work code implemented
+    {
+      nvme_pci_unmap_rq(rq);
+      nvme_complete_rq(rq);
+    }
+    
+/*    percpu_ref_get(&rq->q->q_usage_counter);
+    nvme_timeout(rq);
+    printk("%s %d\n", __func__, __LINE__);
+	  percpu_ref_put(&rq->q->q_usage_counter);*/
+  } else {
+    nvme_pci_unmap_rq(rq);
+    nvme_complete_rq(rq);
+  }
 }
 
 static void nvme_free_queue(struct nvme_queue *nvmeq)
@@ -1727,6 +1774,7 @@ static const struct blk_mq_ops nvme_mq_admin_ops = {
 	.init_hctx	= nvme_admin_init_hctx,
 	.init_request	= nvme_pci_init_request,
 	.timeout	= nvme_timeout,
+	.special_timeout	= nvme_special_timeout,
 };
 
 static const struct blk_mq_ops nvme_mq_ops = {
@@ -1753,6 +1801,23 @@ static void nvme_dev_remove_admin(struct nvme_dev *dev)
 		blk_mq_destroy_queue(dev->ctrl.admin_q);
 		blk_mq_free_tag_set(&dev->admin_tagset);
 	}
+}
+
+static int handle_special_timeout(void* data)
+{
+  struct request_queue* admin_q = (struct request_queue*) data;
+  while (!kthread_should_stop()) {
+    wait_event_interruptible_timeout(
+        admin_q->special_wq,
+        kthread_should_stop() || admin_q->special_blocked,
+        msecs_to_jiffies(300));
+    if (admin_q->special_blocked) {
+      printk("special_blocked received\n");
+      admin_q->special_blocked = false;
+    }
+  }
+
+  return 0;
 }
 
 static int nvme_pci_alloc_admin_tag_set(struct nvme_dev *dev)
@@ -1784,6 +1849,7 @@ static int nvme_pci_alloc_admin_tag_set(struct nvme_dev *dev)
 		dev->ctrl.admin_q = NULL;
 		return -ENODEV;
 	}
+  dev->ctrl.admin_q->special_thread = kthread_run(handle_special_timeout, dev->ctrl.admin_q, "special_timeout");
 	return 0;
 }
 
@@ -2345,6 +2411,8 @@ static int nvme_setup_io_queues(struct nvme_dev *dev)
 	unsigned long size;
 	int result;
 
+  printk("%s %d\n", __func__, __LINE__);
+
 	/*
 	 * Sample the module parameters once at reset time so that we have
 	 * stable values to work with.
@@ -2772,8 +2840,14 @@ static void nvme_pci_free_ctrl(struct nvme_ctrl *ctrl)
 
 	nvme_dbbuf_dma_free(dev);
 	nvme_free_tagset(dev);
-	if (dev->ctrl.admin_q)
+	if (dev->ctrl.admin_q) {
+    struct task_struct* special_th = dev->ctrl.admin_q->special_thread;
+    if (special_th) {
+      kthread_stop(special_th);
+    }
+
 		blk_put_queue(dev->ctrl.admin_q);
+  }
 	free_opal_dev(dev->ctrl.opal_dev);
 	mempool_destroy(dev->iod_mempool);
 	put_device(dev->dev);
@@ -2801,6 +2875,7 @@ static void nvme_reset_work(struct work_struct *work)
 		container_of(work, struct nvme_dev, ctrl.reset_work);
 	bool was_suspend = !!(dev->ctrl.ctrl_config & NVME_CC_SHN_NORMAL);
 	int result;
+  printk("%s %d\n", __func__, __LINE__);
 
 	if (dev->ctrl.state != NVME_CTRL_RESETTING) {
 		dev_warn(dev->ctrl.device, "ctrl state %d is not RESETTING\n",
@@ -2935,6 +3010,7 @@ static void nvme_reset_work(struct work_struct *work)
 		dev->attrs_added = true;
 
 	nvme_start_ctrl(&dev->ctrl);
+  printk("%s %d\n", __func__, __LINE__);
 	return;
 
  out_unlock:
@@ -3079,6 +3155,7 @@ static void nvme_async_probe(void *data, async_cookie_t cookie)
 {
 	struct nvme_dev *dev = data;
 
+    printk("%s %d\n", __func__, __LINE__);
 	flush_work(&dev->ctrl.reset_work);
 	flush_work(&dev->ctrl.scan_work);
 	nvme_put_ctrl(&dev->ctrl);
@@ -3193,8 +3270,10 @@ static void nvme_reset_done(struct pci_dev *pdev)
 {
 	struct nvme_dev *dev = pci_get_drvdata(pdev);
 
-	if (!nvme_try_sched_reset(&dev->ctrl))
-		flush_work(&dev->ctrl.reset_work);
+	if (!nvme_try_sched_reset(&dev->ctrl)) {
+    printk("%s %d\n", __func__, __LINE__);
+    flush_work(&dev->ctrl.reset_work);
+  }
 }
 
 static void nvme_shutdown(struct pci_dev *pdev)
@@ -3227,6 +3306,8 @@ static void nvme_remove(struct pci_dev *pdev)
 		nvme_change_ctrl_state(&dev->ctrl, NVME_CTRL_DEAD);
 		nvme_dev_disable(dev, true);
 	}
+
+  printk("%s %d\n", __func__, __LINE__);
 
 	flush_work(&dev->ctrl.reset_work);
 	nvme_stop_ctrl(&dev->ctrl);
@@ -3409,6 +3490,7 @@ static void nvme_error_resume(struct pci_dev *pdev)
 {
 	struct nvme_dev *dev = pci_get_drvdata(pdev);
 
+  printk("%s %d\n", __func__, __LINE__);
 	flush_work(&dev->ctrl.reset_work);
 }
 
