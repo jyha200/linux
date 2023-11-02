@@ -1419,7 +1419,9 @@ static enum blk_eh_timer_return nvme_timeout(struct request *req)
 			 req->tag, nvmeq->qid);
     printk("%s %d\n", __func__, __LINE__);
 		nvme_req(req)->flags |= NVME_REQ_CANCELLED;
+    printk("%s %d\n", __func__, __LINE__);
 		nvme_dev_disable(dev, false);
+    printk("%s %d\n", __func__, __LINE__);
 		nvme_reset_ctrl(&dev->ctrl);
 
   printk("%s %d\n", __func__, __LINE__);
@@ -1471,9 +1473,10 @@ static void nvme_special_timeout(struct request* rq)
 {
 
   ktime_t now_time = ktime_get_raw();
-  if (rq->end_time < now_time) {
+  if (rq->end_time < now_time && !rq->q->special_blocked) {
     printk("%s %d expired %lld %lld %lld\n", __func__, __LINE__, rq->end_time, now_time, now_time - rq->end_time + rq->timeout);
     rq->q->special_blocked = true;
+    rq->q->special_blocked_req = rq;
     if (rq->q->special_thread == NULL) {
       printk("%s %d no special thread\n", __func__, __LINE__);
     } else {
@@ -1481,15 +1484,12 @@ static void nvme_special_timeout(struct request* rq)
     }
 
     // TODO: should be deleted after reset work code implemented
+#if 0
     {
       nvme_pci_unmap_rq(rq);
       nvme_complete_rq(rq);
     }
-    
-/*    percpu_ref_get(&rq->q->q_usage_counter);
-    nvme_timeout(rq);
-    printk("%s %d\n", __func__, __LINE__);
-	  percpu_ref_put(&rq->q->q_usage_counter);*/
+#endif
   } else {
     nvme_pci_unmap_rq(rq);
     nvme_complete_rq(rq);
@@ -1812,7 +1812,16 @@ static int handle_special_timeout(void* data)
         kthread_should_stop() || admin_q->special_blocked,
         msecs_to_jiffies(300));
     if (admin_q->special_blocked) {
-      printk("special_blocked received\n");
+      printk("%s %d special_blocked received\n", __func__, __LINE__);
+      percpu_ref_get(&admin_q->q_usage_counter);
+      if (admin_q->special_blocked_req) {
+        struct request* req = admin_q->special_blocked_req;
+        admin_q->special_blocked_req = NULL;
+        nvme_timeout(req);
+      } else {
+        printk("%s %d No blocked req\n", __func__, __LINE__);
+      }
+      percpu_ref_put(&admin_q->q_usage_counter);
       admin_q->special_blocked = false;
     }
   }
@@ -2743,7 +2752,9 @@ static void nvme_dev_disable(struct nvme_dev *dev, bool shutdown)
 	bool dead = true, freeze = false;
 	struct pci_dev *pdev = to_pci_dev(dev->dev);
 
+    printk("%s %d\n", __func__, __LINE__);
 	mutex_lock(&dev->shutdown_lock);
+    printk("%s %d\n", __func__, __LINE__);
 	if (pci_is_enabled(pdev)) {
 		u32 csts;
 
@@ -2761,6 +2772,7 @@ static void nvme_dev_disable(struct nvme_dev *dev, bool shutdown)
 			pdev->error_state  != pci_channel_io_normal);
 	}
 
+    printk("%s %d\n", __func__, __LINE__);
 	/*
 	 * Give the controller a chance to complete all entered requests if
 	 * doing a safe shutdown.
@@ -2768,30 +2780,41 @@ static void nvme_dev_disable(struct nvme_dev *dev, bool shutdown)
 	if (!dead && shutdown && freeze)
 		nvme_wait_freeze_timeout(&dev->ctrl, NVME_IO_TIMEOUT);
 
+    printk("%s %d\n", __func__, __LINE__);
 	nvme_stop_queues(&dev->ctrl);
 
+    printk("%s %d\n", __func__, __LINE__);
 	if (!dead && dev->ctrl.queue_count > 0) {
 		nvme_disable_io_queues(dev);
 		nvme_disable_admin_queue(dev, shutdown);
 	}
+    printk("%s %d\n", __func__, __LINE__);
 	nvme_suspend_io_queues(dev);
+    printk("%s %d\n", __func__, __LINE__);
 	nvme_suspend_queue(&dev->queues[0]);
+    printk("%s %d\n", __func__, __LINE__);
 	nvme_pci_disable(dev);
+    printk("%s %d\n", __func__, __LINE__);
 	nvme_reap_pending_cqes(dev);
+    printk("%s %d\n", __func__, __LINE__);
 
 	nvme_cancel_tagset(&dev->ctrl);
+    printk("%s %d\n", __func__, __LINE__);
 	nvme_cancel_admin_tagset(&dev->ctrl);
+    printk("%s %d\n", __func__, __LINE__);
 
 	/*
 	 * The driver will not be starting up queues again if shutting down so
 	 * must flush all entered requests to their failed completion to avoid
 	 * deadlocking blk-mq hot-cpu notifier.
 	 */
+    printk("%s %d\n", __func__, __LINE__);
 	if (shutdown) {
 		nvme_start_queues(&dev->ctrl);
 		if (dev->ctrl.admin_q && !blk_queue_dying(dev->ctrl.admin_q))
 			nvme_start_admin_queue(&dev->ctrl);
 	}
+    printk("%s %d\n", __func__, __LINE__);
 	mutex_unlock(&dev->shutdown_lock);
 }
 

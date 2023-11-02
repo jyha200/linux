@@ -545,6 +545,7 @@ struct request_queue {
 	bool			mq_sysfs_init_done;
 
   bool special_blocked;
+  struct request* special_blocked_req;
   struct task_struct* special_thread;
   wait_queue_head_t special_wq;
 
