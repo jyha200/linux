@@ -1031,10 +1031,13 @@ static __always_inline void nvme_pci_unmap_rq(struct request *req)
 
 static void nvme_pci_complete_rq(struct request *req)
 {
+#if 0
   if (req->q->mq_ops->special_timeout && nvme_req(req)->cmd->common.opcode == 0xFF) {
     printk("%s %d preemtable %d\n", __func__, __LINE__, in_atomic_preempt_off());
     req->q->mq_ops->special_timeout(req);
-  } else {
+  } else
+#endif
+ {
     nvme_pci_unmap_rq(req);
     nvme_complete_rq(req);
   }

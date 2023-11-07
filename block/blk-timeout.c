@@ -84,6 +84,10 @@ void blk_abort_request(struct request *req)
 	 * No need for fancy synchronizations.
 	 */
 	WRITE_ONCE(req->deadline, jiffies);
+  if (req->q->mq_ops->special_timeout) {
+    printk("%s %d\n", __func__, __LINE__);
+  }
+
 	kblockd_schedule_work(&req->q->timeout_work);
 }
 EXPORT_SYMBOL_GPL(blk_abort_request);

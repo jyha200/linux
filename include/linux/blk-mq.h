@@ -194,6 +194,8 @@ struct request {
 	/*
 	 * completion callback.
 	 */
+  bool special_cmd;
+  bool special_timeout;
 	rq_end_io_fn *end_io;
 	void *end_io_data;
   ktime_t end_time;

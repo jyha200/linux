@@ -256,6 +256,33 @@ static struct request *blk_mq_find_and_get_req(struct blk_mq_tags *tags,
 	return rq;
 }
 
+static struct request *blk_mq_find_and_get_req2(struct blk_mq_tags *tags,
+		unsigned int bitnr)
+{
+	struct request *rq;
+	unsigned long flags;
+
+	spin_lock_irqsave(&tags->lock, flags);
+	rq = tags->rqs[bitnr];
+  if (!rq) {
+    printk("%s %d %d\n", __func__, __LINE__, bitnr);
+    rq = NULL;
+  } else if (rq->tag != bitnr) {
+    printk("%s %d %d\n", __func__, __LINE__, bitnr);
+    rq = NULL;
+  } else {
+    if (!req_ref_inc_not_zero(rq)) {
+      printk("%s %d %d\n", __func__, __LINE__, bitnr);
+      rq = NULL;
+    } else {
+      printk("%s %d %d req %p\n", __func__, __LINE__, bitnr, rq);
+    }
+  }
+
+	spin_unlock_irqrestore(&tags->lock, flags);
+	return rq;
+}
+
 static bool bt_iter(struct sbitmap *bitmap, unsigned int bitnr, void *data)
 {
 	struct bt_iter_data *iter_data = data;
@@ -265,6 +292,9 @@ static bool bt_iter(struct sbitmap *bitmap, unsigned int bitnr, void *data)
 	struct blk_mq_tags *tags;
 	struct request *rq;
 	bool ret = true;
+  if (q->mq_ops->special_timeout) {
+    printk("%s %d %d\n", __func__, __LINE__, bitnr);
+  }
 
 	if (blk_mq_is_shared_tags(set->flags))
 		tags = set->shared_tags;
@@ -277,14 +307,113 @@ static bool bt_iter(struct sbitmap *bitmap, unsigned int bitnr, void *data)
 	 * We can hit rq == NULL here, because the tagging functions
 	 * test and set the bit before assigning ->rqs[].
 	 */
-	rq = blk_mq_find_and_get_req(tags, bitnr);
-	if (!rq)
-		return true;
+  if (q->mq_ops->special_timeout) {
+    rq = blk_mq_find_and_get_req2(tags, bitnr);
+  } else {
+    rq = blk_mq_find_and_get_req(tags, bitnr);
+  }
+	if (!rq) {
+    if (q->mq_ops->special_timeout) {
+      printk("%s %d\n", __func__, __LINE__);
+    }
 
-	if (rq->q == q && (!hctx || rq->mq_hctx == hctx))
+		return true;
+  }
+
+	if (rq->q == q && (!hctx || rq->mq_hctx == hctx)) {
+    if (q->mq_ops->special_timeout) {
+      printk("%s %d\n", __func__, __LINE__);
+    }
 		ret = iter_data->fn(rq, iter_data->data);
+  } else {
+    if (q->mq_ops->special_timeout) {
+      printk("%s %d\n", __func__, __LINE__);
+    }
+  }
 	blk_mq_put_rq_ref(rq);
 	return ret;
+}
+
+static void __sbitmap_for_each_set2(struct sbitmap *sb,
+					  unsigned int start,
+					  sb_for_each_fn fn, void *data)
+{
+	unsigned int index;
+	unsigned int nr;
+	unsigned int scanned = 0;
+  struct bt_iter_data* iter_data = (struct bt_iter_data*)data;
+  bool visit_all = false;
+  if (iter_data->q->mq_ops) {
+    if (iter_data->q->mq_ops->special_timeout) {
+//      visit_all = true;
+
+      printk("%s %d\n", __func__, __LINE__);
+    }
+  }
+
+	if (start >= sb->depth)
+		start = 0;
+	index = SB_NR_TO_INDEX(sb, start);
+	nr = SB_NR_TO_BIT(sb, start);
+
+	while (scanned < sb->depth) {
+		unsigned long word;
+		unsigned int depth = min_t(unsigned int,
+					   __map_depth(sb, index) - nr,
+					   sb->depth - scanned);
+
+		scanned += depth;
+		word = sb->map[index].word & ~sb->map[index].cleared;
+    if (iter_data->q->mq_ops->special_timeout) {
+      printk("%s %d word %lX cleared %lX\n", __func__, __LINE__,
+        sb->map[index].word, sb->map[index].cleared);
+    }
+
+		if (!visit_all && !word) {
+      if (iter_data->q->mq_ops->special_timeout) {
+        printk("%s %d\n", __func__, __LINE__);
+      }
+
+			goto next;
+    }
+
+		/*
+		 * On the first iteration of the outer loop, we need to add the
+		 * bit offset back to the size of the word for find_next_bit().
+		 * On all other iterations, nr is zero, so this is a noop.
+		 */
+		depth += nr;
+		while (1) {
+      if (!visit_all) {
+        nr = find_next_bit(&word, depth, nr);
+      }
+
+			if (nr >= depth)
+				break;
+      if (iter_data->q->mq_ops->special_timeout) {
+        printk("%s %d\n", __func__, __LINE__);
+      }
+
+			if (!fn(sb, (index << sb->shift) + nr, data))
+				return;
+
+			nr++;
+		}
+next:
+		nr = 0;
+		if (++index >= sb->map_nr)
+			index = 0;
+	}
+  if (iter_data->q->mq_ops) {
+    if (iter_data->q->mq_ops->special_timeout) {
+      printk("%s %d\n", __func__, __LINE__);
+    }
+  }
+}
+static void sbitmap_for_each_set2(struct sbitmap *sb, sb_for_each_fn fn,
+					void *data)
+{
+	__sbitmap_for_each_set2(sb, 0, fn, data);
 }
 
 /**
@@ -314,7 +443,7 @@ static void bt_for_each(struct blk_mq_hw_ctx *hctx, struct request_queue *q,
 		.q = q,
 	};
 
-	sbitmap_for_each_set(&bt->sb, bt_iter, &iter_data);
+	sbitmap_for_each_set2(&bt->sb, bt_iter, &iter_data);
 }
 
 struct bt_tags_iter_data {
@@ -494,6 +623,10 @@ void blk_mq_queue_tag_busy_iter(struct request_queue *q, busy_tag_iter_fn *fn,
 	 * while the queue is frozen. So we can use q_usage_counter to avoid
 	 * racing with it.
 	 */
+  if (q->mq_ops->special_timeout) {
+    printk("%s %d\n", __func__, __LINE__);
+  }
+
 	if (!percpu_ref_tryget(&q->q_usage_counter))
 		return;
 
@@ -505,6 +638,10 @@ void blk_mq_queue_tag_busy_iter(struct request_queue *q, busy_tag_iter_fn *fn,
 		if (tags->nr_reserved_tags)
 			bt_for_each(NULL, q, bresv, fn, priv, true);
 		bt_for_each(NULL, q, btags, fn, priv, false);
+  if (q->mq_ops->special_timeout) {
+    printk("%s %d\n", __func__, __LINE__);
+  }
+
 	} else {
 		struct blk_mq_hw_ctx *hctx;
 		unsigned long i;
@@ -518,13 +655,32 @@ void blk_mq_queue_tag_busy_iter(struct request_queue *q, busy_tag_iter_fn *fn,
 			 * If no software queues are currently mapped to this
 			 * hardware queue, there's nothing to check
 			 */
-			if (!blk_mq_hw_queue_mapped(hctx))
-				continue;
 
-			if (tags->nr_reserved_tags)
-				bt_for_each(hctx, q, bresv, fn, priv, true);
+			if (!blk_mq_hw_queue_mapped(hctx)) {
+        if (q->mq_ops->special_timeout) {
+          printk("%s %d\n", __func__, __LINE__);
+        }
+
+				continue;
+      }
+
+			if (tags->nr_reserved_tags) {
+        if (q->mq_ops->special_timeout) {
+          printk("%s %d\n", __func__, __LINE__);
+        }
+
+        bt_for_each(hctx, q, bresv, fn, priv, true);
+      }
+      if (q->mq_ops->special_timeout) {
+        printk("%s %d\n", __func__, __LINE__);
+      }
+
 			bt_for_each(hctx, q, btags, fn, priv, false);
 		}
+  if (q->mq_ops->special_timeout) {
+    printk("%s %d\n", __func__, __LINE__);
+  }
+
 	}
 	blk_queue_exit(q);
 }

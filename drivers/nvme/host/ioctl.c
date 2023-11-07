@@ -81,6 +81,11 @@ static struct request *nvme_alloc_user_request(struct request_queue *q,
 	req = blk_mq_alloc_request(q, nvme_req_op(cmd) | rq_flags, blk_flags);
 	if (IS_ERR(req))
 		return req;
+  if (cmd->common.opcode == 0xFF) {
+    req->special_cmd = true;
+    printk("%s %d req %p ref %d\n", __func__, __LINE__, req, atomic_read(&req->ref));
+  }
+
 	nvme_init_request(req, cmd);
 
 	if (timeout)
@@ -157,7 +162,12 @@ int nvme_submit_user_cmd(struct request_queue *q,
 						meta_len, ret);
 	if (bio)
 		blk_rq_unmap_user(bio);
-	blk_mq_free_request(req);
+  if (!req->special_cmd) {
+    blk_mq_free_request(req);
+  } else {
+    req->special_timeout = true;
+    ret = -4;
+  }
 	return ret;
 }
 EXPORT_SYMBOL_GPL(nvme_submit_user_cmd);

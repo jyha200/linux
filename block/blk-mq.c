@@ -112,8 +112,16 @@ static void blk_mq_hctx_mark_pending(struct blk_mq_hw_ctx *hctx,
 {
 	const int bit = ctx->index_hw[hctx->type];
 
-	if (!sbitmap_test_bit(&hctx->ctx_map, bit))
+	if (!sbitmap_test_bit(&hctx->ctx_map, bit)) {
+    if (hctx->queue) {
+      if (hctx->queue->mq_ops) {
+        if (hctx->queue->mq_ops->special_timeout) {
+          printk("%s %d\n", __func__, __LINE__);
+        }
+      }
+    }
 		sbitmap_set_bit(&hctx->ctx_map, bit);
+  }
 }
 
 static void blk_mq_hctx_clear_pending(struct blk_mq_hw_ctx *hctx,
@@ -380,6 +388,8 @@ static struct request *blk_mq_rq_ctx_init(struct blk_mq_alloc_data *data,
 #if defined(CONFIG_BLK_DEV_INTEGRITY)
 	rq->nr_integrity_segments = 0;
 #endif
+  rq->special_cmd = false;
+  rq->special_timeout = false;
 	rq->end_io = NULL;
 	rq->end_io_data = NULL;
 
@@ -1480,6 +1490,15 @@ static bool blk_mq_check_expired(struct request *rq, void *priv)
 	 * it was completed and reallocated as a new request after returning
 	 * from blk_mq_check_expired().
 	 */
+  if (rq->special_cmd) {
+    printk("%s %d\n", __func__, __LINE__);
+    if (rq->special_timeout) {
+      blk_mq_free_request(rq);
+      blk_mq_rq_timed_out(rq);
+    }
+    return true;
+  }
+
 	if (blk_mq_req_expired(rq, next))
 		blk_mq_rq_timed_out(rq);
 	return true;
@@ -1508,6 +1527,9 @@ static void blk_mq_timeout_work(struct work_struct *work)
 	 */
 	if (!percpu_ref_tryget(&q->q_usage_counter))
 		return;
+  if (q->mq_ops->special_timeout) {
+    printk("%s %d\n", __func__, __LINE__);
+  }
 
 	blk_mq_queue_tag_busy_iter(q, blk_mq_check_expired, &next);
 

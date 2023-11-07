@@ -474,17 +474,32 @@ static inline bool should_fail_request(struct block_device *part,
 
 static inline bool req_ref_inc_not_zero(struct request *req)
 {
-	return atomic_inc_not_zero(&req->ref);
+
+	bool ret = atomic_inc_not_zero(&req->ref);
+  if (req->special_cmd) {
+    printk("%s %d req %p ret %d\n", __func__, __LINE__, req, ret);
+  }
+
+  return ret;
 }
 
 static inline bool req_ref_put_and_test(struct request *req)
 {
+  bool ret;
 	WARN_ON_ONCE(req_ref_zero_or_close_to_overflow(req));
-	return atomic_dec_and_test(&req->ref);
+  ret = atomic_dec_and_test(&req->ref);
+  if (req->special_cmd) {
+    printk("%s %d req %p ret %d\n", __func__, __LINE__, req, ret);
+  }
+  return ret;
 }
 
 static inline void req_ref_set(struct request *req, int value)
 {
+  if (req->special_cmd) {
+    printk("%s %d req %p value %d\n", __func__, __LINE__, req, value);
+  }
+
 	atomic_set(&req->ref, value);
 }
 

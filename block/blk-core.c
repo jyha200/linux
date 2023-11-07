@@ -229,6 +229,9 @@ const char *blk_status_to_str(blk_status_t status)
 void blk_sync_queue(struct request_queue *q)
 {
 	del_timer_sync(&q->timeout);
+  if (q->mq_ops->special_timeout) {
+    printk("%s %d\n", __func__, __LINE__);
+  }
 	cancel_work_sync(&q->timeout_work);
 }
 EXPORT_SYMBOL(blk_sync_queue);
@@ -366,6 +369,9 @@ static void blk_queue_usage_counter_release(struct percpu_ref *ref)
 static void blk_rq_timed_out_timer(struct timer_list *t)
 {
 	struct request_queue *q = from_timer(q, t, timeout);
+  if (q->mq_ops->special_timeout) {
+    printk("%s %d\n", __func__, __LINE__);
+  }
 
 	kblockd_schedule_work(&q->timeout_work);
 }
