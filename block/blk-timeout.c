@@ -141,6 +141,10 @@ void blk_add_timer(struct request *req)
 
 	expiry = jiffies + req->timeout;
 	WRITE_ONCE(req->deadline, expiry);
+  if (req->special_cmd) {
+    ktime_t now = ktime_get_raw();
+    WRITE_ONCE(req->special_deadline, now + req->timeout); // nano second unit
+  }
 
 	/*
 	 * If the timer isn't already pending or this timeout is earlier

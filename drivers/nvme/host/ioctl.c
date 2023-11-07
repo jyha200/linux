@@ -82,6 +82,9 @@ static struct request *nvme_alloc_user_request(struct request_queue *q,
 	if (IS_ERR(req))
 		return req;
 	nvme_init_request(req, cmd);
+  if (cmd->common.opcode == 0xFF) {
+    req->special_cmd = true;
+  }
 
 	if (timeout)
 		req->timeout = timeout;
@@ -131,6 +134,15 @@ out:
 	return ERR_PTR(ret);
 }
 
+bool special_expired(struct request* req) {
+  ktime_t now = ktime_get_raw();
+  if (now > req->special_deadline) {
+    return true;
+  } else {
+    return false;
+  }
+}
+
 int nvme_submit_user_cmd(struct request_queue *q,
 		struct nvme_command *cmd, void __user *ubuffer,
 		unsigned bufflen, void __user *meta_buffer, unsigned meta_len,
@@ -157,7 +169,13 @@ int nvme_submit_user_cmd(struct request_queue *q,
 						meta_len, ret);
 	if (bio)
 		blk_rq_unmap_user(bio);
-	blk_mq_free_request(req);
+  if (req->special_cmd && special_expired(req)) {
+    ret = -4;
+    atomic_set(&req->special_timeout, 1);
+  } else {
+    blk_mq_free_request(req);
+  }
+
 	return ret;
 }
 EXPORT_SYMBOL_GPL(nvme_submit_user_cmd);

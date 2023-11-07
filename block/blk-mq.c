@@ -382,6 +382,9 @@ static struct request *blk_mq_rq_ctx_init(struct blk_mq_alloc_data *data,
 #endif
 	rq->end_io = NULL;
 	rq->end_io_data = NULL;
+  rq->special_cmd = false;
+  atomic_set(&rq->special_timeout, 0);
+  WRITE_ONCE(rq->special_deadline, 0);
 
 	blk_crypto_rq_set_defaults(rq);
 	INIT_LIST_HEAD(&rq->queuelist);
@@ -1480,6 +1483,13 @@ static bool blk_mq_check_expired(struct request *rq, void *priv)
 	 * it was completed and reallocated as a new request after returning
 	 * from blk_mq_check_expired().
 	 */
+  if (rq->special_cmd) {
+    if (atomic_read(&rq->special_timeout) == 1) {
+      blk_mq_free_request(rq);
+      blk_mq_rq_timed_out(rq);
+    }
+    return true;
+  }
 	if (blk_mq_req_expired(rq, next))
 		blk_mq_rq_timed_out(rq);
 	return true;

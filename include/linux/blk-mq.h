@@ -191,6 +191,10 @@ struct request {
 		u64 fifo_time;
 	};
 
+  bool special_cmd;
+  atomic_t special_timeout;
+  s64 special_deadline;
+
 	/*
 	 * completion callback.
 	 */
