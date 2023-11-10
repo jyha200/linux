@@ -193,6 +193,7 @@ struct request {
 
   bool special_cmd;
   atomic_t special_timeout;
+  atomic_t special_timeout_catch;
   s64 special_deadline;
 
 	/*

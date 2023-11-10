@@ -384,6 +384,7 @@ static struct request *blk_mq_rq_ctx_init(struct blk_mq_alloc_data *data,
 	rq->end_io_data = NULL;
   rq->special_cmd = false;
   atomic_set(&rq->special_timeout, 0);
+  atomic_set(&rq->special_timeout_catch, 0);
   WRITE_ONCE(rq->special_deadline, 0);
 
 	blk_crypto_rq_set_defaults(rq);
@@ -1472,6 +1473,15 @@ void blk_mq_put_rq_ref(struct request *rq)
 		__blk_mq_free_request(rq);
 }
 
+bool special_expired(struct request* req) {
+  ktime_t now = ktime_get_raw();
+  if (now > req->special_deadline) {
+    return true;
+  } else {
+    return false;
+  }
+}
+
 static bool blk_mq_check_expired(struct request *rq, void *priv)
 {
 	unsigned long *next = priv;
@@ -1484,9 +1494,15 @@ static bool blk_mq_check_expired(struct request *rq, void *priv)
 	 * from blk_mq_check_expired().
 	 */
   if (rq->special_cmd) {
+    printk("%s %d\n", __func__, __LINE__);
     if (atomic_read(&rq->special_timeout) == 1) {
-      blk_mq_free_request(rq);
+      atomic_set(&rq->special_timeout_catch, 1);
       blk_mq_rq_timed_out(rq);
+    } else {
+      if (special_expired(rq)) {
+        atomic_set(&rq->special_timeout_catch, 1);
+        blk_mq_rq_timed_out(rq);
+      }
     }
     return true;
   }

@@ -169,9 +169,13 @@ int nvme_submit_user_cmd(struct request_queue *q,
 						meta_len, ret);
 	if (bio)
 		blk_rq_unmap_user(bio);
-  if (req->special_cmd && special_expired(req)) {
+  if (ret == 0 && req->special_cmd && special_expired(req)) {
     ret = -4;
+    printk("%s %d\n", __func__, __LINE__);
     atomic_set(&req->special_timeout, 1);
+    while(atomic_read(&req->special_timeout_catch) == 0) {
+    }
+    blk_mq_free_request(req);
   } else {
     blk_mq_free_request(req);
   }
