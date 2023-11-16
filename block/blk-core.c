@@ -229,6 +229,7 @@ const char *blk_status_to_str(blk_status_t status)
 void blk_sync_queue(struct request_queue *q)
 {
 	del_timer_sync(&q->timeout);
+  printk("%s %d\n", __func__, __LINE__);
 	cancel_work_sync(&q->timeout_work);
 }
 EXPORT_SYMBOL(blk_sync_queue);
@@ -367,6 +368,9 @@ static void blk_rq_timed_out_timer(struct timer_list *t)
 {
 	struct request_queue *q = from_timer(q, t, timeout);
 
+  if (q->special_queue) {
+    printk("%s %d jiffies %lu (%p)\n", __func__, __LINE__, jiffies, q);
+  }
 	kblockd_schedule_work(&q->timeout_work);
 }
 
@@ -416,6 +420,7 @@ struct request_queue *blk_alloc_queue(int node_id, bool alloc_srcu)
 
 	init_waitqueue_head(&q->mq_freeze_wq);
 	mutex_init(&q->mq_freeze_lock);
+  q->special_queue = false;
 
 	/*
 	 * Init percpu_ref in atomic mode so that it's faster to shutdown.

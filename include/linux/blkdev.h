@@ -530,6 +530,7 @@ struct request_queue {
 	struct mutex		mq_freeze_lock;
 
 	int			quiesce_depth;
+  bool special_queue;
 
 	struct blk_mq_tag_set	*tag_set;
 	struct list_head	tag_set_list;

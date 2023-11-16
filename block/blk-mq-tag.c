@@ -167,6 +167,10 @@ unsigned int blk_mq_get_tag(struct blk_mq_alloc_data *data)
 		 * as running the queue may also have found completions.
 		 */
 		tag = __blk_mq_get_tag(data, bt);
+    if (data->q->special_queue) {
+      printk("%s %d tag %d (%p)\n", __func__, __LINE__, tag, data->q);
+    }
+
 		if (tag != BLK_MQ_NO_TAG)
 			break;
 
@@ -218,6 +222,10 @@ found_tag:
 void blk_mq_put_tag(struct blk_mq_tags *tags, struct blk_mq_ctx *ctx,
 		    unsigned int tag)
 {
+  if (ctx->queue->special_queue) {
+   // printk("%s %d tag %d (%p)\n", __func__, __LINE__, tag, ctx->queue);
+  }
+
 	if (!blk_mq_tag_is_reserved(tags, tag)) {
 		const int real_tag = tag - tags->nr_reserved_tags;
 
@@ -241,6 +249,14 @@ struct bt_iter_data {
 	void *data;
 	bool reserved;
 };
+struct bt_iter_data2 {
+	struct blk_mq_hw_ctx *hctx;
+	struct request_queue *q;
+	busy_tag_iter_fn2 *fn;
+	void *data;
+	bool reserved;
+  s64* times;
+};
 
 static struct request *blk_mq_find_and_get_req(struct blk_mq_tags *tags,
 		unsigned int bitnr)
@@ -254,6 +270,36 @@ static struct request *blk_mq_find_and_get_req(struct blk_mq_tags *tags,
 		rq = NULL;
 	spin_unlock_irqrestore(&tags->lock, flags);
 	return rq;
+}
+static bool bt_iter2(struct sbitmap *bitmap, unsigned int bitnr, void *data)
+{
+	struct bt_iter_data2 *iter_data = data;
+	struct blk_mq_hw_ctx *hctx = iter_data->hctx;
+	struct request_queue *q = iter_data->q;
+	struct blk_mq_tag_set *set = q->tag_set;
+	struct blk_mq_tags *tags;
+	struct request *rq;
+	bool ret = true;
+
+	if (blk_mq_is_shared_tags(set->flags))
+		tags = set->shared_tags;
+	else
+		tags = hctx->tags;
+
+	if (!iter_data->reserved)
+		bitnr += tags->nr_reserved_tags;
+	/*
+	 * We can hit rq == NULL here, because the tagging functions
+	 * test and set the bit before assigning ->rqs[].
+	 */
+	rq = blk_mq_find_and_get_req(tags, bitnr);
+	if (!rq)
+		return true;
+
+	if (rq->q == q && (!hctx || rq->mq_hctx == hctx))
+		ret = iter_data->fn(rq, iter_data->data, iter_data->times);
+	blk_mq_put_rq_ref(rq);
+	return ret;
 }
 
 static bool bt_iter(struct sbitmap *bitmap, unsigned int bitnr, void *data)
@@ -315,6 +361,21 @@ static void bt_for_each(struct blk_mq_hw_ctx *hctx, struct request_queue *q,
 	};
 
 	sbitmap_for_each_set(&bt->sb, bt_iter, &iter_data);
+}
+static void bt_for_each2(struct blk_mq_hw_ctx *hctx, struct request_queue *q,
+			struct sbitmap_queue *bt, busy_tag_iter_fn2 *fn,
+			void *data, bool reserved, s64* times)
+{
+	struct bt_iter_data2 iter_data = {
+		.hctx = hctx,
+		.fn = fn,
+		.data = data,
+		.reserved = reserved,
+		.q = q,
+    .times = times,
+	};
+
+	sbitmap_for_each_set(&bt->sb, bt_iter2, &iter_data);
 }
 
 struct bt_tags_iter_data {
@@ -527,6 +588,51 @@ void blk_mq_queue_tag_busy_iter(struct request_queue *q, busy_tag_iter_fn *fn,
 		}
 	}
 	blk_queue_exit(q);
+}
+void blk_mq_queue_tag_busy_iter2(struct request_queue *q, busy_tag_iter_fn2 *fn,
+		void *priv, s64* times)
+{
+	/*
+	 * __blk_mq_update_nr_hw_queues() updates nr_hw_queues and hctx_table
+	 * while the queue is frozen. So we can use q_usage_counter to avoid
+	 * racing with it.
+	 */
+	if (!percpu_ref_tryget(&q->q_usage_counter))
+		return;
+
+	if (blk_mq_is_shared_tags(q->tag_set->flags)) {
+		struct blk_mq_tags *tags = q->tag_set->shared_tags;
+		struct sbitmap_queue *bresv = &tags->breserved_tags;
+		struct sbitmap_queue *btags = &tags->bitmap_tags;
+
+		if (tags->nr_reserved_tags)
+			bt_for_each2(NULL, q, bresv, fn, priv, true, times);
+		bt_for_each2(NULL, q, btags, fn, priv, false, times);
+	} else {
+		struct blk_mq_hw_ctx *hctx;
+		unsigned long i;
+
+		queue_for_each_hw_ctx(q, hctx, i) {
+			struct blk_mq_tags *tags = hctx->tags;
+			struct sbitmap_queue *bresv = &tags->breserved_tags;
+			struct sbitmap_queue *btags = &tags->bitmap_tags;
+      if (q->special_queue) {
+        printk("%s %d %d %d (%p)\n", __func__, __LINE__, sbitmap_weight(&bresv->sb), sbitmap_weight(&btags->sb), q);
+      }
+
+			/*
+			 * If no software queues are currently mapped to this
+			 * hardware queue, there's nothing to check
+			 */
+			if (!blk_mq_hw_queue_mapped(hctx))
+				continue;
+
+			if (tags->nr_reserved_tags)
+				bt_for_each2(hctx, q, bresv, fn, priv, true, times);
+			bt_for_each2(hctx, q, btags, fn, priv, false, times);
+		}
+	}
+ 	blk_queue_exit(q);
 }
 
 static int bt_alloc(struct sbitmap_queue *bt, unsigned int depth,

@@ -382,6 +382,7 @@ static struct request *blk_mq_rq_ctx_init(struct blk_mq_alloc_data *data,
 #endif
 	rq->end_io = NULL;
 	rq->end_io_data = NULL;
+  rq->visit_count = 0;
 
 	blk_crypto_rq_set_defaults(rq);
 	INIT_LIST_HEAD(&rq->queuelist);
@@ -401,7 +402,14 @@ static struct request *blk_mq_rq_ctx_init(struct blk_mq_alloc_data *data,
 			rq->rq_flags |= RQF_ELVPRIV;
 		}
 	}
-
+  rq->jif[0] = jiffies;
+  rq->jif[1] = 0;
+  rq->jif[2] = 0;
+  rq->jif[3] = 0;
+  rq->jif[4] = 0;
+  rq->jif[5] = 0;
+  rq->jif[6] = 0;
+  rq->jif[7] = 0;
 	return rq;
 }
 
@@ -1445,14 +1453,26 @@ static bool blk_mq_req_expired(struct request *rq, unsigned long *next)
 {
 	unsigned long deadline;
 
-	if (blk_mq_rq_state(rq) != MQ_RQ_IN_FLIGHT)
+	if (blk_mq_rq_state(rq) != MQ_RQ_IN_FLIGHT) {
+    if (rq->q->special_queue) {
+      printk("%s %d\n", __func__, __LINE__);
+    }
 		return false;
-	if (rq->rq_flags & RQF_TIMED_OUT)
+  }
+	if (rq->rq_flags & RQF_TIMED_OUT) {
+    if (rq->q->special_queue) {
+      printk("%s %d\n", __func__, __LINE__);
+    }
 		return false;
+  }
 
 	deadline = READ_ONCE(rq->deadline);
-	if (time_after_eq(jiffies, deadline))
+	if (time_after_eq(jiffies, deadline)) {
+    if (rq->q->special_queue) {
+      printk("%s %d\n", __func__, __LINE__);
+    }
 		return true;
+  }
 
 	if (*next == 0)
 		*next = deadline;
@@ -1467,6 +1487,27 @@ void blk_mq_put_rq_ref(struct request *rq)
 		rq->end_io(rq, 0);
 	else if (req_ref_put_and_test(rq))
 		__blk_mq_free_request(rq);
+}
+
+static bool blk_mq_check_expired2(struct request *rq, void *priv, void* times_)
+{
+	unsigned long *next = priv;
+  s64* times = times_;
+
+	/*
+	 * blk_mq_queue_tag_busy_iter() has locked the request, so it cannot
+	 * be reallocated underneath the timeout handler's processing, then
+	 * the expire check is reliable. If the request is not expired, then
+	 * it was completed and reallocated as a new request after returning
+	 * from blk_mq_check_expired().
+	 */
+  rq->visit_count++;
+	if (blk_mq_req_expired(rq, next)) {
+    times[1] = ktime_get_raw();
+    printk("%s %d %lu %lu %lu %lu %lu %lu %lu %lu (%p)\n", __func__, __LINE__, rq->deadline - rq->timeout, rq->deadline, jiffies, rq->jif[0], rq->jif[1], rq->jif[2], rq->jif[3], rq->jif[4], rq->q);
+		blk_mq_rq_timed_out(rq);
+  }
+	return true;
 }
 
 static bool blk_mq_check_expired(struct request *rq, void *priv)
@@ -1492,6 +1533,7 @@ static void blk_mq_timeout_work(struct work_struct *work)
 	unsigned long next = 0;
 	struct blk_mq_hw_ctx *hctx;
 	unsigned long i;
+  s64 times[15] = {0,};
 
 	/* A deadlock might occur if a request is stuck requiring a
 	 * timeout at the same time a queue freeze is waiting
@@ -1508,10 +1550,16 @@ static void blk_mq_timeout_work(struct work_struct *work)
 	 */
 	if (!percpu_ref_tryget(&q->q_usage_counter))
 		return;
-
-	blk_mq_queue_tag_busy_iter(q, blk_mq_check_expired, &next);
+  times[0] = ktime_get_raw();
+  if (q->special_queue) {
+    printk("%s %d %lu\n", __func__, __LINE__, jiffies);
+  }
+	blk_mq_queue_tag_busy_iter2(q, blk_mq_check_expired2, &next, times);
 
 	if (next != 0) {
+    if (q->special_queue) {
+      printk("%s %d from %lu to %lu (%p, %p)\n", __func__, __LINE__, q->timeout.expires, next, q, current);
+    }
 		mod_timer(&q->timeout, next);
 	} else {
 		/*
@@ -1622,6 +1670,9 @@ static bool __blk_mq_alloc_driver_tag(struct request *rq)
 	tag = __sbitmap_queue_get(bt);
 	if (tag == BLK_MQ_NO_TAG)
 		return false;
+  if (rq->q->special_queue) {
+    printk("%s %d (%p)\n", __func__, __LINE__, rq->q);
+  }
 
 	rq->tag = tag + tag_offset;
 	return true;
@@ -2813,6 +2864,9 @@ void blk_mq_submit_bio(struct bio *bio)
 		if (unlikely(!rq))
 			return;
 	}
+  if (q->special_queue) {
+    rq->jif[1] = jiffies;
+  }
 
 	trace_block_getrq(bio);
 

@@ -142,6 +142,9 @@ struct request {
 	atomic_t ref;
 
 	unsigned long deadline;
+  unsigned long visit_count;
+  s64 timestamp[8];
+  unsigned long jif[8];
 
 	/*
 	 * The hash is used inside the scheduler, and killed once the
@@ -523,6 +526,7 @@ struct blk_mq_queue_data {
 };
 
 typedef bool (busy_tag_iter_fn)(struct request *, void *);
+typedef bool (busy_tag_iter_fn2)(struct request *, void *, void* );
 
 /**
  * struct blk_mq_ops - Callback functions that implements block driver

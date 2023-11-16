@@ -83,6 +83,9 @@ void blk_abort_request(struct request *req)
 	 * immediately and that scan sees the new timeout value.
 	 * No need for fancy synchronizations.
 	 */
+  if (req->q->special_queue) {
+    //printk("%s %d\n", __func__, __LINE__);
+  }
 	WRITE_ONCE(req->deadline, jiffies);
 	kblockd_schedule_work(&req->q->timeout_work);
 }
@@ -129,6 +132,7 @@ void blk_add_timer(struct request *req)
 {
 	struct request_queue *q = req->q;
 	unsigned long expiry;
+  int pend;
 
 	/*
 	 * Some LLDs, like scsi, peek at the timeout to prevent a
@@ -140,6 +144,9 @@ void blk_add_timer(struct request *req)
 	req->rq_flags &= ~RQF_TIMED_OUT;
 
 	expiry = jiffies + req->timeout;
+  if (q->special_queue) {
+    req->timestamp[0] = ktime_get_raw();
+  }
 	WRITE_ONCE(req->deadline, expiry);
 
 	/*
@@ -148,8 +155,15 @@ void blk_add_timer(struct request *req)
 	 * second.
 	 */
 	expiry = blk_rq_timeout(blk_round_jiffies(expiry));
+  
+  pend = timer_pending(&q->timeout);
+  if (q->special_queue) {
+    req->jif[3] = q->timeout.expires;
+    req->jif[4] = pend;
+    //printk("%s %d (%p)\n", __func__, __LINE__, q);
+  }
 
-	if (!timer_pending(&q->timeout) ||
+	if (!pend ||
 	    time_before(expiry, q->timeout.expires)) {
 		unsigned long diff = q->timeout.expires - expiry;
 
@@ -160,8 +174,12 @@ void blk_add_timer(struct request *req)
 		 * modifying the timer because expires for value X
 		 * will be X + something.
 		 */
-		if (!timer_pending(&q->timeout) || (diff >= HZ / 2))
+		if (!timer_pending(&q->timeout) || (diff >= HZ / 2)) {
+      if (q->special_queue) {
+        printk("%s %d from %lu to %lu timneout %u cur %lu pend %d (%p, %p)\n", __func__, __LINE__, q->timeout.expires, expiry, req->timeout, jiffies, pend, q, current);
+      }
 			mod_timer(&q->timeout, expiry);
+    }
 	}
 
 }

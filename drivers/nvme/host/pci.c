@@ -420,6 +420,7 @@ static int nvme_init_hctx(struct blk_mq_hw_ctx *hctx, void *data,
 	struct nvme_queue *nvmeq = &dev->queues[hctx_idx + 1];
 
 	WARN_ON(dev->tagset.tags[hctx_idx] != hctx->tags);
+  hctx->queue->special_queue = true;
 	hctx->driver_data = nvmeq;
 	return 0;
 }
@@ -965,6 +966,9 @@ static void nvme_submit_cmds(struct nvme_queue *nvmeq, struct request **rqlist)
 	while (!rq_list_empty(*rqlist)) {
 		struct request *req = rq_list_pop(rqlist);
 		struct nvme_iod *iod = blk_mq_rq_to_pdu(req);
+    if (req->q->special_queue) {
+      req->jif[2] = jiffies;
+    }
 
 		nvme_sq_copy_cmd(nvmeq, &iod->cmd);
 	}
@@ -1784,6 +1788,7 @@ static int nvme_pci_alloc_admin_tag_set(struct nvme_dev *dev)
 		dev->ctrl.admin_q = NULL;
 		return -ENODEV;
 	}
+  dev->ctrl.admin_q->special_queue = true;
 	return 0;
 }
 
