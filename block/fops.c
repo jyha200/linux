@@ -515,6 +515,10 @@ static ssize_t blkdev_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	struct blk_plug plug;
 	size_t shorted = 0;
 	ssize_t ret;
+  
+  if (bdev->bd_should_fail) {
+    return -EIO;
+  }
 
 	if (bdev_read_only(bdev))
 		return -EPERM;

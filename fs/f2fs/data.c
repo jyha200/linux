@@ -284,6 +284,8 @@ static void f2fs_read_end_io(struct bio *bio)
 	}
 
 	if (bio->bi_status) {
+  //  printk("%s %d failure detected\n", __func__, __LINE__);
+    sbi->sb->s_failed = true;
 		f2fs_finish_read_bio(bio, intask);
 		return;
 	}
@@ -347,7 +349,8 @@ static void f2fs_write_end_io(struct bio *bio)
 #endif
 
 		if (unlikely(bio->bi_status)) {
-			mapping_set_error(page->mapping, -EIO);
+//      printk("%s %d failure detected\n", __func__, __LINE__);
+      mapping_set_error(page->mapping, -EIO);
       sbi->sb->s_failed = true;
 			if (type == F2FS_WB_CP_DATA)
 				f2fs_stop_checkpoint(sbi, true);

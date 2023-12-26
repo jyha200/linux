@@ -2908,6 +2908,9 @@ static void raid5_end_write_request(struct bio *bi)
 			break;
 		}
 	}
+  if (bi->bi_status) {
+//    printk("%s %d error occurs\n", __func__, __LINE__);
+  }
 	pr_debug("end_write_request %llu/%d, count %d, error: %d.\n",
 		(unsigned long long)sh->sector, i, atomic_read(&sh->count),
 		bi->bi_status);
@@ -6107,8 +6110,17 @@ static bool raid5_make_request(struct mddev *mddev, struct bio * bi)
 		ctx.do_flush = bi->bi_opf & REQ_PREFLUSH;
 	}
 
+  if (mddev->gendisk->part0->bd_should_fail) {
+		bi->bi_status = BLK_STS_IOERR;
+    //printk("%s %d return error\n", __func__, __LINE__);
+		bio_endio(bi);
+    return true;
+  }
+
+
 	if (!md_write_start(mddev, bi))
 		return false;
+
 	/*
 	 * If array is degraded, better not do chunk aligned read because
 	 * later we might have to read it again in order to reconstruct

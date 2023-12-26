@@ -43,6 +43,7 @@ struct block_device {
 	struct disk_stats __percpu *bd_stats;
 	unsigned long		bd_stamp;
 	bool			bd_read_only;	/* read-only policy */
+	bool			bd_should_fail;
 	dev_t			bd_dev;
 	atomic_t		bd_openers;
 	struct inode *		bd_inode;	/* will die */
