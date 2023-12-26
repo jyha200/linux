@@ -20,6 +20,7 @@
 #include <linux/compat.h>
 #include <linux/mount.h>
 #include <linux/fs.h>
+#include <linux/blk_types.h>
 #include "internal.h"
 
 #include <linux/uaccess.h>
@@ -468,7 +469,15 @@ ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
 		return -EINVAL;
 	if (unlikely(!access_ok(buf, count)))
 		return -EFAULT;
-
+	if (file->f_mapping) {
+		if (file->f_mapping->host) {
+			struct inode *inode = file->f_mapping->host;
+			struct super_block *sb = inode->i_sb;
+			if (sb->s_failed) {
+				return -EIO;
+			}
+		}
+	}
 	ret = rw_verify_area(READ, file, pos, count);
 	if (ret)
 		return ret;
@@ -590,10 +599,14 @@ ssize_t vfs_write(struct file *file, const char __user *buf, size_t count, loff_
     ret = 0;
     if (file->f_mapping) {
       if (file->f_mapping->host) {
-	      struct inode *inode = file->f_mapping->host;
+        struct inode *inode = file->f_mapping->host;
         struct super_block *sb = inode->i_sb;
         if (sb->s_failed) {
           ret = -EIO;
+        } else if (sb->s_bdev) {
+          if (sb->s_bdev->bd_should_fail) {
+            ret = -EIO;
+          }
         }
       }
     }

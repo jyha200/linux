@@ -433,6 +433,8 @@ check_suspended:
 	rcu_read_unlock();
 
 	if (!mddev->pers->make_request(mddev, bio)) {
+		DEFINE_WAIT(__wait);
+    //printk("%s %d\n", __func__, __LINE__);
 		atomic_dec(&mddev->active_io);
 		wake_up(&mddev->sb_wait);
 		goto check_suspended;
@@ -7979,7 +7981,9 @@ void md_error(struct mddev *mddev, struct md_rdev *rdev)
 	if (!mddev->pers || !mddev->pers->error_handler) {
     // For RAID0
     if (mddev->gendisk) {
+     // printk("raid detect failure\n");
       mddev->gendisk->part0->bd_read_only = true;
+      mddev->gendisk->part0->bd_should_fail = true;
     } else {
       printk("raid failed without gendisk");
     }
@@ -7993,7 +7997,9 @@ void md_error(struct mddev *mddev, struct md_rdev *rdev)
 	md_wakeup_thread(mddev->thread);
 	if (test_bit(MD_BROKEN, &mddev->flags)) {
     if (mddev->gendisk) {
+    //  printk("raid detect failure\n");
       mddev->gendisk->part0->bd_read_only = true;
+      mddev->gendisk->part0->bd_should_fail = true;
     } else {
       printk("raid failed without gendisk");
     }
