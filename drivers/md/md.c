@@ -7968,8 +7968,8 @@ void md_error(struct mddev *mddev, struct md_rdev *rdev)
     // For RAID0
     if (mddev->gendisk) {
      // printk("raid detect failure\n");
-      mddev->gendisk->part0->bd_read_only = true;
-      mddev->gendisk->part0->bd_should_fail = true;
+     // mddev->gendisk->part0->bd_read_only = true;
+//      mddev->gendisk->part0->bd_should_fail = true;
     } else {
       printk("raid failed without gendisk");
     }
@@ -7987,8 +7987,8 @@ void md_error(struct mddev *mddev, struct md_rdev *rdev)
 	} else {
     if (mddev->gendisk) {
     //  printk("raid detect failure\n");
-      mddev->gendisk->part0->bd_read_only = true;
-      mddev->gendisk->part0->bd_should_fail = true;
+  //    mddev->gendisk->part0->bd_read_only = true;
+//      mddev->gendisk->part0->bd_should_fail = true;
     } else {
       printk("raid failed without gendisk");
     }
