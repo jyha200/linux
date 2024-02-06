@@ -2219,23 +2219,25 @@ void f3fs_invalidate_blocks(struct f3fs_sb_info *sbi, block_t addr)
 	f3fs_invalidate_compress_page(sbi, addr);
 
 	/* add it into sit main buffer */
-	down_write(&sit_i->sentry_only_lock);
-//	down_write(&sit_i->mtime_lock);
-//	down_write(&sit_i->dirty_sentry_lock);
-	down_write(&sit_i->blk_info_lock);
-  f3fs_bug_on(sbi, true);
+//	down_write(&sit_i->sentry_only_lock);
+//	down_write(&sit_i->blk_info_lock);
   {
     unsigned int valid_blocks;
     enum dirty_type seg_dirty_type;
     update_sit_entry2(sbi, addr, -1, &valid_blocks, &seg_dirty_type, 0);
 
     /* add it into dirty seglist */
-    locate_dirty_segment2(sbi, segno, seg_dirty_type, valid_blocks);
+    if (segno != NULL_SEGNO && !IS_CURSEG(sbi, segno)) {
+      struct dirty_seglist_info *dirty_i = DIRTY_I(sbi);
+      if (!test_bit(segno, dirty_i->dirty_segmap[PRE]) || valid_blocks == 0) {
+        locate_dirty_segment2(sbi, segno, valid_blocks, seg_dirty_type);
+      }
+    }
+
+//    locate_dirty_segment2(sbi, segno, seg_dirty_type, valid_blocks);
   }
-	up_write(&sit_i->blk_info_lock);
-//	up_write(&sit_i->dirty_sentry_lock);
-//	up_write(&sit_i->mtime_lock);
-	up_write(&sit_i->sentry_only_lock);
+//	up_write(&sit_i->blk_info_lock);
+//	up_write(&sit_i->sentry_only_lock);
 }
 
 bool f3fs_is_checkpointed_data(struct f3fs_sb_info *sbi, block_t blkaddr)
