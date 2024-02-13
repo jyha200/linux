@@ -724,23 +724,30 @@ static bool __has_merged_page(struct bio *bio, struct inode *inode,
 	bio_for_each_segment_all(bvec, bio, iter_all) {
 		struct page *target = bvec->bv_page;
 
-		if (fscrypt_is_bounce_page(target)) {
-			target = fscrypt_pagecache_page(target);
-			if (IS_ERR(target))
-				continue;
-		}
-		if (f3fs_is_compressed_page(target)) {
-			target = f3fs_compress_control_page(target);
-			if (IS_ERR(target))
-				continue;
-		}
+    if (target->mapping) {
+      if (fscrypt_is_bounce_page(target)) {
+        target = fscrypt_pagecache_page(target);
+        if (IS_ERR(target))
+          continue;
+      }
+      if (f3fs_is_compressed_page(target)) {
+        target = f3fs_compress_control_page(target);
+        if (IS_ERR(target))
+          continue;
+      }
 
-		if (inode && inode == target->mapping->host)
-			return true;
-		if (page && page == target)
-			return true;
-		if (ino && ino == ino_of_node(target))
-			return true;
+      if (inode && inode == target->mapping->host)
+        return true;
+      if (page && page == target)
+        return true;
+      if (ino && ino == ino_of_node(target))
+        return true;
+    } else {
+      if (page && page == target)
+        return true;
+      if (ino && ino == ino_of_node(target))
+        return true;
+    }
 	}
 
 	return false;
