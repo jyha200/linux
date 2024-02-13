@@ -2153,17 +2153,13 @@ retry:
 		atomic_inc(&gc_control->freed);
   //  printk("%s sec_freed %d\n", current->comm, atomic_read(&gc_control->freed));
   } else {
-/*    if (skipped_seg_count < NUM_SKIPPED_SEG) {
-      skipped_segs[skipped_seg_count] = segno;
-      skipped_seg_count++;
-    } else*/
- {
-    struct dirty_seglist_info *dirty_i = DIRTY_I(sbi);
+    if (get_valid_blocks(sbi, segno, false)) {
+      struct dirty_seglist_info *dirty_i = DIRTY_I(sbi);
 
-    printk("warning!! skipped buffer explosed.  not freed and clear %d", segno);
-    mutex_lock(&dirty_i->seglist_lock);
-    clear_bit(GET_SEC_FROM_SEG(sbi, segno), DIRTY_I(sbi)->victim_secmap);
-    mutex_unlock(&dirty_i->seglist_lock);
+      printk("warning!! skipped buffer explosed.  not freed and clear %d", segno);
+      mutex_lock(&dirty_i->seglist_lock);
+      clear_bit(GET_SEC_FROM_SEG(sbi, segno), DIRTY_I(sbi)->victim_secmap);
+      mutex_unlock(&dirty_i->seglist_lock);
     }
   }
 
