@@ -1898,6 +1898,7 @@ static int __get_victim(struct f3fs_sb_info *sbi, unsigned int *victim,
 
       for (int i = 0 ; i < VICTIM_COUNT ; i++) {
         unsigned int candidate = multiple_victim[i];
+        unsigned long *dirty_bitmap = dirty_i->dirty_segmap[DIRTY];
         if (candidate == NULL_SEGNO) {
           continue;
         }
@@ -1911,6 +1912,12 @@ static int __get_victim(struct f3fs_sb_info *sbi, unsigned int *victim,
         if (sec_usage_check(sbi, GET_SEC_FROM_SEG(sbi, candidate))) {
           continue;
         }
+
+        if (!test_bit(candidate, dirty_bitmap)) {
+          clear_bit(candidate, dirty_i->victim_secmap);
+          continue;
+        }
+
         *victim = candidate;
         break;
       }
