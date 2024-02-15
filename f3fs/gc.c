@@ -2163,7 +2163,7 @@ retry:
     if (get_valid_blocks(sbi, segno, false)) {
       struct dirty_seglist_info *dirty_i = DIRTY_I(sbi);
 
-      printk("warning!! skipped buffer explosed.  not freed and clear %d", segno);
+//      printk("warning!! skipped buffer explosed.  not freed and clear %d", segno);
       mutex_lock(&dirty_i->seglist_lock);
       clear_bit(GET_SEC_FROM_SEG(sbi, segno), DIRTY_I(sbi)->victim_secmap);
       mutex_unlock(&dirty_i->seglist_lock);
