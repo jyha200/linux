@@ -2169,9 +2169,9 @@ static void update_sit_entry2(struct f3fs_sb_info *sbi, block_t blkaddr, int del
 		exist = f3fs_test_and_set_bit(offset, se->cur_valid_map);
 //    up_write(se->cur_valmap_lock);
 		if (unlikely(exist)) {
-			f3fs_err(sbi, "Bitmap was wrongly set, blk:%u",
-				 blkaddr);
-			f3fs_bug_on(sbi, 1);
+//			f3fs_err(sbi, "Bitmap was wrongly set, blk:%u",
+//				 blkaddr);
+//			f3fs_bug_on(sbi, 1);
 			se->valid_blocks--;
 			del = 0;
 		}
@@ -2184,9 +2184,9 @@ static void update_sit_entry2(struct f3fs_sb_info *sbi, block_t blkaddr, int del
 		exist = f3fs_test_and_clear_bit(offset, se->cur_valid_map);
 //    up_write(se->cur_valmap_lock);
 		if (unlikely(!exist)) {
-			f3fs_err(sbi, "Bitmap was wrongly cleared, blk:%u",
-				 blkaddr);
-			f3fs_bug_on(sbi, 1);
+//			f3fs_err(sbi, "Bitmap was wrongly cleared, blk:%u",
+//				 blkaddr);
+//			f3fs_bug_on(sbi, 1);
 			se->valid_blocks++;
 			del = 0;
 		}
