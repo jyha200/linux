@@ -1,3 +1,6 @@
 [submodule "f3fs/f2fs-tools"]
 	path = f3fs/f2fs-tools
 	url = https://github.com/jyha200/f2fs-tools
+[submodule "f3fs/skiplist"]
+	path = f3fs/skiplist
+	url = https://github.com/jyha200/skiplist.git
