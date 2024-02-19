@@ -1784,7 +1784,7 @@ next_step:
 
 			if (f3fs_post_read_required(inode)) {
 				int err = ra_data_block(inode, start_bidx);
-				f3fs_up_write_range3(range_w);
+				f3fs_up_write_range3(range_w, start_bidx, 1);
 
 				if (err) {
 					iput(inode);
@@ -1808,7 +1808,7 @@ next_step:
         }
         f3fs_put_page(data_page, 0);
       }
-			f3fs_up_write_range3(range_w);
+			f3fs_up_write_range3(range_w, start_bidx, 1);
 			add_gc_inode(gc_list, inode);
 			continue;
 		}
@@ -1834,7 +1834,7 @@ next_step:
         range_w = f3fs_down_write_range_trylock3(
 						&fi->i_gc_rwsem[WRITE], start_bidx, 1);
         if (!range_w) {
-          f3fs_up_write_range3(range_r);
+          f3fs_up_write_range3(range_r, start_bidx, 1);
         //count[7]++;
 					sbi->skipped_gc_rwsem++;
 					continue;
@@ -1858,8 +1858,8 @@ next_step:
 				submitted++;
 
 			if (locked) {
-				f3fs_up_write_range3(range_w);
-				f3fs_up_write_range3(range_r);
+				f3fs_up_write_range3(range_w, start_bidx, 1);
+				f3fs_up_write_range3(range_r, start_bidx, 1);
 			}
 
 			stat_inc_data_blk_count(sbi, 1, gc_type);
