@@ -192,4 +192,4 @@ static inline bool has_enough_invalid_blocks(struct f3fs_sb_info *sbi)
 			limit_free_user_blocks(invalid_user_blocks));
 }
 
-int do_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control, char worker_idx, unsigned int* multiple_victim);
+int do_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control, int worker_idx, unsigned int* multiple_victim);

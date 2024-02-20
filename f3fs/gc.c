@@ -284,7 +284,7 @@ static int select_gc_type(struct f3fs_sb_info *sbi, int gc_type)
 }
 
 static void select_policy(struct f3fs_sb_info *sbi, int gc_type,
-			int type, struct victim_sel_policy *p)
+			int type, struct victim_sel_policy *p, int temp)
 {
 	struct dirty_seglist_info *dirty_i = DIRTY_I(sbi);
 
@@ -328,7 +328,7 @@ static void select_policy(struct f3fs_sb_info *sbi, int gc_type,
 		(type == CURSEG_HOT_DATA || IS_NODESEG(type)))
 		p->offset = 0;
 	else
-		p->offset = SIT_I(sbi)->last_victim[p->gc_mode];
+		p->offset = SIT_I(sbi)->last_victim[temp][p->gc_mode];
 }
 
 static unsigned int get_max_cost(struct f3fs_sb_info *sbi,
@@ -775,7 +775,7 @@ static int get_victim_by_default(struct f3fs_sb_info *sbi,
 	p.age_threshold = sbi->am.age_threshold;
 
 retry:
-	select_policy(sbi, gc_type, type, &p);
+	select_policy(sbi, gc_type, type, &p, 0);
 	p.min_segno = NULL_SEGNO;
 	p.oldest_age = 0;
 	p.min_cost = get_max_cost(sbi, &p);
@@ -819,7 +819,7 @@ retry:
 		}
 	}
 
-	last_victim = sm->last_victim[p.gc_mode];
+	last_victim = sm->last_victim[0][p.gc_mode];
 /*	if (p.alloc_mode == LFS && gc_type == FG_GC) {
 		p.min_segno = check_bg_victims(sbi);
 		if (p.min_segno != NULL_SEGNO)
@@ -836,10 +836,10 @@ retry:
 				p.offset / p.ofs_unit);
 		segno = unit_no * p.ofs_unit;
 		if (segno >= last_segment) {
-			if (sm->last_victim[p.gc_mode]) {
+			if (sm->last_victim[0][p.gc_mode]) {
 				last_segment =
-					sm->last_victim[p.gc_mode];
-				sm->last_victim[p.gc_mode] = 0;
+					sm->last_victim[0][p.gc_mode];
+				sm->last_victim[0][p.gc_mode] = 0;
 				p.offset = 0;
 				continue;
 			}
@@ -904,12 +904,12 @@ retry:
 		}
 next:
 		if (nsearched >= p.max_search) {
-			if (!sm->last_victim[p.gc_mode] && segno <= last_victim)
-				sm->last_victim[p.gc_mode] =
+			if (!sm->last_victim[0][p.gc_mode] && segno <= last_victim)
+				sm->last_victim[0][p.gc_mode] =
 					last_victim + p.ofs_unit;
 			else
-				sm->last_victim[p.gc_mode] = segno + p.ofs_unit;
-			sm->last_victim[p.gc_mode] %=
+				sm->last_victim[0][p.gc_mode] = segno + p.ofs_unit;
+			sm->last_victim[0][p.gc_mode] %=
 				(MAIN_SECS(sbi) * sbi->segs_per_sec);
 			break;
 		}
@@ -966,7 +966,7 @@ static unsigned int get_local_max(unsigned int* selected, int count, int* max_id
 
 static int get_multiple_victim_by_default(struct f3fs_sb_info *sbi,
 			unsigned int *result, int gc_type, int type,
-			char alloc_mode, unsigned long long age)
+			char alloc_mode, unsigned long long age, int temp)
 {
   // last_victim
 	struct dirty_seglist_info *dirty_i = DIRTY_I(sbi);
@@ -989,7 +989,7 @@ static int get_multiple_victim_by_default(struct f3fs_sb_info *sbi,
 	p.age = age;
 	p.age_threshold = sbi->am.age_threshold;
 
-	select_policy(sbi, gc_type, type, &p);
+	select_policy(sbi, gc_type, type, &p, temp);
 	p.min_segno = NULL_SEGNO;
 	p.oldest_age = 0;
 	p.min_cost = get_max_cost(sbi, &p);
@@ -1002,7 +1002,7 @@ static int get_multiple_victim_by_default(struct f3fs_sb_info *sbi,
 	if (p.max_search == 0)
 		goto out;
 
-	last_victim = sm->last_victim[p.gc_mode];
+	last_victim = sm->last_victim[temp][p.gc_mode];
 
 	while (1) {
 		unsigned long cost, *dirty_bitmap;
@@ -1014,10 +1014,10 @@ static int get_multiple_victim_by_default(struct f3fs_sb_info *sbi,
 				p.offset / p.ofs_unit);
 		segno = unit_no * p.ofs_unit;
 		if (segno >= last_segment) {
-			if (sm->last_victim[p.gc_mode]) {
+			if (sm->last_victim[temp][p.gc_mode]) {
 				last_segment =
-					sm->last_victim[p.gc_mode];
-				sm->last_victim[p.gc_mode] = 0;
+					sm->last_victim[temp][p.gc_mode];
+				sm->last_victim[temp][p.gc_mode] = 0;
 				p.offset = 0;
 				continue;
 			}
@@ -1058,12 +1058,12 @@ static int get_multiple_victim_by_default(struct f3fs_sb_info *sbi,
 
 next:
 		if (nsearched >= p.max_search) {
-			if (!sm->last_victim[p.gc_mode] && segno <= last_victim)
-				sm->last_victim[p.gc_mode] =
+			if (!sm->last_victim[temp][p.gc_mode] && segno <= last_victim)
+				sm->last_victim[temp][p.gc_mode] =
 					last_victim + p.ofs_unit;
 			else
-				sm->last_victim[p.gc_mode] = segno + p.ofs_unit;
-			sm->last_victim[p.gc_mode] %=
+				sm->last_victim[temp][p.gc_mode] = segno + p.ofs_unit;
+			sm->last_victim[temp][p.gc_mode] %=
 				(MAIN_SECS(sbi) * sbi->segs_per_sec);
 			break;
 		}
@@ -1884,7 +1884,7 @@ next_step:
 }
 
 static int __get_victim(struct f3fs_sb_info *sbi, unsigned int *victim,
-			int gc_type, unsigned int* multiple_victim)
+			int gc_type, unsigned int* multiple_victim, int temp)
 {
 	struct sit_info *sit_i = SIT_I(sbi);
 	int ret;
@@ -1893,7 +1893,6 @@ static int __get_victim(struct f3fs_sb_info *sbi, unsigned int *victim,
     if (multiple_victim) {
 	    struct dirty_seglist_info *dirty_i = DIRTY_I(sbi);
 
-      down_write(&sit_i->last_victim_lock);
 	    mutex_lock(&dirty_i->seglist_lock);
 
       for (int i = 0 ; i < VICTIM_COUNT ; i++) {
@@ -1929,7 +1928,8 @@ static int __get_victim(struct f3fs_sb_info *sbi, unsigned int *victim,
           gc_type,
           NO_CHECK_TYPE,
           LFS,
-          0);
+          0,
+          temp);
         *victim = multiple_victim[0];
         multiple_victim[0] = NULL_SEGNO;
       } else {
@@ -1942,7 +1942,6 @@ static int __get_victim(struct f3fs_sb_info *sbi, unsigned int *victim,
       }
 
       mutex_unlock(&dirty_i->seglist_lock);
-      up_write(&sit_i->last_victim_lock);
       return ret;
     }
   }
@@ -2080,7 +2079,7 @@ skip:
 
 #define NUM_SKIPPED_SEG (64)
 
-int do_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control, char worker_idx, unsigned int* multiple_victim)
+int do_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control, int worker_idx, unsigned int* multiple_victim)
 {
 	int gc_type = gc_control->init_gc_type;
 	unsigned int segno = gc_control->victim_segno;
@@ -2139,7 +2138,7 @@ gc_more:
 	}
 retry:
 //printk("%s %d\n", __func__, __LINE__);
-	ret = __get_victim(sbi, &segno, gc_type, multiple_victim);
+	ret = __get_victim(sbi, &segno, gc_type, multiple_victim, worker_idx);
 //printk("%s %d\n", __func__, __LINE__);
 	if (ret) {
 		/* allow to search victim from sections has pinned data */
@@ -2216,8 +2215,8 @@ go_gc_more:
 	goto gc_more;
 
 stop:
-	SIT_I(sbi)->last_victim[ALLOC_NEXT] = 0;
-	SIT_I(sbi)->last_victim[FLUSH_DEVICE] = gc_control->victim_segno;
+	SIT_I(sbi)->last_victim[worker_idx][ALLOC_NEXT] = 0;
+	SIT_I(sbi)->last_victim[worker_idx][FLUSH_DEVICE] = gc_control->victim_segno;
 
 	if (gc_type == FG_GC)
 		f3fs_unpin_all_sections(sbi, true);
@@ -2337,7 +2336,7 @@ void f3fs_build_gc_manager(struct f3fs_sb_info *sbi)
 
 	/* give warm/cold data area from slower device */
 	if (f3fs_is_multi_device(sbi) && !__is_large_section(sbi))
-		SIT_I(sbi)->last_victim[ALLOC_NEXT] =
+		SIT_I(sbi)->last_victim[0][ALLOC_NEXT] =
 				GET_SEGNO(sbi, FDEV(0).end_blk) + 1;
 
 	init_atgc_management(sbi);
@@ -2359,8 +2358,8 @@ static int free_segment_range(struct f3fs_sb_info *sbi,
 
 	mutex_lock(&DIRTY_I(sbi)->seglist_lock);
 	for (gc_mode = 0; gc_mode < MAX_GC_POLICY; gc_mode++)
-		if (SIT_I(sbi)->last_victim[gc_mode] >= start)
-			SIT_I(sbi)->last_victim[gc_mode] = 0;
+		if (SIT_I(sbi)->last_victim[0][gc_mode] >= start)
+			SIT_I(sbi)->last_victim[0][gc_mode] = 0;
 
 	for (gc_type = BG_GC; gc_type <= FG_GC; gc_type++)
 		if (sbi->next_victim_seg[gc_type] >= start)
