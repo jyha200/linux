@@ -2481,7 +2481,7 @@ static void reset_curseg(struct f3fs_sb_info *sbi, int type, int modified)
 	__set_sit_entry_type(sbi, seg_type, curseg->segno, modified);
 }
 
-static unsigned int __get_next_segno(struct f3fs_sb_info *sbi, int type)
+static unsigned int __get_next_segno(struct f3fs_sb_info *sbi, int type, int temp)
 {
 	struct curseg_info *curseg = CURSEG_I(sbi, type);
 	unsigned short seg_type = curseg->seg_type;
@@ -2505,8 +2505,8 @@ static unsigned int __get_next_segno(struct f3fs_sb_info *sbi, int type)
 		(seg_type == CURSEG_HOT_DATA || IS_NODESEG(seg_type)))
 		return 0;
 
-	if (SIT_I(sbi)->last_victim[ALLOC_NEXT])
-		return SIT_I(sbi)->last_victim[ALLOC_NEXT];
+	if (SIT_I(sbi)->last_victim[temp][ALLOC_NEXT])
+		return SIT_I(sbi)->last_victim[temp][ALLOC_NEXT];
 
 	/* find segments from 0 to reuse freed segments */
 	if (F3FS_OPTION(sbi).alloc_mode == ALLOC_MODE_REUSE)
@@ -2519,7 +2519,7 @@ static unsigned int __get_next_segno(struct f3fs_sb_info *sbi, int type)
  * Allocate a current working segment.
  * This function always allocates a free segment in LFS manner.
  */
-static void new_curseg(struct f3fs_sb_info *sbi, int type, bool new_sec)
+static void new_curseg(struct f3fs_sb_info *sbi, int type, bool new_sec, int temp)
 {
   // sentry_only, dirty_sentry
 	struct curseg_info *curseg = CURSEG_I(sbi, type);
@@ -2538,7 +2538,7 @@ static void new_curseg(struct f3fs_sb_info *sbi, int type, bool new_sec)
 	if (test_opt(sbi, NOHEAP))
 		dir = ALLOC_RIGHT;
 
-	segno = __get_next_segno(sbi, type);
+	segno = __get_next_segno(sbi, type, temp);
 	get_new_segment(sbi, &segno, new_sec, dir);
 	curseg->next_segno = segno;
   get_seg_entry(sbi, segno)->curseg = 1;
@@ -2661,7 +2661,7 @@ static void get_atssr_segment(struct f3fs_sb_info *sbi, int type,
 	} else {
 		/* allocate cold segment by default */
 		curseg->seg_type = CURSEG_COLD_DATA;
-		new_curseg(sbi, type, true);
+		new_curseg(sbi, type, true, 0);
 	}
 	stat_inc_seg_type(sbi, curseg);
 }
@@ -2821,38 +2821,38 @@ static void allocate_segment_by_default(struct f3fs_sb_info *sbi,
 	struct curseg_info *curseg = CURSEG_I(sbi, type);
 
 	if (force)
-		new_curseg(sbi, type, true);
+		new_curseg(sbi, type, true, 0);
 	else if (!is_set_ckpt_flags(sbi, CP_CRC_RECOVERY_FLAG) &&
 					curseg->seg_type == CURSEG_WARM_NODE)
-		new_curseg(sbi, type, false);
+		new_curseg(sbi, type, false, 0);
 	else if (curseg->alloc_type == LFS &&
 			is_next_segment_free(sbi, curseg, type) &&
 			likely(!is_sbi_flag_set(sbi, SBI_CP_DISABLED)))
-		new_curseg(sbi, type, false);
+		new_curseg(sbi, type, false, 0);
 	else if (f3fs_need_SSR(sbi) &&
 			get_ssr_segment(sbi, type, SSR, 0))
 		change_curseg(sbi, type, true);
 	else
-		new_curseg(sbi, type, false);
+		new_curseg(sbi, type, false, 0);
 
 	stat_inc_seg_type(sbi, curseg);
 }
 
 static void allocate_segment_by_default2(struct f3fs_sb_info *sbi,
-						int type, bool force)
+						int type, bool force, int temp)
 {
   // sentry_only, dirty_sentry
 	struct curseg_info *curseg = CURSEG_I(sbi, type);
 
 	if (!is_set_ckpt_flags(sbi, CP_CRC_RECOVERY_FLAG) &&
 					curseg->seg_type == CURSEG_WARM_NODE)
-		new_curseg(sbi, type, false);
+		new_curseg(sbi, type, false, temp);
 	else if (curseg->alloc_type == LFS &&
 			is_next_segment_free(sbi, curseg, type) &&
 			likely(!is_sbi_flag_set(sbi, SBI_CP_DISABLED)))
-		new_curseg(sbi, type, false);
+		new_curseg(sbi, type, false, temp);
 	else {
-    new_curseg(sbi, type, false);
+    new_curseg(sbi, type, false, temp);
   }
 
   stat_inc_seg_type(sbi, curseg);
@@ -2878,7 +2878,7 @@ void f3fs_allocate_segment_for_resize(struct f3fs_sb_info *sbi, int type,
 	if (f3fs_need_SSR(sbi) && get_ssr_segment(sbi, type, SSR, 0))
 		change_curseg(sbi, type, true);
 	else
-		new_curseg(sbi, type, true);
+		new_curseg(sbi, type, true, 0);
 
 	stat_inc_seg_type(sbi, curseg);
 
@@ -3314,7 +3314,11 @@ void f3fs_allocate_data_block2(struct f3fs_sb_info *sbi, struct page *page,
   }
 
  	if (!__has_curseg_space(sbi, curseg)) {
-		sit_i->s_ops->allocate_segment2(sbi, type, false);
+    int temp = fio->temp;
+    if (temp > 0) {
+      temp = 0;
+    }
+		sit_i->s_ops->allocate_segment2(sbi, type, false, temp);
 	  locate_dirty_segment2(sbi, new_segno, new_valid_blocks, new_seg_dirty_type);
 	}
 	/*
