@@ -737,8 +737,10 @@ static void __remove_dirty_segment2(struct f3fs_sb_info *sbi, unsigned int segno
 	struct dirty_seglist_info *dirty_i = DIRTY_I(sbi);
 	f3fs_bug_on(sbi, __is_large_section(sbi));
 
-	if (test_and_clear_bit(segno, dirty_i->dirty_segmap[dirty_type]))
+	if (test_and_clear_bit(segno, dirty_i->dirty_segmap[dirty_type])) {
+    clear_bit(segno, dirty_i->victim_secmap);
 		atomic_dec(&dirty_i->nr_dirty[dirty_type]);
+  }
 
 	if (dirty_type == DIRTY) {
 		if (test_and_clear_bit(segno, dirty_i->dirty_segmap[seg_dirty_type]))

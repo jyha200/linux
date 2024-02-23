@@ -1892,7 +1892,6 @@ static int __get_victim(struct f3fs_sb_info *sbi, unsigned int *victim,
   if (*victim == NULL_SEGNO) {
     if (multiple_victim) {
 	    struct dirty_seglist_info *dirty_i = DIRTY_I(sbi);
-	    mutex_lock(&dirty_i->seglist_lock);
 
       for (int i = 0 ; i < VICTIM_COUNT ; i++) {
         unsigned int candidate = multiple_victim[i];
@@ -1912,7 +1911,6 @@ static int __get_victim(struct f3fs_sb_info *sbi, unsigned int *victim,
         }
 
         if (!test_bit(candidate, dirty_bitmap)) {
-          clear_bit(candidate, dirty_i->victim_secmap);
           continue;
         }
 
@@ -1921,6 +1919,7 @@ static int __get_victim(struct f3fs_sb_info *sbi, unsigned int *victim,
       }
 
       if (*victim == NULL_SEGNO) {
+	      mutex_lock(&dirty_i->seglist_lock);
         ret = DIRTY_I(sbi)->v_ops->get_multiple_victim(
           sbi,
           multiple_victim,
@@ -1931,6 +1930,7 @@ static int __get_victim(struct f3fs_sb_info *sbi, unsigned int *victim,
           temp);
         *victim = multiple_victim[0];
         multiple_victim[0] = NULL_SEGNO;
+        mutex_unlock(&dirty_i->seglist_lock);
       } else {
         ret = 0;
       }
@@ -1939,7 +1939,6 @@ static int __get_victim(struct f3fs_sb_info *sbi, unsigned int *victim,
         if (gc_type == FG_GC)
           sbi->cur_victim_sec = *victim;
       }
-      mutex_unlock(&dirty_i->seglist_lock);
 
       return ret;
     }
