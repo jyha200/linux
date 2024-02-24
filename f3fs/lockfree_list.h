@@ -11,6 +11,14 @@
 #include <stdio.h>
 #endif
 
+#define HASH_MODE (1)
+#if HASH_MODE
+#define BUCKET_CNT (32)
+#endif
+
+#define MAX_SIZE (0xFFFFFFFF)
+#define ALL_RANGE (0xFFFFFFFF)
+
 struct LNode {
   unsigned int start;
   unsigned int end;
@@ -22,11 +30,20 @@ struct LNode {
 };
 
 struct ListRL {
+#if HASH_MODE
+  volatile struct LNode* head[BUCKET_CNT];
+#else
   volatile struct LNode* head;
+#endif
 };
 
 struct RangeLock {
+#if HASH_MODE
+  struct LNode* node[BUCKET_CNT];
+  unsigned int bucket;
+#else
   struct LNode* node;
+#endif
 };
 
 struct f3fs_rwsem3 {
@@ -34,12 +51,13 @@ struct f3fs_rwsem3 {
 };
 
 void init_f3fs_rwsem3(struct f3fs_rwsem3* sem);
-
+#if HASH_MODE
+#else
 struct RangeLock* MutexRangeAcquire(struct ListRL* list_rl,
   unsigned int start,
   unsigned int end,
   bool try);
-
+#endif
 void MutexRangeRelease(struct RangeLock* rl);
 
 struct RangeLock* RWRangeTryAcquire(
