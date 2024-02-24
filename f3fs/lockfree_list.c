@@ -1,5 +1,9 @@
 #include "lockfree_list.h"
 
+#ifndef asseret
+#define assert
+#endif
+
 #if IN_KERNEL2
 #define mem_alloc(size) kmalloc(size, GFP_KERNEL)
 #define mem_free(ptr) kfree(ptr)
@@ -46,75 +50,6 @@ int compare(struct LNode* lock1, struct LNode* lock2) {
   return 0;
 }
 
-int InsertNode(struct ListRL* listrl, struct LNode* lock, bool try) {
-//  RCU_LOCK();
-  while (true) {
-    volatile struct LNode** prev = &listrl->head;
-    struct LNode* cur = *prev;
-
-    while (true) {
-      if (marked(cur)){
-        break;
-      }
-      else {
-        if (cur && marked(cur->next)) {
-          struct LNode* next = unmark(cur->next);
-
-          if (CAS(prev, cur, next)) {
-    //        RCU_KFREE(cur);
-          }
-          cur = next;
-        } else {
-          int ret = compare(cur, lock);
-
-          if (ret == -1) {
-            prev = &cur->next;
-            cur = *prev;
-          } else if (ret == 0) {
-            if (try) {
-            //  RCU_UNLOCK();
-
-              return -1;
-            }
-            while (!marked(cur->next)) {
-              cur = *prev;
-            }
-          } else if (ret == 1) {
-            lock->next = cur;
-            if (CAS(prev, cur, lock)) {
-             // RCU_UNLOCK();
-
-              return 0;
-            }
-            cur = *prev;
-          }
-        }
-      }
-    }
-  }
-//  RCU_UNLOCK();
-  return -1;
-}
-
-struct RangeLock* MutexRangeAcquire(struct ListRL* list_rl,
-  unsigned int start,
-  unsigned int end,
-  bool try) {
-  struct RangeLock* rl = mem_alloc(sizeof(struct RangeLock));
-
-  rl->node = mem_alloc(sizeof(struct LNode));
-  rl->node->start = start;
-  rl->node->end = end;
-  rl->node->next = NULL;
-  if (InsertNode(list_rl, rl->node, try) < 0) {
-    mem_free(rl->node);
-    mem_free(rl);
-    return NULL;
-  } else {
-    return rl;
-  }
-}
-
 void DeleteNode(struct LNode* lock) {
   while (true) {
     volatile struct LNode* orig = lock->next;
@@ -126,8 +61,19 @@ void DeleteNode(struct LNode* lock) {
 }
 
 void MutexRangeRelease(struct RangeLock* rl) {
+#if HASH_MODE
+  if (rl->bucket == ALL_RANGE) {
+    for (int i = 0 ; i < BUCKET_CNT ; i++) {
+      DeleteNode(rl->node[i]);
+    }
+  } else {
+    DeleteNode(rl->node[rl->bucket]);
+  }
+  mem_free(rl);
+#else
   DeleteNode(rl->node);
   mem_free(rl);
+#endif
 }
 
 int compareRW(struct LNode* lock1, struct LNode* lock2) {
@@ -151,8 +97,8 @@ int compareRW(struct LNode* lock1, struct LNode* lock2) {
   }
 }
 
-int w_validate(struct ListRL* listrl, struct LNode* lock) {
-  volatile struct LNode** prev = &listrl->head;
+int w_validate(volatile struct LNode** listrl, struct LNode* lock) {
+  volatile struct LNode** prev = listrl;
   struct LNode* cur = unmark(*prev);
 
   while (true) {
@@ -213,10 +159,10 @@ int r_validate(struct LNode* lock, bool try) {
   }
 }
 
-int InsertNodeRW(struct ListRL* listrl, struct LNode* lock, bool try) {
+int InsertNodeRW(volatile struct LNode** listrl, struct LNode* lock, bool try) {
   RCU_LOCK();
   while (true) {
-    volatile struct LNode** prev = &listrl->head;
+    volatile struct LNode** prev = listrl;
     struct LNode* cur = *prev;
 
     while (true) {
@@ -270,6 +216,17 @@ int InsertNodeRW(struct ListRL* listrl, struct LNode* lock, bool try) {
   return -1;
 }
 
+struct LNode* InitNode(
+  unsigned long long start, unsigned long long end, bool writer) {
+  struct LNode* ret = mem_alloc(sizeof(struct LNode));
+
+  ret->start = start;
+  ret->end = end;
+  ret->next = NULL;
+  ret->reader = !writer;
+  return ret;
+}
+
 struct RangeLock* RWRangeTryAcquire(
   struct ListRL* list_rl,
   unsigned long long start,
@@ -277,13 +234,50 @@ struct RangeLock* RWRangeTryAcquire(
   bool writer) {
   struct RangeLock* rl = mem_alloc(sizeof(struct RangeLock));
   int ret = 0;
-  rl->node = mem_alloc(sizeof(struct LNode));
-  rl->node->start = start;
-  rl->node->end = end;
-  rl->node->next = NULL;
-  rl->node->reader = !writer;
+
+#if HASH_MODE
+  if (end == MAX_SIZE) {
+    assert(start == 0);
+    rl->bucket = ALL_RANGE;
+    for (int i = 0 ; i < BUCKET_CNT ; i++) {
+      rl->node[i] = InitNode(0, MAX_SIZE, writer);
+
+      do {
+        ret = InsertNodeRW(&list_rl->head[i], rl->node[i], true);
+        mem_free(rl->node[i]);
+        if (ret < 0) {
+          for (int j = i - 1 ; j>= 0 ; j--) {
+            // Deferred Physical deletion of already inserted node
+            DeleteNode(rl->node[j]);
+          }
+          mem_free(rl);
+          return NULL;
+        }
+      } while(ret);
+    }
+  } else {
+    int i = start % BUCKET_CNT;
+
+    assert(start + 1 == end);
+    rl->bucket = i;
+    rl->node[i] = InitNode(start, 1, writer);
+    
+    do {
+      ret = InsertNodeRW(&list_rl->head[i], rl->node[i], true);
+      if (ret < 0) {
+        mem_free(rl->node[i]);
+        mem_free(rl);
+        return NULL;
+      }
+    } while(ret);
+
+  }
+  return rl;
+#else
+  rl->node = InitNode(start, end, writer);
+
   do {
-    ret = InsertNodeRW(list_rl, rl->node, true);
+    ret = InsertNodeRW(&list_rl->head, rl->node, true);
     if (ret < 0) {
       mem_free(rl->node);
       mem_free(rl);
@@ -291,6 +285,7 @@ struct RangeLock* RWRangeTryAcquire(
     }
   } while(ret); 
   return rl;
+#endif
 }
 
 struct RangeLock* RWRangeAcquire(
@@ -300,14 +295,36 @@ struct RangeLock* RWRangeAcquire(
   bool writer) {
   struct RangeLock* rl = mem_alloc(sizeof(struct RangeLock));
   int ret = 0;
-  rl->node = mem_alloc(sizeof(struct LNode));
-  rl->node->start = start;
-  rl->node->end = end;
-  rl->node->next = NULL;
-  rl->node->reader = !writer;
+
+#if HASH_MODE
+  if (end == MAX_SIZE) {
+    assert(start == 0);
+    rl->bucket = ALL_RANGE;
+    for (int i = 0 ; i < BUCKET_CNT ; i++) {
+      rl->node[i] = InitNode(0, MAX_SIZE, writer);
+
+      do {
+        ret = InsertNodeRW(&list_rl->head[i], rl->node[i], false);
+      } while(ret);
+    }
+  } else {
+    int i = start % BUCKET_CNT;
+
+    assert(start + 1 == end);
+    rl->bucket = i;
+    rl->node[i] = InitNode(start, 1, writer);
+   do {
+      ret = InsertNodeRW(&list_rl->head[i], rl->node[i], false);
+    } while(ret);
+
+  }
+  return rl;
+#else
+  rl->node = InitNode(start, end, writer);
 
   do {
-    ret = InsertNodeRW(list_rl, rl->node, false);
+    ret = InsertNodeRW(&list_rl->head, rl->node, false);
   } while(ret); 
   return rl;
+#endif
 }
