@@ -2170,12 +2170,12 @@ static inline int f3fs_rwsem_is_contended(struct f3fs_rwsem *sem)
 
 static inline void f3fs_down_read2(struct f3fs_rwsem2 *sem)
 {
-  f3fs_down_range(sem, 0, 0xFFFFFFFF, false);
+  f3fs_down_range(sem, 0, MAX_SIZE, false);
 }
 
 static inline struct RangeLock* f3fs_down_read3(struct f3fs_rwsem3 *sem)
 {
-  return RWRangeAcquire(&sem->list_rl, 0, 0xFFFFFFFF, false);
+  return RWRangeAcquire(&sem->list_rl, 0, MAX_SIZE, false);
 }
 static inline void f3fs_down_read(struct f3fs_rwsem *sem)
 {
@@ -2188,12 +2188,12 @@ static inline void f3fs_down_read(struct f3fs_rwsem *sem)
 
 static inline int f3fs_down_read_trylock2(struct f3fs_rwsem2 *sem)
 {
-	return f3fs_down_range_trylock(sem, 0, 0xFFFFFFFF, false);
+	return f3fs_down_range_trylock(sem, 0, MAX_SIZE, false);
 }
 
 static inline struct RangeLock* f3fs_down_read_trylock3(struct f3fs_rwsem3 *sem)
 {
-  return RWRangeTryAcquire(&sem->list_rl, 0, 0xFFFFFFFF, false);
+  return RWRangeTryAcquire(&sem->list_rl, 0, MAX_SIZE, false);
 }
 
 static inline int f3fs_down_read_trylock(struct f3fs_rwsem *sem)
@@ -2212,7 +2212,7 @@ static inline void f3fs_down_read_nested(struct f3fs_rwsem *sem, int subclass)
 
 static inline void f3fs_up_read2(struct f3fs_rwsem2 *sem)
 {
-  f3fs_up_range(sem, 0, 0xFFFFFFFF, false);
+  f3fs_up_range(sem, 0, MAX_SIZE, false);
 }
 
 static inline void f3fs_up_read3(struct RangeLock* range)
@@ -2227,12 +2227,12 @@ static inline void f3fs_up_read(struct f3fs_rwsem *sem)
 
 static inline void f3fs_down_write2(struct f3fs_rwsem2 *sem)
 {
-  f3fs_down_range(sem, 0, 0xFFFFFFFF, true);
+  f3fs_down_range(sem, 0, MAX_SIZE, true);
 }
 
 static inline struct RangeLock* f3fs_down_write3(struct f3fs_rwsem3* sem)
 {
-  return RWRangeAcquire(&sem->list_rl, 0, 0xFFFFFFFF, true);
+  return RWRangeAcquire(&sem->list_rl, 0, MAX_SIZE, true);
 }
 
 static inline void f3fs_down_write(struct f3fs_rwsem *sem)
@@ -2248,7 +2248,7 @@ static inline int f3fs_down_write_range_trylock2(
 
 static inline int f3fs_down_write_trylock2(struct f3fs_rwsem2 *sem)
 {
-	return f3fs_down_range_trylock(sem, 0, 0xFFFFFFFF, true);
+	return f3fs_down_range_trylock(sem, 0, MAX_SIZE, true);
 }
 
 static inline struct RangeLock* f3fs_down_write_range_trylock3(
@@ -2259,7 +2259,7 @@ static inline struct RangeLock* f3fs_down_write_range_trylock3(
 
 static inline struct RangeLock* f3fs_down_write_trylock3(struct f3fs_rwsem3 *sem)
 {
-  return RWRangeTryAcquire(&sem->list_rl, 0, 0xFFFFFFFF, true);
+  return RWRangeTryAcquire(&sem->list_rl, 0, MAX_SIZE, true);
 }
 
 static inline int f3fs_down_write_trylock(struct f3fs_rwsem *sem)
@@ -2275,7 +2275,7 @@ static inline void f3fs_up_write_range2(
 
 static inline void f3fs_up_write2(struct f3fs_rwsem2 *sem)
 {
-  f3fs_up_range(sem, 0, 0xFFFFFFFF, true);
+  f3fs_up_range(sem, 0, MAX_SIZE, true);
 }
 
 static inline void f3fs_up_write_range3(struct RangeLock* range)
