@@ -2122,7 +2122,9 @@ gc_more:
 		 * secure free segments which doesn't need fggc any more.
 		 */
     if (prefree_segments(sbi)) {
+      mutex_lock(&sbi->gc_internal_cp);
       ret = f3fs_write_checkpoint(sbi, &cpc);
+      mutex_unlock(&sbi->gc_internal_cp);
       if (ret)
         goto stop;
     }
@@ -2188,7 +2190,9 @@ retry:
 		round++;
 		if (skipped_round > MAX_SKIP_GC_COUNT &&
 				skipped_round * 2 >= round) {
+      mutex_lock(&sbi->gc_internal_cp);
 			ret = f3fs_write_checkpoint(sbi, &cpc);
+      mutex_unlock(&sbi->gc_internal_cp);
       //printk("%s %d\n", __func__, __LINE__);
 			goto stop;
 		}
@@ -2198,7 +2202,9 @@ retry:
 	if (free_sections(sbi) < NR_CURSEG_PERSIST_TYPE &&
 				prefree_segments(sbi)) {
 
+    mutex_lock(&sbi->gc_internal_cp);
 		ret = f3fs_write_checkpoint(sbi, &cpc);
+    mutex_unlock(&sbi->gc_internal_cp);
 		if (ret) {
     //  printk("%s %d\n", __func__, __LINE__);
 			goto stop;
@@ -2241,12 +2247,6 @@ int f3fs_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control)
   //printk("%s %d\n", __func__, __LINE__);
 
   if (sbi->gc_thread) {
-    if (prefree_segments(sbi)) {
-      struct cp_control cpc;
-      cpc.reason = __get_cp_reason(sbi);
-      ret = f3fs_write_checkpoint(sbi, &cpc);
-    }
-
     atomic_set(&gc_control->freed, 0);
     for (int i = 0 ; i < NUM_GC_WORKER ; i++) {
       sbi->gc_thread->worker_args[i].gc_control = gc_control;
@@ -2272,12 +2272,7 @@ int f3fs_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control)
   } else {
     ret = do_gc(sbi, gc_control, 0, NULL);
   }
-/*  if (prefree_segments(sbi)) {
-    struct cp_control cpc;
-    cpc.reason = __get_cp_reason(sbi);
-    ret = f3fs_write_checkpoint(sbi, &cpc);
-  }
-*/
+
   f3fs_up_write(&sbi->gc_lock);
   //printk("%s %d\n", __func__, __LINE__);
 	return ret;

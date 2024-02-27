@@ -3642,6 +3642,7 @@ static void init_sb_info(struct f3fs_sb_info *sbi)
 
 	init_f3fs_rwsem(&sbi->sb_lock);
 	init_f3fs_rwsem(&sbi->pin_sem);
+  mutex_init(&sbi->gc_internal_cp);
 }
 
 static int init_percpu_info(struct f3fs_sb_info *sbi)
