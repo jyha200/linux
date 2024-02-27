@@ -717,8 +717,12 @@ static void __locate_dirty_segment2(struct f3fs_sb_info *sbi, unsigned int segno
 	if (IS_CURSEG(sbi, segno))
 		return;
 
-	if (!test_and_set_bit(segno, dirty_i->dirty_segmap[dirty_type]))
+	if (!test_and_set_bit(segno, dirty_i->dirty_segmap[dirty_type])) {
+    if (dirty_type == PRE) {
+      clear_bit(GET_SEC_FROM_SEG(sbi, segno), DIRTY_I(sbi)->victim_secmap2);
+    }
 		atomic_inc(&dirty_i->nr_dirty[dirty_type]);
+  }
 
 	if (dirty_type == DIRTY) {
 		if (unlikely(seg_dirty_type >= DIRTY)) {
@@ -738,10 +742,7 @@ static void __remove_dirty_segment2(struct f3fs_sb_info *sbi, unsigned int segno
 	f3fs_bug_on(sbi, __is_large_section(sbi));
 
 	if (test_and_clear_bit(segno, dirty_i->dirty_segmap[dirty_type])) {
-    if (dirty_type == DIRTY) {
-      clear_bit(segno, dirty_i->victim_secmap2);
-    }
-		atomic_dec(&dirty_i->nr_dirty[dirty_type]);
+    clear_bit(GET_SEC_FROM_SEG(sbi, segno), DIRTY_I(sbi)->victim_secmap2);
   }
 
 	if (dirty_type == DIRTY) {
