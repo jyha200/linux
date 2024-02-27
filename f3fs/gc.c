@@ -983,7 +983,6 @@ static int get_multiple_victim_by_default(struct f3fs_sb_info *sbi,
   int selected_count = 0;
   bool changed = false;
 
-	mutex_lock(&dirty_i->seglist_lock);
 	last_segment = MAIN_SECS(sbi) * sbi->segs_per_sec;
 
 	p.alloc_mode = alloc_mode;
@@ -1005,6 +1004,7 @@ static int get_multiple_victim_by_default(struct f3fs_sb_info *sbi,
 
 	last_victim = sm->last_victim[temp][p.gc_mode];
 
+	mutex_lock(&dirty_i->seglist_lock);
 	while (1) {
 		unsigned long cost, *dirty_bitmap;
 		unsigned int unit_no, segno;
@@ -1072,9 +1072,9 @@ next:
 			break;
 		}
 	}
+  mutex_unlock(&dirty_i->seglist_lock);
 
 out:
-  mutex_unlock(&dirty_i->seglist_lock);
   for (int i = 0 ; i < selected_count ; i++) {
     set_bit(result[i], dirty_i->victim_secmap2);
   }
