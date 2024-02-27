@@ -983,6 +983,7 @@ static int get_multiple_victim_by_default(struct f3fs_sb_info *sbi,
   int selected_count = 0;
   bool changed = false;
 
+	mutex_lock(&dirty_i->seglist_lock);
 	last_segment = MAIN_SECS(sbi) * sbi->segs_per_sec;
 
 	p.alloc_mode = alloc_mode;
@@ -1073,6 +1074,7 @@ next:
 	}
 
 out:
+  mutex_unlock(&dirty_i->seglist_lock);
   for (int i = 0 ; i < selected_count ; i++) {
     set_bit(result[i], dirty_i->victim_secmap2);
   }
@@ -1922,7 +1924,6 @@ static int __get_victim(struct f3fs_sb_info *sbi, unsigned int *victim,
       }
 
       if (*victim == NULL_SEGNO) {
-	      mutex_lock(&dirty_i->seglist_lock);
         ret = DIRTY_I(sbi)->v_ops->get_multiple_victim(
           sbi,
           multiple_victim,
@@ -1933,7 +1934,6 @@ static int __get_victim(struct f3fs_sb_info *sbi, unsigned int *victim,
           temp);
         *victim = multiple_victim[0];
         multiple_victim[0] = NULL_SEGNO;
-        mutex_unlock(&dirty_i->seglist_lock);
       } else {
         ret = 0;
       }
@@ -2162,8 +2162,7 @@ retry:
     if (get_valid_blocks(sbi, segno, false)) {
       struct dirty_seglist_info *dirty_i = DIRTY_I(sbi);
 
-//      printk("warning!! skipped buffer explosed.  not freed and clear %d", segno);
-      clear_bit(GET_SEC_FROM_SEG(sbi, segno), DIRTY_I(sbi)->victim_secmap2);
+      clear_bit(GET_SEC_FROM_SEG(sbi, segno), dirty_i->victim_secmap2);
     }
   }
 
