@@ -738,7 +738,9 @@ static void __remove_dirty_segment2(struct f3fs_sb_info *sbi, unsigned int segno
 	f3fs_bug_on(sbi, __is_large_section(sbi));
 
 	if (test_and_clear_bit(segno, dirty_i->dirty_segmap[dirty_type])) {
-    clear_bit(segno, dirty_i->victim_secmap);
+    if (dirty_type == DIRTY) {
+      clear_bit(segno, dirty_i->victim_secmap2);
+    }
 		atomic_dec(&dirty_i->nr_dirty[dirty_type]);
   }
 
@@ -4660,6 +4662,10 @@ static int init_victim_secmap(struct f3fs_sb_info *sbi)
 
 	dirty_i->victim_secmap = f3fs_kvzalloc(sbi, bitmap_size, GFP_KERNEL);
 	if (!dirty_i->victim_secmap)
+		return -ENOMEM;
+
+	dirty_i->victim_secmap2 = f3fs_kvzalloc(sbi, bitmap_size, GFP_KERNEL);
+	if (!dirty_i->victim_secmap2)
 		return -ENOMEM;
 
 	dirty_i->pinned_secmap = f3fs_kvzalloc(sbi, bitmap_size, GFP_KERNEL);
