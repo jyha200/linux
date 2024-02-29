@@ -35,6 +35,7 @@ static int gc_thread_func(void *data)
 	wait_queue_head_t *wq = &sbi->gc_thread->gc_wait_queue_head;
 	wait_queue_head_t *fggc_wq = &sbi->gc_thread->fggc_wq;
 	unsigned int wait_ms;
+
 	struct f3fs_gc_control gc_control = {
 		.victim_segno = NULL_SEGNO,
 		.should_migrate_blocks = false,
@@ -56,8 +57,9 @@ static int gc_thread_func(void *data)
 			foreground = true;
 
 		/* give it a try one time */
-		if (gc_th->gc_wake)
+		if (gc_th->gc_wake) {
 			gc_th->gc_wake = 0;
+    }
 
 		if (try_to_freeze()) {
 			stat_other_skip_bggc_count(sbi);
@@ -148,6 +150,7 @@ do_gc:
 		gc_control.init_gc_type = sync_mode ? FG_GC : BG_GC;
 		gc_control.no_bg_gc = foreground;
 		gc_control.nr_free_secs = foreground ? 1 : 0;
+    gc_control.intensity = MAX_GC_WORKER;
 
 		/* if return value is not zero, no victim was selected */
 		if (f3fs_gc(sbi, &gc_control)) {
@@ -188,9 +191,42 @@ static int gc_worker_func(void* data)
   return 0;
 }
 
+static int gc_thread_func2(void* data) {
+  struct f3fs_sb_info* sbi = data;
+	struct f3fs_gc_kthread2 *gc_th2 = sbi->gc_thread2;
+  unsigned int wait_ms = sbi->gc_thread->min_sleep_time;
+	wait_queue_head_t *wq = &sbi->gc_thread2->gc_wait_queue_head;
+	struct f3fs_gc_control gc_control = {
+		.victim_segno = NULL_SEGNO,
+    .init_gc_type = BG_GC,
+    .no_bg_gc = true,
+		.should_migrate_blocks = false,
+		.err_gc_skipped = false,
+    .nr_free_secs = 1,
+    .intensity = MAX_GC_WORKER};
+
+  do {
+    wait_event_interruptible_timeout(*wq,
+      kthread_should_stop() || gc_th2->gc_wake,
+      msecs_to_jiffies(wait_ms));
+		if (kthread_should_stop())
+			break;
+    gc_control.intensity = gc_th2->intensity;
+    gc_th2->gc_wake = 0;
+    if (!f3fs_down_write_trylock(&sbi->gc_lock)) {
+      continue;
+    }
+ //   printk("%s %d\n", __func__, __LINE__);
+    f3fs_gc(sbi, &gc_control);
+//    f3fs_up_write(&sbi->gc_lock);
+  } while(!kthread_should_stop());
+  return 0;
+}
+
 int f3fs_start_gc_thread(struct f3fs_sb_info *sbi)
 {
 	struct f3fs_gc_kthread *gc_th;
+  struct f3fs_gc_kthread2 *gc_th2;
 	dev_t dev = sbi->sb->s_bdev->bd_dev;
 	int err = 0;
 
@@ -232,7 +268,29 @@ int f3fs_start_gc_thread(struct f3fs_sb_info *sbi)
 		err = PTR_ERR(gc_th->f3fs_gc_task);
 		kfree(gc_th);
 		sbi->gc_thread = NULL;
+    goto out;
 	}
+
+	gc_th2 = f3fs_kmalloc(sbi, sizeof(struct f3fs_gc_kthread2), GFP_KERNEL);
+  init_waitqueue_head(&gc_th2->gc_wait_queue_head);
+  gc_th2->intensity = 0;
+  gc_th2->gc_wake = 0;
+  sbi->gc_thread2 = gc_th2;
+  gc_th2->f3fs_gc_task = kthread_run(gc_thread_func2, sbi, "incremental GC");
+  if (IS_ERR(gc_th2->f3fs_gc_task)) {
+    err = PTR_ERR(gc_th2->f3fs_gc_task);
+    kfree(gc_th2);
+    sbi->gc_thread2 = NULL;
+
+    kthread_stop(gc_th->f3fs_gc_task);
+    for (int i = 0 ; i < NUM_GC_WORKER ; i++) {
+      kthread_stop(gc_th->gc_workers[i]);
+    }
+
+	  kthread_stop(gc_th->f3fs_gc_task);
+    kfree(gc_th);
+    sbi->gc_thread = NULL;
+  }
 out:
 	return err;
 }
@@ -240,18 +298,21 @@ out:
 void f3fs_stop_gc_thread(struct f3fs_sb_info *sbi)
 {
 	struct f3fs_gc_kthread *gc_th = sbi->gc_thread;
+	struct f3fs_gc_kthread2 *gc_th2 = sbi->gc_thread2;
 
 	if (!gc_th)
 		return;
 
 	sbi->gc_thread = NULL;
 	kthread_stop(gc_th->f3fs_gc_task);
+  kthread_stop(gc_th2->f3fs_gc_task);
   for (int i = 0 ; i < NUM_GC_WORKER ; i++) {
     kthread_stop(gc_th->gc_workers[i]);
   }
 
 	wake_up_all(&gc_th->fggc_wq);
 	kfree(gc_th);
+	kfree(gc_th2);
 }
 
 static int select_gc_type(struct f3fs_sb_info *sbi, int gc_type)
@@ -2258,16 +2319,21 @@ stop:
 int f3fs_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control)
 {
   int ret = 0;
-  //printk("%s %d\n", __func__, __LINE__);
 
   if (sbi->gc_thread) {
+    int intensity = gc_control->intensity == 0 ? 1 : gc_control->intensity;
+//    printk("%s %d intensity%d\n", __func__, __LINE__, intensity);
+    if (intensity > MAX_GC_WORKER) {
+  //    printk("%s %d too high intensity %d (%d)\n", __func__, __LINE__, intensity, MAX_GC_WORKER);
+      intensity = MAX_GC_WORKER;
+    }
     atomic_set(&gc_control->freed, 0);
-    for (int i = 0 ; i < NUM_GC_WORKER ; i++) {
+    for (int i = 0 ; i < intensity ; i++) {
       sbi->gc_thread->worker_args[i].gc_control = gc_control;
       sbi->gc_thread->worker_args[i].state = 1;
       wake_up(&sbi->gc_thread->worker_args[i].wq);
     }
-    for (int i = 0 ; i < NUM_GC_WORKER ; i++) {
+    for (int i = 0 ; i < intensity ; i++) {
       int local_ret;
       while (sbi->gc_thread->worker_args[i].state == 1) {
         wait_event_interruptible_timeout(sbi->gc_thread->worker_args[i].caller_wq,

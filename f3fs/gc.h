@@ -67,6 +67,13 @@ struct f3fs_gc_kthread {
   struct task_struct* gc_workers[NUM_GC_WORKER];
 };
 
+struct f3fs_gc_kthread2 {
+	struct task_struct *f3fs_gc_task;
+	wait_queue_head_t gc_wait_queue_head;
+	unsigned int gc_wake;
+  int intensity;
+};
+
 struct gc_inode_list {
 	struct list_head ilist;
 	struct radix_tree_root iroot;

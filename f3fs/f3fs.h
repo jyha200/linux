@@ -1291,6 +1291,7 @@ struct f3fs_gc_control {
 	bool err_gc_skipped;		/* return EAGAIN if GC skipped */
 	unsigned int nr_free_secs;	/* # of free sections to do GC */
   atomic_t freed;
+  int intensity;
 };
 
 /* For s_flag in struct f3fs_sb_info */
@@ -1734,6 +1735,7 @@ struct f3fs_sb_info {
 						 * race between GC and GC or CP
 						 */
 	struct f3fs_gc_kthread	*gc_thread;	/* GC thread */
+	struct f3fs_gc_kthread2	*gc_thread2;	/* GC thread */
 	struct atgc_management am;		/* atgc management */
 	unsigned int cur_victim_sec;		/* current victim section num */
 	unsigned int gc_mode;			/* current GC state */
