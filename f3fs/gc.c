@@ -150,7 +150,7 @@ do_gc:
 		gc_control.init_gc_type = sync_mode ? FG_GC : BG_GC;
 		gc_control.no_bg_gc = foreground;
 		gc_control.nr_free_secs = foreground ? 1 : 0;
-    gc_control.intensity = MAX_GC_WORKER;
+    gc_control.intensity = NUM_GC_WORKER;
 
 		/* if return value is not zero, no victim was selected */
 		if (f3fs_gc(sbi, &gc_control)) {
@@ -203,7 +203,7 @@ static int gc_thread_func2(void* data) {
 		.should_migrate_blocks = false,
 		.err_gc_skipped = false,
     .nr_free_secs = 1,
-    .intensity = MAX_GC_WORKER};
+    .intensity = NUM_GC_WORKER};
 
   do {
     wait_event_interruptible_timeout(*wq,
@@ -1142,7 +1142,6 @@ out:
 		trace_f3fs_get_victim(sbi->sb, type, gc_type, &p,
 				sbi->cur_victim_sec,
 				prefree_segments(sbi), free_segments(sbi));
-
 	return ret;
 }
 
@@ -2203,6 +2202,9 @@ retry:
 	ret = __get_victim(sbi, &segno, gc_type, multiple_victim, worker_idx);
 //printk("%s %d\n", __func__, __LINE__);
 	if (ret) {
+    if (ret == -ENODATA && gc_control->intensity != NUM_GC_WORKER) {
+      goto stop;
+    }
 		/* allow to search victim from sections has pinned data */
 		if (ret == -ENODATA && gc_type == FG_GC &&
 				f3fs_pinned_section_exists(DIRTY_I(sbi))) {
@@ -2309,9 +2311,9 @@ int f3fs_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control)
   if (sbi->gc_thread) {
     int intensity = gc_control->intensity == 0 ? 1 : gc_control->intensity;
 //    printk("%s %d intensity%d\n", __func__, __LINE__, intensity);
-    if (intensity > MAX_GC_WORKER) {
+    if (intensity > NUM_GC_WORKER) {
   //    printk("%s %d too high intensity %d (%d)\n", __func__, __LINE__, intensity, MAX_GC_WORKER);
-      intensity = MAX_GC_WORKER;
+      intensity = NUM_GC_WORKER;
     }
     atomic_set(&gc_control->freed, 0);
     for (int i = 0 ; i < intensity ; i++) {

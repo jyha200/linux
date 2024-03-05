@@ -370,26 +370,23 @@ int f3fs_commit_atomic_write(struct inode *inode)
 }
 
 #define INTENSITY_RATIO (30)
+#define MAX_INTENSITY (5)
 int intensity_trigger = 0;
 
 int get_gc_intensity(struct f3fs_sb_info* sbi) {
   unsigned int free = free_sections(sbi);
   unsigned int total = MAIN_SECS(sbi);
-  unsigned int unit = (total * INTENSITY_RATIO / 100) / NUM_GC_WORKER;
+  unsigned int unit = (total * INTENSITY_RATIO / 100) / MAX_INTENSITY;
   if (total * INTENSITY_RATIO / 100 < free) {
     return 0;
   }
+  return 15;
 
-/*  if ((__atomic_fetch_add(&intensity_trigger, 1, __ATOMIC_SEQ_CST) % 3)  == 0) {
-    return 0;
-  }
-*/
   if (unit == 0) {
     unit = 1;
   }
 
-  return 27;
-  return NUM_GC_WORKER - (free / unit);
+  return MAX_INTENSITY - (free / unit);
 }
 
 /*
@@ -432,12 +429,13 @@ void f3fs_balance_fs(struct f3fs_sb_info *sbi, bool need)
 				.should_migrate_blocks = false,
 				.err_gc_skipped = false,
 				.nr_free_secs = 1,
-        .intensity = MAX_GC_WORKER};
+        .intensity = NUM_GC_WORKER};
 			f3fs_down_write(&sbi->gc_lock);
 			f3fs_gc(sbi, &gc_control);
 		}
 	} else {
     int intensity = get_gc_intensity(sbi);
+    intensity = 0;
     if (intensity > 0) {
       sbi->gc_thread2->intensity = intensity;
       sbi->gc_thread2->gc_wake = 1;
