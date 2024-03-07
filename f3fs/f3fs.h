@@ -1858,6 +1858,7 @@ struct f3fs_sb_info {
   atomic_t total_written_direct_request_blocks;
   atomic_t gc_read_blocks;
   atomic_t gc_written_blocks;
+  int num_gc_thread;
 };
 
 #ifdef CONFIG_F3FS_FAULT_INJECTION
