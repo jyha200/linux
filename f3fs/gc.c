@@ -193,6 +193,7 @@ int f3fs_start_gc_thread(struct f3fs_sb_info *sbi)
 	struct f3fs_gc_kthread *gc_th;
 	dev_t dev = sbi->sb->s_bdev->bd_dev;
 	int err = 0;
+  int num_gc_thread = sbi->num_gc_thread;
 
 	gc_th = f3fs_kmalloc(sbi, sizeof(struct f3fs_gc_kthread), GFP_KERNEL);
 	if (!gc_th) {
@@ -204,13 +205,30 @@ int f3fs_start_gc_thread(struct f3fs_sb_info *sbi)
 	gc_th->min_sleep_time = DEF_GC_THREAD_MIN_SLEEP_TIME;
 	gc_th->max_sleep_time = DEF_GC_THREAD_MAX_SLEEP_TIME;
 	gc_th->no_gc_sleep_time = DEF_GC_THREAD_NOGC_SLEEP_TIME;
+  gc_th->worker_args = f3fs_kmalloc(sbi,
+    sizeof(struct worker_arg) * num_gc_thread,
+    GFP_KERNEL);
+  if (!gc_th->worker_args) {
+    kfree(gc_th);
+    err = -ENOMEM;
+    goto out;
+  }
+  gc_th->gc_workers = f3fs_kmalloc(sbi,
+    sizeof(struct task_struct*) * num_gc_thread,
+    GFP_KERNEL);
+  if (!gc_th->gc_workers) {
+    kfree(gc_th->worker_args);
+    kfree(gc_th);
+    err = -ENOMEM;
+    goto out;
+  }
 
 	gc_th->gc_wake = 0;
 
 	sbi->gc_thread = gc_th;
 	init_waitqueue_head(&sbi->gc_thread->gc_wait_queue_head);
 	init_waitqueue_head(&sbi->gc_thread->fggc_wq);
-  for (int i = 0 ; i < NUM_GC_WORKER ; i++) {
+  for (int i = 0 ; i < num_gc_thread ; i++) {
     sbi->gc_thread->worker_args[i].state = 0;
     sbi->gc_thread->worker_args[i].sbi = sbi;
     sbi->gc_thread->worker_args[i].gc_control = NULL;
@@ -242,11 +260,13 @@ void f3fs_stop_gc_thread(struct f3fs_sb_info *sbi)
 
 	sbi->gc_thread = NULL;
 	kthread_stop(gc_th->f3fs_gc_task);
-  for (int i = 0 ; i < NUM_GC_WORKER ; i++) {
+  for (int i = 0 ; i < sbi->num_gc_thread ; i++) {
     kthread_stop(gc_th->gc_workers[i]);
   }
 
 	wake_up_all(&gc_th->fggc_wq);
+  kfree(gc_th->gc_workers);
+  kfree(gc_th->worker_args);
 	kfree(gc_th);
 }
 
@@ -1924,12 +1944,12 @@ int f3fs_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control)
 
   ret = do_gc(sbi, gc_control);
   if (sbi->gc_thread) {
-    for (int i = 0 ; i < NUM_GC_WORKER ; i++) {
+    for (int i = 0 ; i < sbi->num_gc_thread ; i++) {
       sbi->gc_thread->worker_args[i].gc_control = gc_control;
       sbi->gc_thread->worker_args[i].state = 1;
       wake_up(&sbi->gc_thread->worker_args[i].wq);
     }
-    for (int i = 0 ; i < NUM_GC_WORKER ; i++) {
+    for (int i = 0 ; i < sbi->num_gc_thread ; i++) {
       int local_ret;
       while (sbi->gc_thread->worker_args[i].state == 1) {
         wait_event_interruptible_timeout(sbi->gc_thread->worker_args[i].caller_wq,
