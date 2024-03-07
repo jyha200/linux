@@ -1867,6 +1867,7 @@ struct f3fs_sb_info {
 	struct iostat_lat_info *iostat_io_lat;
 #endif
 	struct mutex gc_internal_cp;		/* lock for segment bitmaps */
+  int num_gc_thread;
 };
 
 #ifdef CONFIG_F3FS_FAULT_INJECTION
