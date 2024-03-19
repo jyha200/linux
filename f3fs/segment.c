@@ -369,13 +369,17 @@ int f3fs_commit_atomic_write(struct inode *inode)
 	return err;
 }
 
+#define INCREMENTAL_GC_START (20)
+
 int get_gc_intensity(struct f3fs_sb_info* sbi) {
   unsigned int total = MAIN_SECS(sbi);
   unsigned int free = free_sections(sbi);
   unsigned int utilization = 100 - free * 100 / total;
+  unsigned int max_intensity = sbi->num_gc_thread;
+  unsigned int unit = (100 - INCREMENTAL_GC_START) / max_intensity;
 
-  if (utilization > 50) {
-    return 10;
+  if (utilization > INCREMENTAL_GC_START) {
+    return (utilization - INCREMENTAL_GC_START) / unit;
   }
   else {
     return -1;
