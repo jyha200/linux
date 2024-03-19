@@ -43,6 +43,13 @@ struct worker_arg {
   wait_queue_head_t caller_wq;
 };
 
+struct f3fs_gc_kthread2 {
+  struct task_struct* f3fs_gc_task;
+  wait_queue_head_t gc_wait_queue_head;
+  unsigned int gc_wake;
+  int intensity;
+};
+
 struct f3fs_gc_kthread {
 	struct task_struct *f3fs_gc_task;
 	wait_queue_head_t gc_wait_queue_head;
