@@ -368,6 +368,24 @@ int f3fs_commit_atomic_write(struct inode *inode)
 	return err;
 }
 
+#define INCREMENTAL_GC_START (0)
+
+int get_gc_intensity(struct f3fs_sb_info* sbi) {
+  unsigned int total = MAIN_SECS(sbi);
+  unsigned int free = free_sections(sbi);
+  unsigned int utilization = 100 - free * 100 / total;
+  unsigned int max_intensity = sbi->num_gc_thread;
+  unsigned int unit = (100 - INCREMENTAL_GC_START) / max_intensity;
+
+  if (utilization > INCREMENTAL_GC_START) {
+    return 1;
+    return (utilization - INCREMENTAL_GC_START) / unit;
+  }
+  else {
+    return -1;
+  }
+}
+
 /*
  * This function balances dirty node and dentry pages.
  * In addition, it controls garbage collection.
@@ -407,11 +425,19 @@ void f3fs_balance_fs(struct f3fs_sb_info *sbi, bool need)
 				.no_bg_gc = true,
 				.should_migrate_blocks = false,
 				.err_gc_skipped = false,
-				.nr_free_secs = 1 };
+				.nr_free_secs = 1,
+				.intensity = sbi->num_gc_thread};
 			f3fs_down_write(&sbi->gc_lock);
 			f3fs_gc(sbi, &gc_control);
 		}
-	}
+	} else {
+    int intensity = get_gc_intensity(sbi);
+    if (intensity > 0 && sbi->gc_thread2) {
+      sbi->gc_thread2->intensity = intensity;
+      sbi->gc_thread2->gc_wake = 1;
+      wake_up(&sbi->gc_thread2->gc_wait_queue_head);
+    }
+  }
 }
 
 static inline bool excess_dirty_threshold(struct f3fs_sb_info *sbi)
