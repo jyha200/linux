@@ -1652,6 +1652,55 @@ out:
 	f3fs_put_page(page, 1);
 	return err;
 }
+static int move_data_page2(struct inode *inode, block_t bidx, int gc_type,
+              unsigned int segno, int off, char dst_hint, struct page* gc_buf)
+{
+  struct page *page;
+  int err = 0;
+
+  struct f3fs_io_info fio = {
+    .sbi = F3FS_I_SB(inode),
+    .ino = inode->i_ino,
+    .type = DATA,
+    .temp = COLD_GC_START + dst_hint,
+    .op = REQ_OP_WRITE,
+    .op_flags = REQ_SYNC,
+    .old_blkaddr = NULL_ADDR,
+    .page = gc_buf,
+    .encrypted_page = NULL,
+    .need_lock = LOCK_REQ,
+    .io_type = FS_GC_DATA_IO,
+    .dst_hint = dst_hint,
+    .inode = inode,
+  };
+
+  if (!check_valid_map(F3FS_I_SB(inode), segno, off)) {
+    lock_page(gc_buf);
+    unlock_page(gc_buf);
+    __free_page(gc_buf);
+    gc_buf = NULL;
+
+    return -ENOENT;
+  }
+
+  err = f3fs_gc_pinned_control(inode, gc_type, segno);
+  if (err) {
+    lock_page(gc_buf);
+    unlock_page(gc_buf);
+    __free_page(gc_buf);
+    gc_buf = NULL;
+
+    return err;
+  }
+  lock_page(gc_buf);
+retry:
+
+  err = f3fs_do_write_data_page2(&fio, bidx);
+  if (err == -ENOMEM) {
+    goto retry;
+  }
+  return err;
+}
 
 static int move_data_page(struct inode *inode, block_t bidx, int gc_type,
 							unsigned int segno, int off, char dst_hint)
@@ -1743,6 +1792,7 @@ static int gc_data_segment(struct f3fs_sb_info *sbi, struct f3fs_summary *sum,
 	unsigned int usable_blks_in_seg = f3fs_usable_blks_in_seg(sbi, segno);
   struct RangeLock* range_w = NULL;
   struct RangeLock* range_r = NULL;
+  struct page* gc_buf[512] = {0,};
 
 	start_addr = START_BLOCK(sbi, segno);
 
@@ -1832,6 +1882,8 @@ next_step:
 				continue;
 			}
 
+      gc_buf[off] = f3fs_get_read_data_page_without_cache(inode, start_bidx, REQ_RAHEAD, true);
+      if (!gc_buf[off]) {
 			data_page = f3fs_get_read_data_page(inode,
 						start_bidx, REQ_RAHEAD, true);
 			f3fs_up_write_range3(range_w);
@@ -1842,6 +1894,9 @@ next_step:
 			}
 
 			f3fs_put_page(data_page, 0);
+      } else {
+			  f3fs_up_write_range3(range_w);
+      }
 			add_gc_inode(gc_list, inode);
 			continue;
 		}
@@ -1880,9 +1935,15 @@ next_step:
 			if (f3fs_post_read_required(inode))
 				err = move_data_block(inode, start_bidx,
 							gc_type, segno, off);
-			else
+			else {
+        if (gc_buf[off]) {
+          move_data_page2(inode, start_bidx, gc_type, segno, off, dst_hint, gc_buf[off]);
+          gc_buf[off] = NULL;
+        } else {
 				err = move_data_page(inode, start_bidx, gc_type,
 								segno, off, dst_hint);
+        }
+      }
 
 			if (!err && (gc_type == FG_GC ||
 					f3fs_post_read_required(inode)))
@@ -1899,6 +1960,14 @@ next_step:
 
 	if (++phase < 5)
 		goto next_step;
+
+  for (int i = 0 ; i < 512; i++) {
+    if (gc_buf[i]) {
+      lock_page(gc_buf[i]);
+      unlock_page(gc_buf[i]);
+      __free_page(gc_buf[i]);
+    }
+  }
 
 	return submitted;
 }
