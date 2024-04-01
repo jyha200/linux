@@ -269,6 +269,25 @@ static void f3fs_post_read_work(struct work_struct *work)
 	f3fs_verify_and_finish_bio(ctx->bio, true);
 }
 
+static void f3fs_read_end_io2(struct bio* bio)
+{
+  struct bio_vec *bv;
+  struct bvec_iter_all iter_all;
+	struct bio_post_read_ctx *ctx;
+
+	iostat_update_and_unbind_ctx(bio, 0);
+	ctx = bio->bi_private;
+  if (ctx) {
+    printk("%s %d\n", __func__, __LINE__);
+  }
+
+  bio_for_each_segment_all(bv, bio, iter_all) {
+    struct page *page = bv->bv_page;
+    unlock_page(page);
+  }
+  bio_put(bio);
+}
+
 static void f3fs_read_end_io(struct bio *bio)
 {
 	struct f3fs_sb_info *sbi = F3FS_P_SB(bio_first_page_all(bio));
@@ -307,6 +326,54 @@ static void f3fs_read_end_io(struct bio *bio)
 	}
 
 	f3fs_verify_and_finish_bio(bio, intask);
+}
+
+static void f3fs_write_end_io2(struct bio *bio)
+{
+  struct f3fs_sb_info *sbi;
+  struct bio_vec *bvec;
+  struct bvec_iter_all iter_all;
+
+  iostat_update_and_unbind_ctx(bio, 1);
+  sbi = bio->bi_private;
+
+  if (time_to_inject(sbi, FAULT_WRITE_IO)) {
+    f3fs_show_injection_info(sbi, FAULT_WRITE_IO);
+    bio->bi_status = BLK_STS_IOERR;
+  }
+
+  bio_for_each_segment_all(bvec, bio, iter_all) {
+    struct page *page = bvec->bv_page;
+    enum count_type type = WB_DATA_TYPE(page);
+
+    if (page_private_dummy(page)) {
+      clear_page_private_dummy(page);
+      unlock_page(page);
+      mempool_free(page, sbi->write_io_dummy);
+
+      if (unlikely(bio->bi_status))
+        f3fs_stop_checkpoint(sbi, true);
+
+      continue;
+    }
+
+    if (unlikely(bio->bi_status)) {
+      if (type == F3FS_WB_CP_DATA)
+        f3fs_stop_checkpoint(sbi, true);
+    }
+
+    f3fs_bug_on(sbi, page->mapping == NODE_MAPPING(sbi) &&
+        page->index != nid_of_node(page));
+
+    dec_page_count(sbi, type);
+    unlock_page(page);
+    __free_page(page);
+  }
+  if (!get_pages(sbi, F3FS_WB_CP_DATA) &&
+      wq_has_sleeper(&sbi->cp_wait))
+    wake_up(&sbi->cp_wait);
+
+  bio_put(bio);
 }
 
 static void f3fs_write_end_io(struct bio *bio)
@@ -434,6 +501,33 @@ static blk_opf_t f3fs_io_flags(struct f3fs_io_info *fio)
 	return op_flags;
 }
 
+static struct bio *__bio_alloc2(struct f3fs_io_info *fio, int npages)
+{
+  struct f3fs_sb_info *sbi = fio->sbi;
+  struct block_device *bdev;
+  sector_t sector;
+  struct bio *bio;
+
+  bdev = f3fs_target_device(sbi, fio->new_blkaddr, &sector);
+  bio = bio_alloc_bioset(bdev, npages,
+        fio->op | fio->op_flags | f3fs_io_flags(fio),
+        GFP_NOIO, &f3fs_bioset);
+  bio->bi_iter.bi_sector = sector;
+  if (is_read_io(fio->op)) {
+    bio->bi_end_io = f3fs_read_end_io;
+    bio->bi_private = NULL;
+  } else {
+    bio->bi_end_io = f3fs_write_end_io2;
+    bio->bi_private = sbi;
+  }
+  iostat_alloc_and_bind_ctx(sbi, bio, NULL);
+
+  if (fio->io_wbc)
+    wbc_init_bio(fio->io_wbc, bio);
+
+  return bio;
+}
+
 static struct bio *__bio_alloc(struct f3fs_io_info *fio, int npages)
 {
 	struct f3fs_sb_info *sbi = fio->sbi;
@@ -486,6 +580,54 @@ static bool f3fs_crypt_mergeable_bio(struct bio *bio, const struct inode *inode,
 		return !bio_has_crypt_ctx(bio);
 
 	return fscrypt_mergeable_bio(bio, inode, next_idx);
+}
+
+static inline void __submit_bio2(struct f3fs_sb_info *sbi,
+        struct bio *bio, enum page_type type)
+{
+  if (!is_read_io(bio_op(bio))) {
+    unsigned int start;
+
+    if (type != DATA && type != NODE)
+      goto submit_io;
+
+    if (f3fs_lfs_mode(sbi) && current->plug)
+      blk_finish_plug(current->plug);
+
+    if (!F3FS_IO_ALIGNED(sbi))
+      goto submit_io;
+
+    start = bio->bi_iter.bi_size >> F3FS_BLKSIZE_BITS;
+    start %= F3FS_IO_SIZE(sbi);
+
+    if (start == 0)
+      goto submit_io;
+
+    /* fill dummy pages */
+    for (; start < F3FS_IO_SIZE(sbi); start++) {
+      struct page *page =
+        mempool_alloc(sbi->write_io_dummy,
+                GFP_NOIO | __GFP_NOFAIL);
+      f3fs_bug_on(sbi, !page);
+
+      lock_page(page);
+
+      zero_user_segment(page, 0, PAGE_SIZE);
+      set_page_private_dummy(page);
+
+      if (bio_add_page(bio, page, PAGE_SIZE, 0) < PAGE_SIZE)
+        f3fs_bug_on(sbi, 1);
+    }
+    /*
+ *     * In the NODE case, we lose next block address chain. So, we
+ *         * need to do checkpoint in f3fs_sync_file.
+ *             */
+    if (type == NODE)
+      set_sbi_flag(sbi, SBI_NEED_CP);
+  }
+submit_io:
+	iostat_update_submit_ctx(bio, type);
+  submit_bio(bio);
 }
 
 static inline void __submit_bio(struct f3fs_sb_info *sbi,
@@ -547,6 +689,17 @@ void f3fs_submit_bio(struct f3fs_sb_info *sbi,
 	__submit_bio(sbi, bio, type);
 }
 
+static void __submit_merged_bio2(struct f3fs_bio_info *io)
+{
+  struct f3fs_io_info *fio = &io->fio;
+
+  if (!io->bio)
+    return;
+
+  __submit_bio2(io->sbi, io->bio, fio->type);
+  io->bio = NULL;
+}
+
 static void __submit_merged_bio(struct f3fs_bio_info *io)
 {
 	struct f3fs_io_info *fio = &io->fio;
@@ -578,6 +731,7 @@ static bool __has_merged_page(struct bio *bio, struct inode *inode,
 	bio_for_each_segment_all(bvec, bio, iter_all) {
 		struct page *target = bvec->bv_page;
 
+    if (target->mapping) {
 		if (fscrypt_is_bounce_page(target)) {
 			target = fscrypt_pagecache_page(target);
 			if (IS_ERR(target))
@@ -595,7 +749,12 @@ static bool __has_merged_page(struct bio *bio, struct inode *inode,
 			return true;
 		if (ino && ino == ino_of_node(target))
 			return true;
-	}
+	} else {
+    if (page && page == target) {
+      return true;
+    }
+  }
+  }
 
 	return false;
 }
@@ -934,6 +1093,86 @@ alloc_new:
 
 	return 0;
 }
+void f3fs_submit_page_write2(struct f3fs_io_info *fio)
+{
+  struct f3fs_sb_info *sbi = fio->sbi;
+  enum page_type btype = PAGE_TYPE_OF_BIO(fio->type);
+  struct f3fs_bio_info *io = sbi->write_io[btype] + fio->temp;
+  struct page *bio_page;
+
+  f3fs_bug_on(sbi, is_read_io(fio->op));
+
+  f3fs_down_write(&io->io_rwsem);
+next:
+  if (fio->in_list) {
+    spin_lock(&io->io_lock);
+    if (list_empty(&io->io_list)) {
+      spin_unlock(&io->io_lock);
+      goto out;
+    }
+    fio = list_first_entry(&io->io_list,
+            struct f3fs_io_info, list);
+    list_del(&fio->list);
+    spin_unlock(&io->io_lock);
+  }
+
+  verify_fio_blkaddr(fio);
+
+  if (fio->encrypted_page)
+    bio_page = fio->encrypted_page;
+  else if (fio->compressed_page)
+    bio_page = fio->compressed_page;
+  else
+    bio_page = fio->page;
+
+  /* set submitted = true as a return value */
+  fio->submitted = true;
+
+  inc_page_count(sbi, WB_DATA_TYPE(bio_page));
+
+  if (io->bio &&
+      (!io_is_mergeable(sbi, io->bio, io, fio, io->last_block_in_bio,
+            fio->new_blkaddr) ||
+       !f3fs_crypt_mergeable_bio(io->bio, fio->page->mapping->host,
+               bio_page->index, fio)))
+    __submit_merged_bio2(io);
+alloc_new:
+  if (io->bio == NULL) {
+    if (F3FS_IO_ALIGNED(sbi) &&
+        (fio->type == DATA || fio->type == NODE) &&
+        fio->new_blkaddr & F3FS_IO_SIZE_MASK(sbi)) {
+      dec_page_count(sbi, WB_DATA_TYPE(bio_page));
+      fio->retry = true;
+      goto skip;
+    }
+    io->bio = __bio_alloc2(fio, BIO_MAX_VECS);
+    //f3fs_set_bio_crypt_ctx(io->bio, fio->page->mapping->host,
+    //               bio_page->index, fio, GFP_NOIO);
+
+    io->fio = *fio;
+  }
+
+  if (bio_add_page(io->bio, bio_page, PAGE_SIZE, 0) < PAGE_SIZE) {
+    __submit_merged_bio2(io);
+    goto alloc_new;
+  }
+  atomic_inc(&sbi->gc_written_blocks); 
+
+   //if (fio->io_wbc)
+       //wbc_account_cgroup_owner(fio->io_wbc, bio_page, PAGE_SIZE);
+
+  io->last_block_in_bio = fio->new_blkaddr;
+
+  //  trace_f3fs_submit_page_write(fio->page, fio);
+skip:
+  if (fio->in_list)
+    goto next;
+out:
+  if (is_sbi_flag_set(sbi, SBI_IS_SHUTDOWN) ||
+      !f3fs_is_checkpoint_ready(sbi))
+    __submit_merged_bio2(io);
+  f3fs_up_write(&io->io_rwsem);
+}
 
 void f3fs_submit_page_write(struct f3fs_io_info *fio)
 {
@@ -1197,6 +1436,85 @@ int f3fs_get_block(struct dnode_of_data *dn, pgoff_t index)
 	}
 
 	return f3fs_reserve_block(dn, index);
+}
+
+struct page *f3fs_get_read_data_page_without_cache(struct inode *inode, pgoff_t index,
+    blk_opf_t op_flags, bool for_write)
+{
+  struct dnode_of_data dn;
+  struct page *page;
+  int err;
+  struct f3fs_sb_info* sbi = F3FS_I_SB(inode);
+  struct block_device *bdev;
+  sector_t sector;
+  block_t blkaddr;
+  struct bio* bio;
+  struct extent_info ei = {0, };
+  struct page *cpage = NULL;
+  struct address_space *mapping = inode->i_mapping;
+  page = alloc_page(GFP_NOIO);
+
+  if (page == NULL) {
+    return NULL;
+  }
+  lock_page(page);
+
+  if (f3fs_lookup_extent_cache(inode, index, &ei)) {
+    dn.data_blkaddr = ei.blk + index - ei.fofs;
+    if (!f3fs_is_valid_blkaddr(F3FS_I_SB(inode), dn.data_blkaddr,
+          DATA_GENERIC_ENHANCE_READ)) {
+      err = -EFSCORRUPTED;
+      goto put_err;
+    }
+    goto got_it;
+  }
+
+  set_new_dnode(&dn, inode, NULL, NULL, 0);
+  err = f3fs_get_dnode_of_data(&dn, index, LOOKUP_NODE);
+  if (err)
+    goto put_err;
+  f3fs_put_dnode(&dn);
+
+got_it:
+  blkaddr = dn.data_blkaddr;
+/*  cpage = find_lock_page(mapping, index);
+  if (cpage) {
+    wait_on_page_writeback(cpage);
+    memcpy(page_address(page), page_address(cpage), 4096);
+    unlock_page(cpage);
+    put_page(cpage);
+    unlock_page(page);
+    return page;
+  }*/
+  bdev = f3fs_target_device(sbi, blkaddr, &sector);
+  bio = bio_alloc_bioset(bdev, 1, REQ_OP_READ, GFP_NOIO, &f3fs_bioset);
+  if (bio == NULL) {
+    goto put_err;
+  }
+  bio->bi_iter.bi_sector = sector;
+  f3fs_set_bio_crypt_ctx(bio, inode, index, NULL, GFP_NOFS);
+  bio->bi_end_io = f3fs_read_end_io2;
+  if (bio_add_page(bio, page, PAGE_SIZE, 0) < PAGE_SIZE) {
+    goto put_err;
+  }
+
+  atomic_inc(&F3FS_I_SB(inode)->gc_read_blocks);
+  submit_bio(bio);
+
+  return page;
+
+put_err:
+  printk("%s %d daba_blkaddr %d bidx %ld err %d\n", __func__, __LINE__, dn.data_blkaddr, index, err);
+  if (bio) {
+    bio_put(bio);
+  }
+
+  if (page) {
+    unlock_page(page);
+    __free_page(page);
+  }
+
+  return NULL;
 }
 
 struct page *f3fs_get_read_data_page(struct inode *inode, pgoff_t index,
@@ -2599,6 +2917,84 @@ static inline bool need_inplace_update(struct f3fs_io_info *fio)
 		return false;
 
 	return f3fs_should_update_inplace(inode, fio);
+}
+int f3fs_do_write_data_page2(struct f3fs_io_info *fio, block_t index)
+{
+  struct page *page = fio->page;
+  struct inode *inode = fio->inode;
+  struct dnode_of_data dn;
+  struct node_info ni;
+  int err = 0;
+  bool submitted = false;
+
+  /* Use COW inode to make dnode_of_data for atomic write */
+  if (f3fs_is_atomic_file(inode))
+    set_new_dnode(&dn, F3FS_I(inode)->cow_inode, NULL, NULL, 0);
+  else
+    set_new_dnode(&dn, inode, NULL, NULL, 0);
+
+  /* Deadlock due to between page->lock and f3fs_lock_op */
+  if (fio->need_lock == LOCK_REQ && !f3fs_trylock_op(fio->sbi)) {
+    unlock_page(fio->page);
+    __free_page(fio->page);
+    return -EAGAIN;
+  }
+
+  err = f3fs_get_dnode_of_data(&dn, index, LOOKUP_NODE);
+  if (err) {
+    goto out;
+  }
+
+  if (fio->old_blkaddr != dn.data_blkaddr) {
+    goto out_writepage;
+  }
+  fio->old_blkaddr = dn.data_blkaddr;
+
+  /* This page is already truncated */
+  if (fio->old_blkaddr == NULL_ADDR) {
+    goto out_writepage;
+  }
+
+  if (__is_valid_data_blkaddr(fio->old_blkaddr) &&
+      !f3fs_is_valid_blkaddr(fio->sbi, fio->old_blkaddr,
+        DATA_GENERIC_ENHANCE)) {
+    err = -EFSCORRUPTED;
+    goto out_writepage;
+  }
+
+	if (fio->need_lock == LOCK_RETRY) {
+		if (!f3fs_trylock_op(fio->sbi)) {
+			err = -EAGAIN;
+			goto out_writepage;
+		}
+		fio->need_lock = LOCK_REQ;
+	}
+
+  err = f3fs_get_node_info(fio->sbi, dn.nid, &ni, false);
+  if (err)
+    goto out_writepage;
+
+  fio->version = ni.version;
+
+  atomic_inc(&fio->sbi->gc_written_blocks);
+  /* LFS mode write path */
+  f3fs_outplace_write_data2(&dn, fio);
+  submitted = true;
+  set_inode_flag(inode, FI_APPEND_WRITE);
+  if (index == 0)
+    set_inode_flag(inode, FI_FIRST_BLOCK_WRITTEN);
+out_writepage:
+  f3fs_put_dnode(&dn);
+out:
+  if (fio->need_lock == LOCK_REQ)
+    f3fs_unlock_op(fio->sbi);
+
+  if (submitted == false) {
+    unlock_page(fio->page);
+    __free_page(fio->page);
+    fio->page = NULL;
+  }
+  return err;
 }
 
 int f3fs_do_write_data_page(struct f3fs_io_info *fio)
