@@ -1136,14 +1136,20 @@ static int get_multiple_victim_by_default(struct f3fs_sb_info *sbi,
 		cost = get_gc_cost(sbi, segno, &p);
     changed = false;
     if (selected_count < VICTIM_COUNT) {
-      result[selected_count] = segno;
-      selected_cost[selected_count] = cost;
-      selected_count++;
-      changed = true;
+      if (!test_and_set_bit(segno, dirty_i->victim_secmap)) {
+        clear_bit(result[selected_count], dirty_i->victim_secmap);
+        result[selected_count] = segno;
+        selected_cost[selected_count] = cost;
+        selected_count++;
+        changed = true;
+      }
     } else if (local_max > cost) {
-      result[local_max_idx] = segno;
-      selected_cost[local_max_idx] = cost;
-      changed = true;
+      if (!test_and_set_bit(segno, dirty_i->victim_secmap)) {
+        clear_bit(result[local_max_idx], dirty_i->victim_secmap);
+        result[local_max_idx] = segno;
+        selected_cost[local_max_idx] = cost;
+        changed = true;
+      }
     }
 
     if (changed) {
@@ -1982,9 +1988,6 @@ static int __get_victim(struct f3fs_sb_info *sbi, unsigned int *victim,
     if (multiple_victim) {
 	    struct dirty_seglist_info *dirty_i = DIRTY_I(sbi);
 
-      down_write(&sit_i->last_victim_lock);
-	    mutex_lock(&dirty_i->seglist_lock);
-
       for (int i = 0 ; i < VICTIM_COUNT ; i++) {
         unsigned int candidate = multiple_victim[i];
         unsigned long *dirty_bitmap = dirty_i->dirty_segmap[DIRTY];
@@ -2030,8 +2033,6 @@ static int __get_victim(struct f3fs_sb_info *sbi, unsigned int *victim,
           sbi->cur_victim_sec = *victim;
       }
 
-      mutex_unlock(&dirty_i->seglist_lock);
-      up_write(&sit_i->last_victim_lock);
       return ret;
     }
   }
