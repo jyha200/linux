@@ -944,6 +944,7 @@ void f3fs_submit_page_write(struct f3fs_io_info *fio)
 
 	f3fs_bug_on(sbi, is_read_io(fio->op));
 
+
 	f3fs_down_write(&io->io_rwsem);
 next:
 	if (fio->in_list) {
@@ -997,6 +998,7 @@ alloc_new:
 		__submit_merged_bio(io);
 		goto alloc_new;
 	}
+  atomic_inc(&sbi->total_written_blocks); 
 
 	if (fio->io_wbc)
 		wbc_account_cgroup_owner(fio->io_wbc, bio_page, PAGE_SIZE);
@@ -1258,6 +1260,9 @@ got_it:
 		return page;
 	}
 
+  if (op_flags == REQ_RAHEAD) {
+    atomic_inc(&F3FS_I_SB(inode)->gc_read_blocks);
+  }
 	err = f3fs_submit_page_read(inode, page, dn.data_blkaddr,
 						op_flags, for_write);
 	if (err)
@@ -2754,6 +2759,9 @@ int f3fs_write_single_data_page(struct page *page, int *submitted,
 
 	trace_f3fs_writepage(page, DATA);
 
+  {
+    atomic_add(1, &sbi->total_written_request_blocks); 
+  }
 	/* we should bypass data pages to proceed the kworkder jobs */
 	if (unlikely(f3fs_cp_error(sbi))) {
 		mapping_set_error(page->mapping, -EIO);
@@ -2977,6 +2985,7 @@ retry:
 				tag, F3FS_ONSTACK_PAGES, pages);
 		if (nr_pages == 0)
 			break;
+
 
 		for (i = 0; i < nr_pages; i++) {
 			struct page *page = pages[i];
