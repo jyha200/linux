@@ -1435,6 +1435,7 @@ retry:
 
 		set_page_private_gcing(page);
 
+    atomic_inc(&fio.sbi->gc_written_blocks);
 		err = f3fs_do_write_data_page(&fio);
 		if (err) {
 			clear_page_private_gcing(page);

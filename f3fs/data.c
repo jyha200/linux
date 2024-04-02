@@ -944,6 +944,8 @@ void f3fs_submit_page_write(struct f3fs_io_info *fio)
 
 	f3fs_bug_on(sbi, is_read_io(fio->op));
 
+  atomic_inc(&sbi->total_written_blocks); 
+
 	f3fs_down_write(&io->io_rwsem);
 next:
 	if (fio->in_list) {
@@ -1258,6 +1260,9 @@ got_it:
 		return page;
 	}
 
+  if (op_flags == REQ_RAHEAD) {
+    atomic_inc(&F3FS_I_SB(inode)->gc_read_blocks);
+  }
 	err = f3fs_submit_page_read(inode, page, dn.data_blkaddr,
 						op_flags, for_write);
 	if (err)

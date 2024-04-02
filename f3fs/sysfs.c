@@ -95,8 +95,9 @@ static unsigned char *__struct_ptr(struct f3fs_sb_info *sbi, int struct_type)
 static ssize_t dirty_segments_show(struct f3fs_attr *a,
 		struct f3fs_sb_info *sbi, char *buf)
 {
-	return sprintf(buf, "%llu\n",
-			(unsigned long long)(dirty_segments(sbi)));
+	return sprintf(buf, "%llu %llu %llu\n",
+		//	(unsigned long long)(dirty_segments(sbi)));
+			(unsigned long long)(gc_read_blocks(sbi)), (unsigned long long)(gc_written_blocks(sbi)), (unsigned long long)(total_written_blocks(sbi)));
 }
 
 static ssize_t free_segments_show(struct f3fs_attr *a,
