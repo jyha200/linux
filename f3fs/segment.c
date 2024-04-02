@@ -377,6 +377,7 @@ int get_gc_intensity(struct f3fs_sb_info* sbi) {
   unsigned int utilization = 100 - free * 100 / total;
   unsigned int max_intensity = sbi->num_gc_thread;
   unsigned int unit = (100 - INCREMENTAL_GC_START) / max_intensity;
+  return -1;
 
   if (utilization > INCREMENTAL_GC_START) {
     return 1;
