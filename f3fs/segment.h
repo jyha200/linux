@@ -569,6 +569,31 @@ static inline unsigned int dirty_segments(struct f3fs_sb_info *sbi)
 		DIRTY_I(sbi)->nr_dirty[DIRTY_COLD_NODE];
 }
 
+static inline unsigned int total_written_direct_request_blocks(struct f3fs_sb_info* sbi)
+{
+  return atomic_read(&sbi->total_written_direct_request_blocks);
+}
+
+static inline unsigned int total_written_request_blocks(struct f3fs_sb_info* sbi)
+{
+  return atomic_read(&sbi->total_written_request_blocks);
+}
+
+static inline unsigned int total_written_blocks(struct f3fs_sb_info* sbi)
+{
+  return atomic_read(&sbi->total_written_blocks);
+}
+
+static inline unsigned int gc_written_blocks(struct f3fs_sb_info* sbi)
+{
+  return atomic_read(&sbi->gc_written_blocks);
+}
+
+static inline unsigned int gc_read_blocks(struct f3fs_sb_info* sbi)
+{
+  return atomic_read(&sbi->gc_read_blocks);
+}
+
 static inline int overprovision_segments(struct f3fs_sb_info *sbi)
 {
 	return SM_I(sbi)->ovp_segments;

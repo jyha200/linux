@@ -4029,6 +4029,11 @@ try_onemore:
 		return -ENOMEM;
 
 	sbi->sb = sb;
+  atomic_set(&sbi->total_written_blocks, 0);
+  atomic_set(&sbi->total_written_request_blocks, 0);
+  atomic_set(&sbi->total_written_direct_request_blocks, 0);
+  atomic_set(&sbi->gc_read_blocks, 0);
+  atomic_set(&sbi->gc_written_blocks, 0);
 
 	/* Load the checksum driver */
 	sbi->s_chksum_driver = crypto_alloc_shash("crc32", 0, 0);

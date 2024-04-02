@@ -4488,6 +4488,7 @@ static ssize_t f3fs_dio_write_iter(struct kiocb *iocb, struct iov_iter *from,
 	 * F3FS_DIO_WRITE counter will be decremented correctly in all cases.
 	 */
 	inc_page_count(sbi, F3FS_DIO_WRITE);
+  atomic_add(count, &sbi->total_written_direct_request_blocks); 
 	dio_flags = 0;
 	if (pos + count > inode->i_size)
 		dio_flags |= IOMAP_DIO_FORCE_WAIT;
@@ -4645,6 +4646,7 @@ out:
 	trace_f3fs_file_write_iter(inode, orig_pos, orig_count, ret);
 	if (ret > 0 && may_need_sync)
 		ret = generic_write_sync(iocb, ret);
+
 	return ret;
 }
 

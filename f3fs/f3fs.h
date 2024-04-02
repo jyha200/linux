@@ -1853,6 +1853,11 @@ struct f3fs_sb_info {
 	spinlock_t iostat_lat_lock;
 	struct iostat_lat_info *iostat_io_lat;
 #endif
+  atomic_t total_written_blocks;
+  atomic_t total_written_request_blocks;
+  atomic_t total_written_direct_request_blocks;
+  atomic_t gc_read_blocks;
+  atomic_t gc_written_blocks;
 };
 
 #ifdef CONFIG_F3FS_FAULT_INJECTION
