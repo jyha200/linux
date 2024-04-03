@@ -1659,7 +1659,8 @@ out:
 	return err;
 }
 static int move_data_page2(struct inode *inode, block_t bidx, int gc_type,
-              unsigned int segno, int off, char dst_hint, struct page* gc_buf)
+              unsigned int segno, int off, char dst_hint, struct page* gc_buf,
+              block_t old_blkaddr)
 {
   struct page *page;
   int err = 0;
@@ -1671,7 +1672,7 @@ static int move_data_page2(struct inode *inode, block_t bidx, int gc_type,
     .temp = COLD_GC_START + dst_hint,
     .op = REQ_OP_WRITE,
     .op_flags = REQ_SYNC,
-    .old_blkaddr = NULL_ADDR,
+    .old_blkaddr = old_blkaddr,
     .page = gc_buf,
     .encrypted_page = NULL,
     .need_lock = LOCK_REQ,
@@ -1943,7 +1944,8 @@ next_step:
 							gc_type, segno, off);
 			else {
         if (gc_buf[off]) {
-          move_data_page2(inode, start_bidx, gc_type, segno, off, dst_hint, gc_buf[off]);
+          move_data_page2(inode, start_bidx, gc_type, segno, off, dst_hint,
+            gc_buf[off], expected_blkaddr);
           gc_buf[off] = NULL;
         } else {
 				err = move_data_page(inode, start_bidx, gc_type,

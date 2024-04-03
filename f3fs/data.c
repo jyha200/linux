@@ -2929,6 +2929,9 @@ int f3fs_do_write_data_page2(struct f3fs_io_info *fio, block_t index)
     goto out;
   }
 
+  if (fio->old_blkaddr != dn.data_blkaddr) {
+    goto out_writepage;
+  }
   fio->old_blkaddr = dn.data_blkaddr;
 
   /* This page is already truncated */
