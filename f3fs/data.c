@@ -1474,6 +1474,15 @@ struct page *f3fs_get_read_data_page_without_cache(struct inode *inode, pgoff_t 
 
 got_it:
   blkaddr = dn.data_blkaddr;
+  cpage = find_lock_page(mapping, index);
+  if (cpage) {
+    wait_on_page_writeback(cpage);
+    memcpy(page_address(page), page_address(cpage), 4096);
+    unlock_page(cpage);
+    put_page(cpage);
+    unlock_page(page);
+    return page;
+  }
   bdev = f3fs_target_device(sbi, blkaddr, &sector);
   bio = bio_alloc_bioset(bdev, 1, REQ_OP_READ, GFP_NOIO, &f3fs_bioset);
   if (bio == NULL) {

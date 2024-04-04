@@ -1811,6 +1811,7 @@ next_step:
 		struct inode *inode;
 		struct node_info dni; /* dnode info for the data */
 		unsigned int ofs_in_node, nofs;
+    block_t expected_blkaddr = start_addr + off;
 		block_t start_bidx;
 		nid_t nid = le32_to_cpu(entry->nid);
 
