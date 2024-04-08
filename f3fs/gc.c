@@ -28,6 +28,25 @@ static struct kmem_cache *victim_entry_slab;
 static unsigned int count_bits(const unsigned long *addr,
 				unsigned int offset, unsigned int len);
 
+static int p_gc_func(void *data) {
+	struct f3fs_sb_info *sbi = data;
+  struct f3fs_p_gc_kthread* p_gc = &sbi->gc_thread->p_gc;
+  do {
+    wait_event_interruptible_timeout(p_gc->gc_wait_queue_head,
+      kthread_should_stop() || p_gc->done == false,
+      msecs_to_jiffies(300));
+    if (p_gc->done == false) {
+      
+      do_garbage_collect(sbi, p_gc->segno, p_gc->gc_list, FG_GC,
+        p_gc->should_migrate_blocks, 2);
+      p_gc->done = true;
+      wake_up(&p_gc->caller_wq);
+    }
+  } while (!kthread_should_stop());
+
+  return 0;
+}
+
 static int gc_thread_func(void *data)
 {
 	struct f3fs_sb_info *sbi = data;
@@ -176,6 +195,7 @@ int f3fs_start_gc_thread(struct f3fs_sb_info *sbi)
 	struct f3fs_gc_kthread *gc_th;
 	dev_t dev = sbi->sb->s_bdev->bd_dev;
 	int err = 0;
+  struct f3fs_p_gc_kthread* p_gc;
 
 	gc_th = f3fs_kmalloc(sbi, sizeof(struct f3fs_gc_kthread), GFP_KERNEL);
 	if (!gc_th) {
@@ -200,6 +220,19 @@ int f3fs_start_gc_thread(struct f3fs_sb_info *sbi)
 		kfree(gc_th);
 		sbi->gc_thread = NULL;
 	}
+
+  p_gc = &gc_th->p_gc;
+
+	init_waitqueue_head(&p_gc->gc_wait_queue_head);
+	init_waitqueue_head(&p_gc->caller_wq);
+  p_gc->done = true;
+  p_gc->f3fs_gc_task = kthread_run(p_gc_func, sbi, "p_gc_thread");
+ 	if (IS_ERR(p_gc->f3fs_gc_task)) {
+		err = PTR_ERR(p_gc->f3fs_gc_task);
+		kfree(gc_th);
+		sbi->gc_thread = NULL;
+	}
+
 out:
 	return err;
 }
@@ -207,9 +240,14 @@ out:
 void f3fs_stop_gc_thread(struct f3fs_sb_info *sbi)
 {
 	struct f3fs_gc_kthread *gc_th = sbi->gc_thread;
+	struct f3fs_p_gc_kthread *p_gc = &gc_th->p_gc;
 
 	if (!gc_th)
 		return;
+  if (p_gc) {
+    kthread_stop(p_gc->f3fs_gc_task);
+    wake_up_all(&p_gc->caller_wq);
+  }
 	kthread_stop(gc_th->f3fs_gc_task);
 	wake_up_all(&gc_th->fggc_wq);
 	kfree(gc_th);
@@ -971,7 +1009,7 @@ static int check_valid_map(struct f3fs_sb_info *sbi,
  * ignore that.
  */
 static int gc_node_segment(struct f3fs_sb_info *sbi,
-		struct f3fs_summary *sum, unsigned int segno, int gc_type)
+		struct f3fs_summary *sum, unsigned int segno, int gc_type, int mode)
 {
 	struct f3fs_summary *entry;
 	block_t start_addr;
@@ -980,16 +1018,37 @@ static int gc_node_segment(struct f3fs_sb_info *sbi,
 	bool fggc = (gc_type == FG_GC);
 	int submitted = 0;
 	unsigned int usable_blks_in_seg = f3fs_usable_blks_in_seg(sbi, segno);
+  int start, end;
 
 	start_addr = START_BLOCK(sbi, segno);
+  switch (mode) {
+    case 0: // normal GC
+      start = 0;
+      end = usable_blks_in_seg;
+      break;
+    case 1: // p gc top half
+      start = 0;
+      end = usable_blks_in_seg / 2;
+      break;
+    case 2: // p gc bottom half
+      start = usable_blks_in_seg / 2;
+      end = usable_blks_in_seg;
+      break;
+    default:
+      printk("%s %d error\n", __func__, __LINE__);
+      start = 0;
+      end = usable_blks_in_seg;
+      break;
+  }
+
 
 next_step:
-	entry = sum;
+	entry = sum + start;
 
 	if (fggc && phase == 2)
 		atomic_inc(&sbi->wb_sync_req[NODE]);
 
-	for (off = 0; off < usable_blks_in_seg; off++, entry++) {
+	for (off = start; off < end; off++, entry++) {
 		nid_t nid = le32_to_cpu(entry->nid);
 		struct page *node_page;
 		struct node_info ni;
@@ -1460,7 +1519,7 @@ out:
  */
 static int gc_data_segment(struct f3fs_sb_info *sbi, struct f3fs_summary *sum,
 		struct gc_inode_list *gc_list, unsigned int segno, int gc_type,
-		bool force_migrate)
+		bool force_migrate, int mode)
 {
 	struct super_block *sb = sbi->sb;
 	struct f3fs_summary *entry;
@@ -1469,13 +1528,33 @@ static int gc_data_segment(struct f3fs_sb_info *sbi, struct f3fs_summary *sum,
 	int phase = 0;
 	int submitted = 0;
 	unsigned int usable_blks_in_seg = f3fs_usable_blks_in_seg(sbi, segno);
+  int start, end;
 
 	start_addr = START_BLOCK(sbi, segno);
+  switch (mode) {
+    case 0: // normal GC
+      start = 0;
+      end = usable_blks_in_seg;
+      break;
+    case 1: // p gc top half
+      start = 0;
+      end = usable_blks_in_seg / 2;
+      break;
+    case 2: // p gc bottom half
+      start = usable_blks_in_seg / 2;
+      end = usable_blks_in_seg;
+      break;
+    default:
+      printk("%s %d error\n", __func__, __LINE__);
+      start = 0;
+      end = usable_blks_in_seg;
+      break;
+  }
 
 next_step:
-	entry = sum;
+	entry = sum + start;
 
-	for (off = 0; off < usable_blks_in_seg; off++, entry++) {
+	for (off = start; off < end; off++, entry++) {
 		struct page *data_page;
 		struct inode *inode;
 		struct node_info dni; /* dnode info for the data */
@@ -1632,10 +1711,10 @@ static int __get_victim(struct f3fs_sb_info *sbi, unsigned int *victim,
 	return ret;
 }
 
-static int do_garbage_collect(struct f3fs_sb_info *sbi,
+int do_garbage_collect(struct f3fs_sb_info *sbi,
 				unsigned int start_segno,
 				struct gc_inode_list *gc_list, int gc_type,
-				bool force_migrate)
+				bool force_migrate, int mode)
 {
 	struct page *sum_page;
 	struct f3fs_summary_block *sum;
@@ -1719,11 +1798,11 @@ static int do_garbage_collect(struct f3fs_sb_info *sbi,
 		 */
 		if (type == SUM_TYPE_NODE)
 			submitted += gc_node_segment(sbi, sum->entries, segno,
-								gc_type);
+								gc_type, mode);
 		else
 			submitted += gc_data_segment(sbi, sum->entries, gc_list,
 							segno, gc_type,
-							force_migrate);
+							force_migrate, mode);
 
 		stat_inc_seg_count(sbi, type, gc_type);
 		sbi->gc_reclaimed_segs[sbi->gc_mode]++;
@@ -1751,6 +1830,18 @@ skip:
 	return seg_freed;
 }
 
+bool parallel_gc(struct f3fs_sb_info* sbi, int gc_type, unsigned int segno) {
+  if (gc_type != FG_GC) {
+    return false;
+  }
+
+  if (get_valid_blocks(sbi, segno, false) >= 256) {
+    return true;
+  } else {
+    return false;
+  }
+}
+
 int f3fs_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control)
 {
 	int gc_type = gc_control->init_gc_type;
@@ -1762,6 +1853,11 @@ int f3fs_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control)
 		.ilist = LIST_HEAD_INIT(gc_list.ilist),
 		.iroot = RADIX_TREE_INIT(gc_list.iroot, GFP_NOFS),
 	};
+	struct gc_inode_list p_gc_list = {
+		.ilist = LIST_HEAD_INIT(p_gc_list.ilist),
+		.iroot = RADIX_TREE_INIT(p_gc_list.iroot, GFP_NOFS),
+	};
+
 	unsigned int skipped_round = 0, round = 0;
 
 	trace_f3fs_gc_begin(sbi->sb, gc_type, gc_control->no_bg_gc,
@@ -1818,8 +1914,29 @@ retry:
 		goto stop;
 	}
 
+  if (parallel_gc(sbi, gc_type, segno)) {
+    struct f3fs_p_gc_kthread* p_gc = &sbi->gc_thread->p_gc;
+    p_gc->done = false;
+    p_gc->segno = segno;
+    p_gc->seg_freed = 0;
+    p_gc->gc_list = &p_gc_list;
+    p_gc->should_migrate_blocks = gc_control->should_migrate_blocks;
+    wake_up(&p_gc->gc_wait_queue_head);
+    do_garbage_collect(sbi, segno, &gc_list, gc_type,
+      gc_control->should_migrate_blocks, 1);
+    while(p_gc->done == false) {
+      wait_event_interruptible_timeout(p_gc->caller_wq,
+        p_gc->done == true, msecs_to_jiffies(300));
+    }
+
+    if (gc_type == FG_GC && get_valid_blocks(sbi, segno, false) == 0) {
+      seg_freed = 1;
+    }
+  } else {
 	seg_freed = do_garbage_collect(sbi, segno, &gc_list, gc_type,
-				gc_control->should_migrate_blocks);
+				gc_control->should_migrate_blocks, 0);
+  }
+
 	total_freed += seg_freed;
 
 	if (seg_freed == f3fs_usable_segs_in_sec(sbi, segno))
@@ -1878,6 +1995,7 @@ stop:
 	f3fs_up_write(&sbi->gc_lock);
 
 	put_gc_inode(&gc_list);
+	put_gc_inode(&p_gc_list);
 
 	if (gc_control->err_gc_skipped && !ret)
 		ret = sec_freed ? 0 : -EAGAIN;
@@ -1965,7 +2083,7 @@ static int free_segment_range(struct f3fs_sb_info *sbi,
 			.iroot = RADIX_TREE_INIT(gc_list.iroot, GFP_NOFS),
 		};
 
-		do_garbage_collect(sbi, segno, &gc_list, FG_GC, true);
+		do_garbage_collect(sbi, segno, &gc_list, FG_GC, true, 0);
 		put_gc_inode(&gc_list);
 
 		if (!gc_only && get_valid_blocks(sbi, segno, true)) {

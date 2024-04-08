@@ -30,9 +30,22 @@
 /* Search max. number of dirty segments to select a victim segment */
 #define DEF_MAX_VICTIM_SEARCH 4096 /* covers 8GB */
 
+struct f3fs_p_gc_kthread {
+	struct task_struct *f3fs_gc_task;
+	wait_queue_head_t gc_wait_queue_head;
+	wait_queue_head_t caller_wq;
+  bool done;
+  bool should_migrate_blocks;
+  unsigned int segno;
+  unsigned int seg_freed;
+	struct gc_inode_list* gc_list;
+};
+
 struct f3fs_gc_kthread {
 	struct task_struct *f3fs_gc_task;
 	wait_queue_head_t gc_wait_queue_head;
+
+  struct f3fs_p_gc_kthread p_gc;
 
 	/* for gc sleep time */
 	unsigned int urgent_sleep_time;
@@ -144,6 +157,11 @@ static inline void increase_sleep_time(struct f3fs_gc_kthread *gc_th,
 	else
 		*wait += min_time;
 }
+
+int do_garbage_collect(struct f3fs_sb_info *sbi,
+				unsigned int start_segno,
+				struct gc_inode_list *gc_list, int gc_type,
+				bool force_migrate, int mode);
 
 static inline void decrease_sleep_time(struct f3fs_gc_kthread *gc_th,
 							unsigned int *wait)
