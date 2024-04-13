@@ -39,13 +39,18 @@ struct f3fs_p_gc_kthread {
   unsigned int segno;
   unsigned int seg_freed;
 	struct gc_inode_list* gc_list;
+  int p_gc_idx;
+  struct f3fs_sb_info* sbi;
 };
+
+#define MAX_GC_THREAD (48)
+#define NORMAL_GC (0x7FFFFFFF)
 
 struct f3fs_gc_kthread {
 	struct task_struct *f3fs_gc_task;
 	wait_queue_head_t gc_wait_queue_head;
 
-  struct f3fs_p_gc_kthread p_gc;
+  struct f3fs_p_gc_kthread p_gc[MAX_GC_THREAD];
 
 	/* for gc sleep time */
 	unsigned int urgent_sleep_time;

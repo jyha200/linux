@@ -29,16 +29,15 @@ static unsigned int count_bits(const unsigned long *addr,
 				unsigned int offset, unsigned int len);
 
 static int p_gc_func(void *data) {
-	struct f3fs_sb_info *sbi = data;
-  struct f3fs_p_gc_kthread* p_gc = &sbi->gc_thread->p_gc;
+  struct f3fs_p_gc_kthread* p_gc = data;
+	struct f3fs_sb_info *sbi = p_gc->sbi;
   do {
     wait_event_interruptible_timeout(p_gc->gc_wait_queue_head,
       kthread_should_stop() || p_gc->done == false,
       msecs_to_jiffies(300));
     if (p_gc->done == false) {
-      
       do_garbage_collect(sbi, p_gc->segno, p_gc->gc_list, FG_GC,
-        p_gc->should_migrate_blocks, 2);
+        p_gc->should_migrate_blocks, p_gc->p_gc_idx);
       p_gc->done = true;
       wake_up(&p_gc->caller_wq);
     }
@@ -221,17 +220,20 @@ int f3fs_start_gc_thread(struct f3fs_sb_info *sbi)
 		sbi->gc_thread = NULL;
 	}
 
-  p_gc = &gc_th->p_gc;
-
-	init_waitqueue_head(&p_gc->gc_wait_queue_head);
-	init_waitqueue_head(&p_gc->caller_wq);
-  p_gc->done = true;
-  p_gc->f3fs_gc_task = kthread_run(p_gc_func, sbi, "p_gc_thread");
- 	if (IS_ERR(p_gc->f3fs_gc_task)) {
-		err = PTR_ERR(p_gc->f3fs_gc_task);
-		kfree(gc_th);
-		sbi->gc_thread = NULL;
-	}
+  for (int i = 0; i < sbi->num_gc_thread ; i++) {
+    p_gc = &gc_th->p_gc[i];
+    p_gc->sbi = sbi;
+    init_waitqueue_head(&p_gc->gc_wait_queue_head);
+    init_waitqueue_head(&p_gc->caller_wq);
+    p_gc->done = true;
+    p_gc->p_gc_idx = i;
+    p_gc->f3fs_gc_task = kthread_run(p_gc_func, p_gc, "p_gc_thread");
+    if (IS_ERR(p_gc->f3fs_gc_task)) {
+      err = PTR_ERR(p_gc->f3fs_gc_task);
+      kfree(gc_th);
+      sbi->gc_thread = NULL;
+    }
+  }
 
 out:
 	return err;
@@ -240,13 +242,15 @@ out:
 void f3fs_stop_gc_thread(struct f3fs_sb_info *sbi)
 {
 	struct f3fs_gc_kthread *gc_th = sbi->gc_thread;
-	struct f3fs_p_gc_kthread *p_gc = &gc_th->p_gc;
 
 	if (!gc_th)
 		return;
-  if (p_gc) {
-    kthread_stop(p_gc->f3fs_gc_task);
-    wake_up_all(&p_gc->caller_wq);
+  for (int i = 0 ; i < sbi->num_gc_thread ; i++) {
+    struct f3fs_p_gc_kthread *p_gc = &gc_th->p_gc[i];
+    if (p_gc) {
+      kthread_stop(p_gc->f3fs_gc_task);
+      wake_up_all(&p_gc->caller_wq);
+    }
   }
 	kthread_stop(gc_th->f3fs_gc_task);
 	wake_up_all(&gc_th->fggc_wq);
@@ -1021,26 +1025,16 @@ static int gc_node_segment(struct f3fs_sb_info *sbi,
   int start, end;
 
 	start_addr = START_BLOCK(sbi, segno);
-  switch (mode) {
-    case 0: // normal GC
-      start = 0;
+  if (mode == NORMAL_GC) {
+    start = 0;
+    end = usable_blks_in_seg;
+  } else {
+    start = mode * usable_blks_in_seg / sbi->num_gc_thread;
+    end = (mode + 1) * usable_blks_in_seg / sbi->num_gc_thread;
+    if (mode == sbi->num_gc_thread - 1) {
       end = usable_blks_in_seg;
-      break;
-    case 1: // p gc top half
-      start = 0;
-      end = usable_blks_in_seg / 2;
-      break;
-    case 2: // p gc bottom half
-      start = usable_blks_in_seg / 2;
-      end = usable_blks_in_seg;
-      break;
-    default:
-      printk("%s %d error\n", __func__, __LINE__);
-      start = 0;
-      end = usable_blks_in_seg;
-      break;
+    }
   }
-
 
 next_step:
 	entry = sum + start;
@@ -1531,24 +1525,15 @@ static int gc_data_segment(struct f3fs_sb_info *sbi, struct f3fs_summary *sum,
   int start, end;
 
 	start_addr = START_BLOCK(sbi, segno);
-  switch (mode) {
-    case 0: // normal GC
-      start = 0;
+  if (mode == NORMAL_GC) {
+    start = 0;
+    end = usable_blks_in_seg;
+  } else {
+    start = mode * usable_blks_in_seg / sbi->num_gc_thread;
+    end = (mode + 1) * usable_blks_in_seg / sbi->num_gc_thread;
+    if (mode == sbi->num_gc_thread - 1) {
       end = usable_blks_in_seg;
-      break;
-    case 1: // p gc top half
-      start = 0;
-      end = usable_blks_in_seg / 2;
-      break;
-    case 2: // p gc bottom half
-      start = usable_blks_in_seg / 2;
-      end = usable_blks_in_seg;
-      break;
-    default:
-      printk("%s %d error\n", __func__, __LINE__);
-      start = 0;
-      end = usable_blks_in_seg;
-      break;
+    }
   }
 
 next_step:
@@ -1853,12 +1838,17 @@ int f3fs_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control)
 		.ilist = LIST_HEAD_INIT(gc_list.ilist),
 		.iroot = RADIX_TREE_INIT(gc_list.iroot, GFP_NOFS),
 	};
-	struct gc_inode_list p_gc_list = {
-		.ilist = LIST_HEAD_INIT(p_gc_list.ilist),
-		.iroot = RADIX_TREE_INIT(p_gc_list.iroot, GFP_NOFS),
+	struct gc_inode_list p_gc_list[MAX_GC_THREAD];
+	unsigned int skipped_round = 0, round = 0;
+
+  for (int i = 0 ; i < sbi->num_gc_thread ; i++) {
+    p_gc_list[i].ilist.next = &p_gc_list[i].ilist;
+    p_gc_list[i].ilist.prev = &p_gc_list[i].ilist;
+    p_gc_list[i].iroot.xa_lock = __SPIN_LOCK_UNLOCKED(p_gc_list[i].iroot.xa_lock);
+    p_gc_list[i].iroot.xa_flags = GFP_NOFS;
+    p_gc_list[i].iroot.xa_head = NULL;
 	};
 
-	unsigned int skipped_round = 0, round = 0;
 
 	trace_f3fs_gc_begin(sbi->sb, gc_type, gc_control->no_bg_gc,
 				gc_control->nr_free_secs,
@@ -1915,18 +1905,21 @@ retry:
 	}
 
   if (parallel_gc(sbi, gc_type, segno)) {
-    struct f3fs_p_gc_kthread* p_gc = &sbi->gc_thread->p_gc;
-    p_gc->done = false;
-    p_gc->segno = segno;
-    p_gc->seg_freed = 0;
-    p_gc->gc_list = &p_gc_list;
-    p_gc->should_migrate_blocks = gc_control->should_migrate_blocks;
-    wake_up(&p_gc->gc_wait_queue_head);
-    do_garbage_collect(sbi, segno, &gc_list, gc_type,
-      gc_control->should_migrate_blocks, 1);
-    while(p_gc->done == false) {
-      wait_event_interruptible_timeout(p_gc->caller_wq,
-        p_gc->done == true, msecs_to_jiffies(300));
+    for (int i = 0 ; i < sbi->num_gc_thread ; i++) {
+      struct f3fs_p_gc_kthread* p_gc = &sbi->gc_thread->p_gc[i];
+      p_gc->done = false;
+      p_gc->segno = segno;
+      p_gc->seg_freed = 0;
+      p_gc->gc_list = &p_gc_list[i];
+      p_gc->should_migrate_blocks = gc_control->should_migrate_blocks;
+      wake_up(&p_gc->gc_wait_queue_head);
+    }
+    for (int i = 0 ; i < sbi->num_gc_thread ; i++) {
+      struct f3fs_p_gc_kthread* p_gc = &sbi->gc_thread->p_gc[i];
+      while(p_gc->done == false) {
+        wait_event_interruptible_timeout(p_gc->caller_wq,
+            p_gc->done == true, msecs_to_jiffies(300));
+      }
     }
 
     if (gc_type == FG_GC && get_valid_blocks(sbi, segno, false) == 0) {
@@ -1934,7 +1927,7 @@ retry:
     }
   } else {
 	seg_freed = do_garbage_collect(sbi, segno, &gc_list, gc_type,
-				gc_control->should_migrate_blocks, 0);
+				gc_control->should_migrate_blocks, NORMAL_GC);
   }
 
 	total_freed += seg_freed;
@@ -1995,7 +1988,9 @@ stop:
 	f3fs_up_write(&sbi->gc_lock);
 
 	put_gc_inode(&gc_list);
-	put_gc_inode(&p_gc_list);
+  for (int i = 0 ; i < sbi->num_gc_thread ; i++) {
+    put_gc_inode(&p_gc_list[i]);
+  }
 
 	if (gc_control->err_gc_skipped && !ret)
 		ret = sec_freed ? 0 : -EAGAIN;
@@ -2083,7 +2078,7 @@ static int free_segment_range(struct f3fs_sb_info *sbi,
 			.iroot = RADIX_TREE_INIT(gc_list.iroot, GFP_NOFS),
 		};
 
-		do_garbage_collect(sbi, segno, &gc_list, FG_GC, true, 0);
+		do_garbage_collect(sbi, segno, &gc_list, FG_GC, true, NORMAL_GC);
 		put_gc_inode(&gc_list);
 
 		if (!gc_only && get_valid_blocks(sbi, segno, true)) {

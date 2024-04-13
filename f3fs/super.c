@@ -241,6 +241,9 @@ static match_table_t f3fs_tokens = {
 	{Opt_err, NULL},
 };
 
+static int num_gc_thread = 32;
+module_param(num_gc_thread, int, 0);
+
 void f3fs_printk(struct f3fs_sb_info *sbi, const char *fmt, ...)
 {
 	struct va_format vaf;
@@ -4029,6 +4032,7 @@ try_onemore:
 		return -ENOMEM;
 
 	sbi->sb = sb;
+  sbi->num_gc_thread = num_gc_thread;
 
 	/* Load the checksum driver */
 	sbi->s_chksum_driver = crypto_alloc_shash("crc32", 0, 0);
