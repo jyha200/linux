@@ -23,6 +23,7 @@
 #include "node.h"
 #include "gc.h"
 #include "iostat.h"
+#include "calclock.h"
 #include <trace/events/f3fs.h>
 
 #define __reverse_ffz(x) __reverse_ffs(~(x))
@@ -408,6 +409,7 @@ void f3fs_balance_fs(struct f3fs_sb_info *sbi, bool need)
 				.should_migrate_blocks = false,
 				.err_gc_skipped = false,
 				.nr_free_secs = 1 };
+
 			f3fs_down_write(&sbi->gc_lock);
 			f3fs_gc(sbi, &gc_control);
 		}
