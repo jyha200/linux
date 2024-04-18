@@ -21,6 +21,7 @@
 #include "segment.h"
 #include "gc.h"
 #include "iostat.h"
+#include "calclock.h"
 #include <trace/events/f3fs.h>
 
 static struct kmem_cache *victim_entry_slab;
@@ -762,6 +763,7 @@ static int f3fs_gc_pinned_control(struct inode *inode, int gc_type,
 	return -EAGAIN;
 }
 
+#define PROF_SEGLIST (1)
 /*
  * This function is called from two paths.
  * One is garbage collection and the other is SSR segment selection.
@@ -783,8 +785,17 @@ static int get_victim_by_default(struct f3fs_sb_info *sbi,
 	unsigned int nsearched;
 	bool is_atgc;
 	int ret = 0;
+#if PROF_SEGLIST
+  ktime_t ttt[2];
+  ttt[0] = ktime_get_raw();
+#endif
 
 	mutex_lock(&dirty_i->seglist_lock);
+#if PROF_SEGLIST
+  ttt[1] = ktime_get_raw();
+  ktcond_print2(ttt, 5, 2);
+#endif
+
 	last_segment = MAIN_SECS(sbi) * sbi->segs_per_sec;
 
 	p.alloc_mode = alloc_mode;
@@ -1703,12 +1714,12 @@ static int __get_victim(struct f3fs_sb_info *sbi, unsigned int *victim,
 	struct sit_info *sit_i = SIT_I(sbi);
 	int ret;
 
-  down_write(&sit_i->last_victim_lock);
 	ret = DIRTY_I(sbi)->v_ops->get_victim(sbi, victim, gc_type,
 					      NO_CHECK_TYPE, LFS, 0);
-  up_write(&sit_i->last_victim_lock);
 	return ret;
 }
+
+#define PROF_RWSEM (1)
 
 static int do_garbage_collect(struct f3fs_sb_info *sbi,
 				unsigned int start_segno,
@@ -1724,6 +1735,10 @@ static int do_garbage_collect(struct f3fs_sb_info *sbi,
 	unsigned char type = IS_DATASEG(get_seg_entry(sbi, segno)->type) ?
 						SUM_TYPE_DATA : SUM_TYPE_NODE;
 	int submitted = 0;
+#if PROF_RWSEM
+  ktime_t ttt[2];
+  ttt[0] = ktime_get_raw();
+#endif
 
 	if (__is_large_section(sbi))
 		end_segno = rounddown(end_segno, sbi->segs_per_sec);
@@ -1809,8 +1824,14 @@ static int do_garbage_collect(struct f3fs_sb_info *sbi,
 
 freed:
 		if (gc_type == FG_GC &&
-				get_valid_blocks(sbi, segno, false) == 0)
+				get_valid_blocks(sbi, segno, false) == 0) {
 			seg_freed++;
+    } else {
+#if PROF_RWSEM
+      ttt[1] = ktime_get_raw();
+      ktcond_print2(ttt, 3, 2);
+#endif
+    }
 
 		if (__is_large_section(sbi) && segno + 1 < end_segno)
 			sbi->next_victim_seg[gc_type] = segno + 1;
@@ -1978,9 +1999,15 @@ stop:
 
 }
 
+#define PROF_GC_TOTAL (1)
+
 int f3fs_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control)
 {
   int ret = 0;
+#if PROF_GC_TOTAL
+  ktime_t ttt[2];
+  ttt[0] = ktime_get_raw();
+#endif
 
   if (sbi->gc_thread) {
     for (int i = 0 ; i < sbi->num_gc_thread ; i++) {
@@ -2008,6 +2035,11 @@ int f3fs_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control)
   } else {
     ret = do_gc(sbi, gc_control, 0);
   }
+
+#if PROF_GC_TOTAL
+  ttt[1] = ktime_get_raw();
+  ktcond_print2(ttt, 2, 2);
+#endif
 
   f3fs_up_write(&sbi->gc_lock);
 	return ret;
