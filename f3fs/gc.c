@@ -21,6 +21,7 @@
 #include "segment.h"
 #include "gc.h"
 #include "iostat.h"
+#include "calclock.h"
 #include <trace/events/f3fs.h>
 
 static struct kmem_cache *victim_entry_slab;
@@ -1704,6 +1705,8 @@ static int __get_victim(struct f3fs_sb_info *sbi, unsigned int *victim,
 	return ret;
 }
 
+#define PROF_RWSEM (1)
+
 static int do_garbage_collect(struct f3fs_sb_info *sbi,
 				unsigned int start_segno,
 				struct gc_inode_list *gc_list, int gc_type,
@@ -1718,6 +1721,10 @@ static int do_garbage_collect(struct f3fs_sb_info *sbi,
 	unsigned char type = IS_DATASEG(get_seg_entry(sbi, segno)->type) ?
 						SUM_TYPE_DATA : SUM_TYPE_NODE;
 	int submitted = 0;
+#if PROF_RWSEM
+  ktime_t ttt[2];
+  ttt[0] = ktime_get_raw();
+#endif
 
 	if (__is_large_section(sbi))
 		end_segno = rounddown(end_segno, sbi->segs_per_sec);
@@ -1803,8 +1810,14 @@ static int do_garbage_collect(struct f3fs_sb_info *sbi,
 
 freed:
 		if (gc_type == FG_GC &&
-				get_valid_blocks(sbi, segno, false) == 0)
+				get_valid_blocks(sbi, segno, false) == 0) {
 			seg_freed++;
+    } else {
+#if PROF_RWSEM
+      ttt[1] = ktime_get_raw();
+      ktcond_print2(ttt, 3, 2);
+#endif
+    }
 
 		if (__is_large_section(sbi) && segno + 1 < end_segno)
 			sbi->next_victim_seg[gc_type] = segno + 1;
@@ -1972,9 +1985,15 @@ stop:
 
 }
 
+#define PROF_GC_TOTAL (1)
+
 int f3fs_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control)
 {
   int ret = 0;
+#if PROF_GC_TOTAL
+  ktime_t ttt[2];
+  ttt[0] = ktime_get_raw();
+#endif
 
   if (sbi->gc_thread) {
     for (int i = 0 ; i < sbi->num_gc_thread ; i++) {
@@ -2002,6 +2021,11 @@ int f3fs_gc(struct f3fs_sb_info *sbi, struct f3fs_gc_control *gc_control)
   } else {
     ret = do_gc(sbi, gc_control);
   }
+
+#if PROF_GC_TOTAL
+  ttt[1] = ktime_get_raw();
+  ktcond_print2(ttt, 2, 2);
+#endif
 
   f3fs_up_write(&sbi->gc_lock);
 	return ret;

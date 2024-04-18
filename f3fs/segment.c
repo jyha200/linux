@@ -23,6 +23,7 @@
 #include "node.h"
 #include "gc.h"
 #include "iostat.h"
+#include "calclock.h"
 #include <trace/events/f3fs.h>
 
 #define __reverse_ffz(x) __reverse_ffs(~(x))
@@ -409,6 +410,7 @@ void f3fs_balance_fs(struct f3fs_sb_info *sbi, bool need)
 				.should_migrate_blocks = false,
 				.err_gc_skipped = false,
 				.nr_free_secs = 1 };
+
 			f3fs_down_write(&sbi->gc_lock);
 			f3fs_gc(sbi, &gc_control);
 		}
@@ -3218,6 +3220,8 @@ static int __get_segment_type(struct f3fs_io_info *fio)
 	return type;
 }
 
+#define PROF_CURSEG (1)
+
 void f3fs_allocate_data_block(struct f3fs_sb_info *sbi, struct page *page,
 		block_t old_blkaddr, block_t *new_blkaddr,
 		struct f3fs_summary *sum, int type,
@@ -3228,10 +3232,25 @@ void f3fs_allocate_data_block(struct f3fs_sb_info *sbi, struct page *page,
 	unsigned long long old_mtime;
 	bool from_gc = (type == CURSEG_ALL_DATA_ATGC);
 	struct seg_entry *se = NULL;
+#if PROF_CURSEG
+  ktime_t ttt[2];
+#endif
 
 	f3fs_down_read(&SM_I(sbi)->curseg_lock);
+#if PROF_CURSEG
+  if (fio->io_type == FS_GC_DATA_IO) {
+    ttt[0] = ktime_get_raw();
+  }
+#endif
 
 	mutex_lock(&curseg->curseg_mutex);
+#if PROF_CURSEG
+  if (fio->io_type == FS_GC_DATA_IO) {
+    ttt[1] = ktime_get_raw();
+    ktcond_print2(ttt, 4, 2);
+  }
+#endif
+
 	down_write(&sit_i->sentry_lock);
 
 	if (from_gc) {
