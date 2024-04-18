@@ -26,6 +26,7 @@
 #include "node.h"
 #include "segment.h"
 #include "iostat.h"
+#include "calclock.h"
 #include <trace/events/f3fs.h>
 
 #define NUM_PREALLOC_POST_READ_CTXS	128
@@ -2721,6 +2722,8 @@ out:
 	return err;
 }
 
+#define PROF_GC_TARGET (1)
+
 int f3fs_write_single_data_page(struct page *page, int *submitted,
 				struct bio **bio,
 				sector_t *last_block,
@@ -2862,8 +2865,18 @@ out:
 	}
 	unlock_page(page);
 	if (!S_ISDIR(inode->i_mode) && !IS_NOQUOTA(inode) &&
-			!F3FS_I(inode)->cp_task && allow_balance)
+			!F3FS_I(inode)->cp_task && allow_balance) {
+#if PROF_GC_TARGET
+    ktime_t ttt[2];
+    ttt[0] = ktime_get_raw();
+#endif
+
 		f3fs_balance_fs(sbi, need_balance_fs);
+#if PROF_GC_TARGET
+  ttt[1] = ktime_get_raw();
+  ktcond_print2(ttt, 1, 2);
+#endif
+  }
 
 	if (unlikely(f3fs_cp_error(sbi))) {
 		f3fs_submit_merged_write(sbi, DATA);
@@ -3251,14 +3264,27 @@ skip_write:
 	return 0;
 }
 
+#define PROF_WRITE_TOTAL (1)
+
 static int f3fs_write_data_pages(struct address_space *mapping,
 			    struct writeback_control *wbc)
 {
 	struct inode *inode = mapping->host;
+  int ret;
+#if PROF_WRITE_TOTAL
+  ktime_t ttt[2];
+  ttt[0] = ktime_get_raw();
+#endif
 
-	return __f3fs_write_data_pages(mapping, wbc,
+	ret = __f3fs_write_data_pages(mapping, wbc,
 			F3FS_I(inode)->cp_task == current ?
 			FS_CP_DATA_IO : FS_DATA_IO);
+#if PROF_WRITE_TOTAL
+  ttt[1] = ktime_get_raw();
+  ktcond_print2(ttt, 0, 2);
+#endif
+
+  return ret;
 }
 
 void f3fs_write_failed(struct inode *inode, loff_t to)
