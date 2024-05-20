@@ -3637,6 +3637,7 @@ static void init_sb_info(struct f3fs_sb_info *sbi)
 
 	INIT_LIST_HEAD(&sbi->s_list);
 	mutex_init(&sbi->umount_mutex);
+	mutex_init(&sbi->gc_internal_cp);
 	init_f3fs_rwsem(&sbi->io_order_lock);
 	spin_lock_init(&sbi->cp_lock);
 

@@ -1285,6 +1285,7 @@ struct f3fs_gc_control {
 	bool should_migrate_blocks;	/* should migrate blocks */
 	bool err_gc_skipped;		/* return EAGAIN if GC skipped */
 	unsigned int nr_free_secs;	/* # of free sections to do GC */
+  atomic_t freed;
 };
 
 /* For s_flag in struct f3fs_sb_info */
@@ -1866,6 +1867,7 @@ struct f3fs_sb_info {
   atomic_t gc_read_blocks;
   atomic_t gc_written_blocks;
   int num_gc_thread;
+  struct mutex gc_internal_cp;
 };
 
 #ifdef CONFIG_F3FS_FAULT_INJECTION
