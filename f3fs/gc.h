@@ -32,7 +32,7 @@
 
 #define NUM_GC_WORKER (32)
 
-#define VICTIM_COUNT (32)
+#define VICTIM_COUNT (16)
 
 struct worker_arg {
   struct f3fs_sb_info* sbi;
