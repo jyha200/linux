@@ -3,7 +3,7 @@ obj-m += max.o
 
 max-y		:= dir.o file.o inode.o namei.o hash.o super.o inline.o
 max-y		+= checkpoint.o gc.o data.o node.o segment.o recovery.o
-max-y		+= shrinker.o extent_cache.o sysfs.o
+max-y		+= shrinker.o extent_cache.o sysfs.o rps.o
 max-$(CONFIG_FS_VERITY) += verity.o
 
 default:
