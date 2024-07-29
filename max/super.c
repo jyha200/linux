@@ -4112,7 +4112,13 @@ try_onemore:
 	init_f4fs_rwsem(&sbi->gc_lock);
 	mutex_init(&sbi->writepages);
 	init_f4fs_rwsem(&sbi->cp_global_sem);
+#ifdef RPS
+  rps_init_rwsem(&sbi->max_info.rps_cp_rwsem);
+  rps_init_rwsem(&sbi->max_info.rps_node_write);
+#else
 	init_f4fs_rwsem(&sbi->node_write);
+	init_f4fs_rwsem(&sbi->cp_rwsem);
+#endif
 	init_f4fs_rwsem(&sbi->node_change);
 
 	/* disallow all the data/node/meta page writes */
@@ -4123,7 +4129,6 @@ try_onemore:
 	if (err)
 		goto free_bio_info;
 
-	init_f4fs_rwsem(&sbi->cp_rwsem);
 	init_f4fs_rwsem(&sbi->quota_sem);
 	init_waitqueue_head(&sbi->cp_wait);
 	init_sb_info(sbi);

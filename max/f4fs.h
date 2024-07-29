@@ -29,6 +29,12 @@
 #include <linux/fscrypt.h>
 #include <linux/fsverity.h>
 
+#define RPS
+
+#ifdef RPS
+#include "rps.h"
+#endif
+
 struct pagevec;
 
 #ifdef CONFIG_F4FS_CHECK_FS
@@ -1595,6 +1601,11 @@ struct decompress_io_ctx {
 	struct work_struct free_work;	/* work for late free this structure itself */
 };
 
+struct max_info {
+  struct rps rps_cp_rwsem;
+  struct rps rps_node_write;
+};
+
 #define NULL_CLUSTER			((unsigned int)(~0))
 #define MIN_COMPRESS_LOG_SIZE		2
 #define MAX_COMPRESS_LOG_SIZE		8
@@ -1635,8 +1646,10 @@ struct f4fs_sb_info {
 	spinlock_t cp_lock;			/* for flag in ckpt */
 	struct inode *meta_inode;		/* cache meta blocks */
 	struct f4fs_rwsem cp_global_sem;	/* checkpoint procedure lock */
+#ifndef RPS
 	struct f4fs_rwsem cp_rwsem;		/* blocking FS operations */
 	struct f4fs_rwsem node_write;		/* locking node writes */
+#endif
 	struct f4fs_rwsem node_change;	/* locking node change */
 	wait_queue_head_t cp_wait;
 	unsigned long last_time[MAX_TIME];	/* to store time in jiffies */
@@ -1852,6 +1865,10 @@ struct f4fs_sb_info {
 	/* For io latency related statistics info in one iostat period */
 	spinlock_t iostat_lat_lock;
 	struct iostat_lat_info *iostat_io_lat;
+#endif
+
+#ifdef RPS
+  struct max_info max_info;
 #endif
 };
 
@@ -2207,7 +2224,11 @@ static inline void f4fs_up_write(struct f4fs_rwsem *sem)
 
 static inline void f4fs_lock_op(struct f4fs_sb_info *sbi)
 {
+#ifdef RPS
+  rps_down_read(&sbi->max_info.rps_cp_rwsem);
+#else
 	f4fs_down_read(&sbi->cp_rwsem);
+#endif
 }
 
 static inline int f4fs_trylock_op(struct f4fs_sb_info *sbi)
@@ -2216,22 +2237,38 @@ static inline int f4fs_trylock_op(struct f4fs_sb_info *sbi)
 		f4fs_show_injection_info(sbi, FAULT_LOCK_OP);
 		return 0;
 	}
+#ifdef RPS
+  return rps_down_read_try_lock(&sbi->max_info.rps_cp_rwsem);
+#else
 	return f4fs_down_read_trylock(&sbi->cp_rwsem);
+#endif
 }
 
 static inline void f4fs_unlock_op(struct f4fs_sb_info *sbi)
 {
+#ifdef RPS
+  rps_up_read(&sbi->max_info.rps_cp_rwsem);
+#else
 	f4fs_up_read(&sbi->cp_rwsem);
+#endif
 }
 
 static inline void f4fs_lock_all(struct f4fs_sb_info *sbi)
 {
+#ifdef RPS
+  rps_down_write(&sbi->max_info.rps_cp_rwsem);
+#else
 	f4fs_down_write(&sbi->cp_rwsem);
+#endif
 }
 
 static inline void f4fs_unlock_all(struct f4fs_sb_info *sbi)
 {
+#ifdef RPS
+  rps_up_write(&sbi->max_info.rps_cp_rwsem);
+#else
 	f4fs_up_write(&sbi->cp_rwsem);
+#endif
 }
 
 static inline int __get_cp_reason(struct f4fs_sb_info *sbi)

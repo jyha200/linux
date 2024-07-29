@@ -23,6 +23,8 @@ void rps_up_read(struct rps *);
 
 void rps_down_write(struct rps *);
 
+bool rps_rwsem_is_locked(struct rps* rps);
+
 void rps_up_write(struct rps *);
 
 int __rps_init_rwsem(struct rps *,

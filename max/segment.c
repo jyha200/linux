@@ -416,7 +416,11 @@ void f4fs_balance_fs(struct f4fs_sb_info *sbi, bool need)
 
 static inline bool excess_dirty_threshold(struct f4fs_sb_info *sbi)
 {
+#ifdef RPS
+	int factor = rps_rwsem_is_locked(&sbi->max_info.rps_cp_rwsem) ? 3 : 2;
+#else
 	int factor = f4fs_rwsem_is_locked(&sbi->cp_rwsem) ? 3 : 2;
+#endif
 	unsigned int dents = get_pages(sbi, F4FS_DIRTY_DENTS);
 	unsigned int qdata = get_pages(sbi, F4FS_DIRTY_QDATA);
 	unsigned int nodes = get_pages(sbi, F4FS_DIRTY_NODES);
@@ -457,7 +461,11 @@ void f4fs_balance_fs_bg(struct f4fs_sb_info *sbi, bool from_bg)
 
 	/* there is background inflight IO or foreground operation recently */
 	if (is_inflight_io(sbi, REQ_TIME) ||
+#ifdef RPS
+		(!f4fs_time_over(sbi, REQ_TIME) && rps_rwsem_is_locked(&sbi->max_info.rps_cp_rwsem)))
+#else
 		(!f4fs_time_over(sbi, REQ_TIME) && f4fs_rwsem_is_locked(&sbi->cp_rwsem)))
+#endif
 		return;
 
 	/* exceed periodical checkpoint timeout threshold */

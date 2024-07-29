@@ -1245,10 +1245,18 @@ retry_flush_dents:
 	}
 
 retry_flush_nodes:
+#ifdef RPS
+ rps_down_write(&sbi->max_info.rps_node_write);
+#else
 	f4fs_down_write(&sbi->node_write);
+#endif
 
 	if (get_pages(sbi, F4FS_DIRTY_NODES)) {
+#ifdef RPS
+ rps_up_write(&sbi->max_info.rps_node_write);
+#else
 		f4fs_up_write(&sbi->node_write);
+#endif
 		atomic_inc(&sbi->wb_sync_req[NODE]);
 		err = f4fs_sync_node_pages(sbi, &wbc, false, FS_CP_NODE_IO);
 		atomic_dec(&sbi->wb_sync_req[NODE]);
@@ -1272,7 +1280,11 @@ retry_flush_nodes:
 
 static void unblock_operations(struct f4fs_sb_info *sbi)
 {
+#ifdef RPS
+ rps_up_write(&sbi->max_info.rps_node_write);
+#else
 	f4fs_up_write(&sbi->node_write);
+#endif
 	f4fs_unlock_all(sbi);
 }
 

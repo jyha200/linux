@@ -1610,19 +1610,31 @@ static int __write_node_page(struct page *page, bool atomic, bool *submitted,
 
 	if (f4fs_get_node_info(sbi, nid, &ni, !do_balance))
 		goto redirty_out;
-
+#ifdef RPS
+	if (wbc->for_reclaim) {
+    if (!rps_down_read_try_lock(&sbi->max_info.rps_node_write))
+      goto redirty_out;
+	} else {
+    rps_down_read(&sbi->max_info.rps_node_write);
+  }
+#else
 	if (wbc->for_reclaim) {
 		if (!f4fs_down_read_trylock(&sbi->node_write))
 			goto redirty_out;
 	} else {
 		f4fs_down_read(&sbi->node_write);
 	}
+#endif
 
 	/* This page is already truncated */
 	if (unlikely(ni.blk_addr == NULL_ADDR)) {
 		ClearPageUptodate(page);
 		dec_page_count(sbi, F4FS_DIRTY_NODES);
+#ifdef RPS
+    rps_up_read(&sbi->max_info.rps_node_write);
+#else
 		f4fs_up_read(&sbi->node_write);
+#endif
 		unlock_page(page);
 		return 0;
 	}
@@ -1630,7 +1642,11 @@ static int __write_node_page(struct page *page, bool atomic, bool *submitted,
 	if (__is_valid_data_blkaddr(ni.blk_addr) &&
 		!f4fs_is_valid_blkaddr(sbi, ni.blk_addr,
 					DATA_GENERIC_ENHANCE)) {
+#ifdef RPS
+    rps_up_read(&sbi->max_info.rps_node_write);
+#else
 		f4fs_up_read(&sbi->node_write);
+#endif
 		goto redirty_out;
 	}
 
@@ -1651,7 +1667,11 @@ static int __write_node_page(struct page *page, bool atomic, bool *submitted,
 	f4fs_do_write_node_page(nid, &fio);
 	set_node_addr(sbi, &ni, fio.new_blkaddr, is_fsync_dnode(page));
 	dec_page_count(sbi, F4FS_DIRTY_NODES);
+#ifdef RPS
+    rps_up_read(&sbi->max_info.rps_node_write);
+#else
 	f4fs_up_read(&sbi->node_write);
+#endif
 
 	if (wbc->for_reclaim) {
 		f4fs_submit_merged_write_cond(sbi, NULL, page, 0, NODE);

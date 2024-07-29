@@ -2794,14 +2794,24 @@ write:
 		 * checkpoint. This can only happen to quota writes which can cause
 		 * the below discard race condition.
 		 */
-		if (IS_NOQUOTA(inode))
+		if (IS_NOQUOTA(inode)) {
+#ifdef RPS
+      rps_down_read(&sbi->max_info.rps_node_write);
+#else
 			f4fs_down_read(&sbi->node_write);
+#endif
+    }
 
 		fio.need_lock = LOCK_DONE;
 		err = f4fs_do_write_data_page(&fio);
 
-		if (IS_NOQUOTA(inode))
+		if (IS_NOQUOTA(inode)) {
+#ifdef RPS
+      rps_up_read(&sbi->max_info.rps_node_write);
+#else
 			f4fs_up_read(&sbi->node_write);
+#endif
+    }
 
 		goto done;
 	}

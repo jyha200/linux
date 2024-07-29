@@ -50,6 +50,10 @@ void rps_down_read(struct rps *rps) {
         go_lowway(rps);
 }
 
+bool rps_rwsem_is_locked(struct rps* rps) {
+  return rwsem_is_locked(&rps->rw_sem);
+}
+
 int rps_down_read_try_lock(struct rps *rps) {
         if (likely(go_highway(rps, +1))) {
                 return 1;
