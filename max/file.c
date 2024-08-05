@@ -223,7 +223,11 @@ static inline enum cp_reason_type need_do_checkpoint(struct inode *inode)
 
 static bool need_inode_page_update(struct f4fs_sb_info *sbi, nid_t ino)
 {
+#ifdef FILE_CELL
+	struct page *i = find_get_page(NODE_MAPPING(sbi, ino), ino);
+#else
 	struct page *i = find_get_page(NODE_MAPPING(sbi), ino);
+#endif
 	bool ret = false;
 	/* But we need to avoid that there are some inode updates */
 	if ((i && PageDirty(i)) || f4fs_need_inode_block_update(sbi, ino))
@@ -337,7 +341,11 @@ go_write:
 	}
 sync_nodes:
 	atomic_inc(&sbi->wb_sync_req[NODE]);
+#ifdef FILE_CELL
+	ret = f4fs_fsync_node_pages(sbi, inode, &wbc, atomic, &seq_id, ino % sbi->node_count);
+#else
 	ret = f4fs_fsync_node_pages(sbi, inode, &wbc, atomic, &seq_id);
+#endif
 	atomic_dec(&sbi->wb_sync_req[NODE]);
 	if (ret)
 		goto out;
@@ -363,7 +371,11 @@ sync_nodes:
 	 * given fsync mark.
 	 */
 	if (!atomic) {
+#ifdef FILE_CELL
+		ret = f4fs_wait_on_node_pages_writeback(sbi, seq_id, ino);
+#else
 		ret = f4fs_wait_on_node_pages_writeback(sbi, seq_id);
+#endif
 		if (ret)
 			goto out;
 	}

@@ -18,7 +18,19 @@ static unsigned int shrinker_run_no;
 
 static unsigned long __count_nat_entries(struct f4fs_sb_info *sbi)
 {
+#ifdef FILE_CELL
+	struct f4fs_nm_info *nm_i = NM_I(sbi);
+  int nat_tree_cnt = nm_i->nat_tree_cnt;
+  unsigned long count;
+  for (int i = 0; i < nat_tree_cnt; i++) {
+	    f4fs_down_read(&nm_i->nat_tree_lock[i]);
+      count += nm_i->nat_cnt[RECLAIMABLE_NAT][i];
+	    f4fs_down_read(&nm_i->nat_tree_lock[i]);
+  }
+  return count;
+#else
 	return NM_I(sbi)->nat_cnt[RECLAIMABLE_NAT];
+#endif
 }
 
 static unsigned long __count_free_nids(struct f4fs_sb_info *sbi)

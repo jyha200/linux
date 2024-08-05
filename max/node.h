@@ -41,6 +41,11 @@
 /* return value for read_node_page */
 #define LOCKED_PAGE	1
 
+#ifdef FILE_CELL
+#define TREE_IDX(nid, nm_i) ((nid) % (nm_i)->nat_tree_cnt)
+#define NODE_IDX(nid, sbi) ((nid) % (sbi)->node_count)
+#endif
+
 /* check pinned file's alignment status of physical blocks */
 #define FILE_NOT_ALIGNED	1
 
@@ -132,13 +137,36 @@ static inline void raw_nat_from_node_info(struct f4fs_nat_entry *raw_ne,
 
 static inline bool excess_dirty_nats(struct f4fs_sb_info *sbi)
 {
+#ifdef FILE_CELL
+  int total_dirty = 0;
+	struct f4fs_nm_info *nm_i = NM_I(sbi);
+  for (int i = 0; i < nm_i->nat_tree_cnt; i++) {
+    f4fs_down_read(&nm_i->nat_tree_lock[i]);
+    total_dirty += nm_i->nat_cnt[DIRTY_NAT][i];
+    f4fs_up_read(&nm_i->nat_tree_lock[i]);
+  }
+	return total_dirty >= nm_i->max_nid *
+					nm_i->dirty_nats_ratio / 100;
+#else
 	return NM_I(sbi)->nat_cnt[DIRTY_NAT] >= NM_I(sbi)->max_nid *
 					NM_I(sbi)->dirty_nats_ratio / 100;
+#endif
 }
 
 static inline bool excess_cached_nats(struct f4fs_sb_info *sbi)
 {
+#ifdef FILE_CELL
+  int total_nat = 0;
+	struct f4fs_nm_info *nm_i = NM_I(sbi);
+  for (int i = 0; i < nm_i->nat_tree_cnt; i++) {
+    f4fs_down_read(&nm_i->nat_tree_lock[i]);
+    total_nat += nm_i->nat_cnt[TOTAL_NAT][i];
+    f4fs_up_read(&nm_i->nat_tree_lock[i]);
+  }
+	return total_nat >= DEF_NAT_CACHE_THRESHOLD;
+#else
 	return NM_I(sbi)->nat_cnt[TOTAL_NAT] >= DEF_NAT_CACHE_THRESHOLD;
+#endif
 }
 
 enum mem_type {
@@ -158,6 +186,25 @@ struct nat_entry_set {
 	nid_t set;			/* set number*/
 	unsigned int entry_cnt;		/* the # of nat entries in set */
 };
+
+#ifdef FILE_CELL
+struct per_core_sets_pack {
+	struct nat_entry_set **set;
+	nid_t set_id;            /* set number*/
+	unsigned int entry_cnt;        /* the total  # of nat entries in set */
+	struct list_head set_list;    /* link with other nat sets */
+	unsigned int next_set_idx;
+};
+
+static inline void
+init_new_per_core_sets_pack(struct per_core_sets_pack *pack, unsigned int set_id, unsigned int nat_tree_cnt) {
+	pack->entry_cnt = 0;
+	pack->set_id = set_id;
+	pack->next_set_idx = 0;
+	pack->set = kzalloc(nat_tree_cnt * sizeof(struct nat_entry_set *), GFP_KERNEL);
+	INIT_LIST_HEAD(&pack->set_list);
+};
+#endif
 
 struct free_nid {
 	struct list_head list;	/* for free node id list */

@@ -11,6 +11,8 @@
 #include <linux/pagemap.h>
 #include <linux/types.h>
 
+#define FILE_CELL
+
 #define F4FS_SUPER_OFFSET		1024	/* byte-size offset */
 #define F4FS_MIN_LOG_SECTOR_SIZE	9	/* 9 bits for 512 bytes */
 #define F4FS_MAX_LOG_SECTOR_SIZE	12	/* 12 bits for 4096 bytes */
@@ -29,7 +31,11 @@
 #define F4FS_BLK_TO_BYTES(blk)		((blk) << F4FS_BLKSIZE_BITS)
 
 /* 0, 1(node nid), 2(meta nid) are reserved node id */
+#ifdef FILE_CELL
+#define F4FS_RESERVED_NODE_NUM		(PAGE_SIZE / sizeof(struct f4fs_nat_entry)) - 1
+#else
 #define F4FS_RESERVED_NODE_NUM		3
+#endif
 
 #define F4FS_ROOT_INO(sbi)	((sbi)->root_ino_num)
 #define F4FS_NODE_INO(sbi)	((sbi)->node_ino_num)
@@ -64,6 +70,10 @@
 #define MAX_VOLUME_NAME		512
 #define MAX_PATH_LEN		64
 #define MAX_DEVICES		8
+
+#ifdef FILE_CELL
+#define F4FS_IS_NODE(sbi, nid) ( (nid) >= F4FS_NODE_INO(sbi) && (nid) <= F4FS_RESERVED_NODE_NUM )
+#endif
 
 /*
  * For superblock

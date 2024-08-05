@@ -667,6 +667,10 @@ static int parse_options(struct super_block *sb, char *options, bool is_remount)
 	kgid_t gid;
 	int ret;
 
+#ifdef FILE_CELL
+  sbi->nr_file_cell = num_online_cpus() / 2;
+#endif
+
 	if (!options)
 		goto default_check;
 
@@ -1588,7 +1592,16 @@ static void f4fs_put_super(struct super_block *sb)
 
 	f4fs_destroy_compress_inode(sbi);
 
+#ifdef FILE_CELL
+	for (i = 0; i < sbi->node_count; i++) {
+		iput(sbi->node_inode[i]);
+	}
+	kfree(sbi->node_inode);
+	kfree(sbi->dirty_node_pages);
+	sbi->dirty_node_pages = NULL;
+#else
 	iput(sbi->node_inode);
+#endif
 	sbi->node_inode = NULL;
 
 	iput(sbi->meta_inode);
@@ -4119,6 +4132,17 @@ try_onemore:
 	init_f4fs_rwsem(&sbi->node_write);
 	init_f4fs_rwsem(&sbi->cp_rwsem);
 #endif
+#ifdef FILE_CELL
+  if (sbi->nr_file_cell > 0)
+    sbi->node_count = sbi->nr_file_cell;
+  else
+    sbi->node_count = num_online_cpus();
+
+  if (sbi->node_count > NAT_ENTRY_PER_BLOCK - 3) {
+		f4fs_err(sbi, "Max does support so many file cells");
+    return -1;
+  }
+#endif
 	init_f4fs_rwsem(&sbi->node_change);
 
 	/* disallow all the data/node/meta page writes */
@@ -4267,12 +4291,26 @@ try_onemore:
 		goto free_nm;
 
 	/* get an inode for node space */
+#ifdef FILE_CELL
+	sbi->node_inode = kzalloc(sizeof(struct inode *) * sbi->node_count, GFP_KERNEL);
+	sbi->dirty_node_pages = kzalloc(sizeof(atomic_t) * sbi->node_count, GFP_KERNEL);
+	for (i = 0; i < sbi->node_count; i++) {
+		sbi->node_inode[i] = f4fs_iget(sb, F4FS_NODE_INO(sbi) + i);
+		atomic_set(&sbi->dirty_node_pages[i], 0);
+		if (IS_ERR(sbi->node_inode[i])) {
+			f4fs_err(sbi, "Failed to read node inode");
+			err = PTR_ERR(sbi->node_inode[i]);
+			goto free_stats;
+		}
+	}
+#else
 	sbi->node_inode = f4fs_iget(sb, F4FS_NODE_INO(sbi));
 	if (IS_ERR(sbi->node_inode)) {
 		f4fs_err(sbi, "Failed to read node inode");
 		err = PTR_ERR(sbi->node_inode);
 		goto free_stats;
 	}
+#endif
 
 	/* read root inode and dentry */
 	root = f4fs_iget(sb, F4FS_ROOT_INO(sbi));
@@ -4449,8 +4487,17 @@ free_root_inode:
 	sb->s_root = NULL;
 free_node_inode:
 	f4fs_release_ino_entry(sbi, true);
+#ifdef FILE_CELL
+  for (int i = 0 ; i < sbi->node_count ; i++) {
+    truncate_inode_pages_final(NODE_MAPPING(sbi, i));
+    iput(sbi->node_inode[i]);
+  }
+	kfree(sbi->node_inode);
+	kfree(sbi->dirty_node_pages);
+#else
 	truncate_inode_pages_final(NODE_MAPPING(sbi));
 	iput(sbi->node_inode);
+#endif
 	sbi->node_inode = NULL;
 free_stats:
 	f4fs_destroy_stats(sbi);

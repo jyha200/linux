@@ -352,8 +352,13 @@ static void f4fs_write_end_io(struct bio *bio)
 				f4fs_stop_checkpoint(sbi, true);
 		}
 
+#ifdef FILE_CELL
+		f4fs_bug_on(sbi, page->mapping == NODE_MAPPING(sbi, nid_of_node(page)) &&
+					page->index != nid_of_node(page));
+#else
 		f4fs_bug_on(sbi, page->mapping == NODE_MAPPING(sbi) &&
 					page->index != nid_of_node(page));
+#endif
 
 		dec_page_count(sbi, type);
 		if (f4fs_in_warm_node_list(sbi, page))
@@ -1788,8 +1793,13 @@ static int f4fs_xattr_fiemap(struct inode *inode,
 	if (f4fs_has_inline_xattr(inode)) {
 		int offset;
 
+#ifdef FILE_CELL
+		page = f4fs_grab_cache_page(NODE_MAPPING(sbi, inode->i_ino),
+						inode->i_ino, false);
+#else
 		page = f4fs_grab_cache_page(NODE_MAPPING(sbi),
 						inode->i_ino, false);
+#endif
 		if (!page)
 			return -ENOMEM;
 
@@ -1821,7 +1831,11 @@ static int f4fs_xattr_fiemap(struct inode *inode,
 	}
 
 	if (xnid) {
+#ifdef FILE_CELL
+		page = f4fs_grab_cache_page(NODE_MAPPING(sbi, xnid), xnid, false);
+#else
 		page = f4fs_grab_cache_page(NODE_MAPPING(sbi), xnid, false);
+#endif
 		if (!page)
 			return -ENOMEM;
 
@@ -3650,16 +3664,30 @@ void f4fs_invalidate_folio(struct folio *folio, size_t offset, size_t length)
 	struct inode *inode = folio->mapping->host;
 	struct f4fs_sb_info *sbi = F4FS_I_SB(inode);
 
+#ifdef FILE_CELL
+  if ((inode->i_ino == F4FS_ROOT_INO(sbi) || inode->i_ino > F4FS_RESERVED_NODE_NUM) &&
+				(offset || length != folio_size(folio)))
+    return;
+#else
 	if (inode->i_ino >= F4FS_ROOT_INO(sbi) &&
 				(offset || length != folio_size(folio)))
 		return;
+#endif
 
 	if (folio_test_dirty(folio)) {
 		if (inode->i_ino == F4FS_META_INO(sbi)) {
 			dec_page_count(sbi, F4FS_DIRTY_META);
-		} else if (inode->i_ino == F4FS_NODE_INO(sbi)) {
+		} else
+#ifdef FILE_CELL
+    if (F4FS_IS_NODE(sbi, inode->i_ino)) {
+			dec_dirty_node_page_count(sbi, NODE_IDX(inode->i_ino, sbi));
+		}
+#else
+    if (inode->i_ino == F4FS_NODE_INO(sbi)) {
 			dec_page_count(sbi, F4FS_DIRTY_NODES);
-		} else {
+		}
+#endif
+    else {
 			inode_dec_dirty_pages(inode);
 			f4fs_remove_dirty_inode(inode);
 		}

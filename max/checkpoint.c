@@ -469,7 +469,11 @@ const struct address_space_operations f4fs_meta_aops = {
 static void __add_ino_entry(struct f4fs_sb_info *sbi, nid_t ino,
 						unsigned int devidx, int type)
 {
+#ifdef FILE_CELL
+	struct inode_management *im = &sbi->im[ino % sbi->inode_cache_count][type];
+#else
 	struct inode_management *im = &sbi->im[type];
+#endif
 	struct ino_entry *e = NULL, *new = NULL;
 
 	if (type == FLUSH_INO) {
@@ -501,7 +505,11 @@ retry:
 
 		list_add_tail(&e->list, &im->ino_list);
 		if (type != ORPHAN_INO)
+#ifdef FILE_CELL
+			percpu_counter_inc(&sbi->ino_management_num[type]);
+#else
 			im->ino_num++;
+#endif
 	}
 
 	if (type == FLUSH_INO)
@@ -516,7 +524,11 @@ retry:
 
 static void __remove_ino_entry(struct f4fs_sb_info *sbi, nid_t ino, int type)
 {
+#ifdef FILE_CELL
+	struct inode_management *im = &sbi->im[ino % sbi->inode_cache_count][type];
+#else
 	struct inode_management *im = &sbi->im[type];
+#endif
 	struct ino_entry *e;
 
 	spin_lock(&im->ino_lock);
@@ -524,7 +536,11 @@ static void __remove_ino_entry(struct f4fs_sb_info *sbi, nid_t ino, int type)
 	if (e) {
 		list_del(&e->list);
 		radix_tree_delete(&im->ino_root, ino);
+#ifdef FILE_CELL
+    percpu_counter_dec(&sbi->ino_management_num[type]);
+#else
 		im->ino_num--;
+#endif
 		spin_unlock(&im->ino_lock);
 		kmem_cache_free(ino_entry_slab, e);
 		return;
@@ -547,7 +563,11 @@ void f4fs_remove_ino_entry(struct f4fs_sb_info *sbi, nid_t ino, int type)
 /* mode should be APPEND_INO, UPDATE_INO or TRANS_DIR_INO */
 bool f4fs_exist_written_data(struct f4fs_sb_info *sbi, nid_t ino, int mode)
 {
+#ifdef FILE_CELL
+	struct inode_management *im = &sbi->im[ino % sbi->inode_cache_count][mode];
+#else
 	struct inode_management *im = &sbi->im[mode];
+#endif
 	struct ino_entry *e;
 
 	spin_lock(&im->ino_lock);
@@ -561,15 +581,26 @@ void f4fs_release_ino_entry(struct f4fs_sb_info *sbi, bool all)
 	struct ino_entry *e, *tmp;
 	int i;
 
+#ifdef FILE_CELL
+for (int j = 0 ; j < sbi->inode_cache_count; j++)
+#endif
 	for (i = all ? ORPHAN_INO : APPEND_INO; i < MAX_INO_ENTRY; i++) {
+#ifdef FILE_CELL
+	  struct inode_management *im = &sbi->im[j][i];
+#else
 		struct inode_management *im = &sbi->im[i];
+#endif
 
 		spin_lock(&im->ino_lock);
 		list_for_each_entry_safe(e, tmp, &im->ino_list, list) {
 			list_del(&e->list);
 			radix_tree_delete(&im->ino_root, e->ino);
 			kmem_cache_free(ino_entry_slab, e);
+#ifdef FILE_CELL
+			percpu_counter_dec(&sbi->ino_management_num[i]);
+#else
 			im->ino_num--;
+#endif
 		}
 		spin_unlock(&im->ino_lock);
 	}
@@ -584,7 +615,11 @@ void f4fs_set_dirty_device(struct f4fs_sb_info *sbi, nid_t ino,
 bool f4fs_is_dirty_device(struct f4fs_sb_info *sbi, nid_t ino,
 					unsigned int devidx, int type)
 {
+#ifdef FILE_CELL
+	struct inode_management *im = &sbi->im[ino % sbi->inode_cache_count][type];
+#else
 	struct inode_management *im = &sbi->im[type];
+#endif
 	struct ino_entry *e;
 	bool is_dirty = false;
 
@@ -598,8 +633,14 @@ bool f4fs_is_dirty_device(struct f4fs_sb_info *sbi, nid_t ino,
 
 int f4fs_acquire_orphan_inode(struct f4fs_sb_info *sbi)
 {
-	struct inode_management *im = &sbi->im[ORPHAN_INO];
 	int err = 0;
+#ifdef FILE_CELL
+	if (unlikely(percpu_counter_compare(&sbi->ino_management_num[ORPHAN_INO], sbi->max_orphans) >= 0))
+		err = -ENOSPC;
+	else
+		percpu_counter_inc(&sbi->ino_management_num[ORPHAN_INO]);
+#else
+	struct inode_management *im = &sbi->im[ORPHAN_INO];
 
 	spin_lock(&im->ino_lock);
 
@@ -614,18 +655,24 @@ int f4fs_acquire_orphan_inode(struct f4fs_sb_info *sbi)
 	else
 		im->ino_num++;
 	spin_unlock(&im->ino_lock);
+#endif
 
 	return err;
 }
 
 void f4fs_release_orphan_inode(struct f4fs_sb_info *sbi)
 {
+#ifdef FILE_CELL
+	f4fs_bug_on(sbi, percpu_counter_compare(&sbi->ino_management_num[ORPHAN_INO], 0) == 0);
+	percpu_counter_dec(&sbi->ino_management_num[ORPHAN_INO]);
+#else
 	struct inode_management *im = &sbi->im[ORPHAN_INO];
 
 	spin_lock(&im->ino_lock);
 	f4fs_bug_on(sbi, im->ino_num == 0);
 	im->ino_num--;
 	spin_unlock(&im->ino_lock);
+#endif
 }
 
 void f4fs_add_orphan_inode(struct inode *inode)
@@ -760,6 +807,66 @@ out:
 
 static void write_orphan_inodes(struct f4fs_sb_info *sbi, block_t start_blk)
 {
+#ifdef FILE_CELL
+	struct list_head *head;
+	struct f4fs_orphan_block *orphan_blk = NULL;
+	unsigned int nentries = 0;
+	unsigned short index;
+	unsigned short orphan_blocks;
+	struct page *page = NULL;
+	struct ino_entry *orphan = NULL;
+	int total_ino_num = 0;
+	int i;
+	total_ino_num = (int) percpu_counter_sum_positive(&sbi->ino_management_num[ORPHAN_INO]);
+	orphan_blocks = (unsigned short) GET_ORPHAN_BLOCKS(total_ino_num);
+//	for (index = 0; index < orphan_blocks; index++)
+//		grab_meta_page(sbi, start_blk + index);
+	index = 1;
+
+	/*
+	 * we don't need to do spin_lock(&im->ino_lock) here, since all the
+	 * orphan inode operations are covered under f2fs_lock_op().
+	 * And, spin_lock should be avoided due to page operations below.
+	 */
+	for (i = 0; i < sbi->inode_cache_count; i++) {
+		struct inode_management *im = &sbi->im[i][ORPHAN_INO];
+		head = &im->ino_list;
+		/* loop for each orphan inode entry and write them in Jornal block */
+		list_for_each_entry(orphan, head, list) {
+			if (!page) {
+				page = find_get_page(META_MAPPING(sbi), start_blk++);
+				f4fs_bug_on(sbi, !page);
+				orphan_blk = (struct f4fs_orphan_block *) page_address(page);
+				memset(orphan_blk, 0, sizeof(*orphan_blk));
+				f4fs_put_page(page, 0);
+			}
+			orphan_blk->ino[nentries++] = cpu_to_le32(orphan->ino);
+
+			if (nentries == F4FS_ORPHANS_PER_BLOCK) {
+				/*
+				 * an orphan block is full of 1020 entries,
+				 * then we need to flush current orphan blocks
+				 * and bring another one in memory
+				 */
+				orphan_blk->blk_addr = cpu_to_le16(index);
+				orphan_blk->blk_count = cpu_to_le16(orphan_blocks);
+				orphan_blk->entry_count = cpu_to_le32(nentries);
+				set_page_dirty(page);
+				f4fs_put_page(page, 1);
+				index++;
+				nentries = 0;
+				page = NULL;
+			}
+		}
+	}
+	if (page) {
+		orphan_blk->blk_addr = cpu_to_le16(index);
+		orphan_blk->blk_count = cpu_to_le16(orphan_blocks);
+		orphan_blk->entry_count = cpu_to_le32(nentries);
+		set_page_dirty(page);
+		f4fs_put_page(page, 1);
+	}
+#else
 	struct list_head *head;
 	struct f4fs_orphan_block *orphan_blk = NULL;
 	unsigned int nentries = 0;
@@ -813,6 +920,7 @@ static void write_orphan_inodes(struct f4fs_sb_info *sbi, block_t start_blk)
 		set_page_dirty(page);
 		f4fs_put_page(page, 1);
 	}
+#endif
 }
 
 static __u32 f4fs_checkpoint_chksum(struct f4fs_sb_info *sbi,
@@ -1251,6 +1359,27 @@ retry_flush_nodes:
 	f4fs_down_write(&sbi->node_write);
 #endif
 
+#ifdef FILE_CELL
+  for(int i = 0 ; i < sbi->node_count ; i++) {
+    if (get_dirty_node_pages(sbi, i)) {
+#ifdef RPS
+      rps_up_write(&sbi->max_info.rps_node_write);
+#else
+      f4fs_up_write(&sbi->node_write);
+#endif
+      atomic_inc(&sbi->wb_sync_req[NODE]);
+      err = f4fs_sync_node_pages(sbi, &wbc, false, FS_CP_NODE_IO, i);
+      atomic_dec(&sbi->wb_sync_req[NODE]);
+      if (err) {
+        f4fs_up_write(&sbi->node_change);
+        f4fs_unlock_all(sbi);
+        return err;
+      }
+      cond_resched();
+      goto retry_flush_nodes;
+    }
+  }
+#else
 	if (get_pages(sbi, F4FS_DIRTY_NODES)) {
 #ifdef RPS
  rps_up_write(&sbi->max_info.rps_node_write);
@@ -1268,6 +1397,7 @@ retry_flush_nodes:
 		cond_resched();
 		goto retry_flush_nodes;
 	}
+#endif
 
 	/*
 	 * sbi->node_change is used only for AIO write_begin path which produces
@@ -1313,7 +1443,11 @@ void f4fs_wait_on_all_pages(struct f4fs_sb_info *sbi, int type)
 
 static void update_ckpt_flags(struct f4fs_sb_info *sbi, struct cp_control *cpc)
 {
+#ifdef FILE_CELL
+	unsigned long orphan_num = (unsigned long) percpu_counter_sum_positive(&sbi->ino_management_num[ORPHAN_INO]);
+#else
 	unsigned long orphan_num = sbi->im[ORPHAN_INO].ino_num;
+#endif
 	struct f4fs_checkpoint *ckpt = F4FS_CKPT(sbi);
 	unsigned long flags;
 
@@ -1446,7 +1580,11 @@ static int do_checkpoint(struct f4fs_sb_info *sbi, struct cp_control *cpc)
 {
 	struct f4fs_checkpoint *ckpt = F4FS_CKPT(sbi);
 	struct f4fs_nm_info *nm_i = NM_I(sbi);
+#ifdef FILE_CELL
+	unsigned long orphan_num = (unsigned long) percpu_counter_sum_positive(&sbi->ino_management_num[ORPHAN_INO]), flags;
+#else
 	unsigned long orphan_num = sbi->im[ORPHAN_INO].ino_num, flags;
+#endif
 	block_t start_blk;
 	unsigned int data_sum_blocks, orphan_blocks;
 	__u32 crc32 = 0;
@@ -1619,6 +1757,9 @@ int f4fs_write_checkpoint(struct f4fs_sb_info *sbi, struct cp_control *cpc)
 	struct f4fs_checkpoint *ckpt = F4FS_CKPT(sbi);
 	unsigned long long ckpt_ver;
 	int err = 0;
+#ifdef FILE_CELL
+  int dirty_nat_cnt = 0;
+#endif
 
 	if (f4fs_readonly(sbi->sb) || f4fs_hw_is_readonly(sbi))
 		return -EROFS;
@@ -1657,7 +1798,14 @@ int f4fs_write_checkpoint(struct f4fs_sb_info *sbi, struct cp_control *cpc)
 			goto out;
 		}
 
+#ifdef FILE_CELL
+    for (int i = 0 ; i < NM_I(sbi)->nat_tree_cnt;i++) {
+      dirty_nat_cnt += NM_I(sbi)->nat_cnt[DIRTY_NAT][i];
+    }
+		if (dirty_nat_cnt == 0 &&
+#else
 		if (NM_I(sbi)->nat_cnt[DIRTY_NAT] == 0 &&
+#endif
 				SIT_I(sbi)->dirty_sentries == 0 &&
 				prefree_segments(sbi) == 0) {
 			f4fs_flush_sit_entries(sbi, cpc);
@@ -1676,7 +1824,11 @@ int f4fs_write_checkpoint(struct f4fs_sb_info *sbi, struct cp_control *cpc)
 	ckpt->checkpoint_ver = cpu_to_le64(++ckpt_ver);
 
 	/* write cached NAT/SIT entries to NAT/SIT area */
+#ifdef FILE_CELL
+	err = f4fs_flush_nat_entries_per_core(sbi, cpc);
+#else
 	err = f4fs_flush_nat_entries(sbi, cpc);
+#endif
 	if (err) {
 		f4fs_err(sbi, "f4fs_flush_nat_entries failed err:%d, stop checkpoint", err);
 		f4fs_bug_on(sbi, !f4fs_cp_error(sbi));
@@ -1716,6 +1868,30 @@ out:
 
 void f4fs_init_ino_entry_info(struct f4fs_sb_info *sbi)
 {
+#ifdef FILE_CELL
+	int i, j;
+	if (sbi->nr_file_cell > 0)
+		sbi->inode_cache_count = sbi->nr_file_cell;
+	else 
+		sbi->inode_cache_count = num_online_cpus();
+	
+	for (i = 0; i < MAX_INO_ENTRY; i++) {
+		percpu_counter_init(&sbi->ino_management_num[i], 0, GFP_KERNEL);
+	}
+	sbi->im = kzalloc(sizeof(struct inode_management *) * sbi->inode_cache_count, GFP_KERNEL);
+	for (i = 0; i < sbi->inode_cache_count; i++) {
+		sbi->im[i] = kzalloc(sizeof(struct inode_management) * MAX_INO_ENTRY, GFP_KERNEL);
+		for (j = 0; j < MAX_INO_ENTRY; j++) {
+			struct inode_management *im = &sbi->im[i][j];
+			INIT_RADIX_TREE(&im->ino_root, GFP_ATOMIC);
+			spin_lock_init(&im->ino_lock);
+			INIT_LIST_HEAD(&im->ino_list);
+		}
+	}
+	sbi->max_orphans = (sbi->blocks_per_seg - F4FS_CP_PACKS -
+						NR_CURSEG_TYPE - __cp_payload(sbi)) *
+					   F4FS_ORPHANS_PER_BLOCK;
+#else
 	int i;
 
 	for (i = 0; i < MAX_INO_ENTRY; i++) {
@@ -1730,6 +1906,7 @@ void f4fs_init_ino_entry_info(struct f4fs_sb_info *sbi)
 	sbi->max_orphans = (sbi->blocks_per_seg - F4FS_CP_PACKS -
 			NR_CURSEG_PERSIST_TYPE - __cp_payload(sbi)) *
 				F4FS_ORPHANS_PER_BLOCK;
+#endif
 }
 
 int __init f4fs_create_checkpoint_caches(void)

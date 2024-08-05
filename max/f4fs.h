@@ -30,6 +30,7 @@
 #include <linux/fsverity.h>
 
 #define RPS
+#define FILE_CELL
 
 #ifdef RPS
 #include "rps.h"
@@ -933,12 +934,22 @@ struct f4fs_nm_info {
 	unsigned int dirty_nats_ratio;	/* control dirty nats ratio threshold */
 
 	/* NAT cache management */
+#ifdef FILE_CELL
+	struct radix_tree_root *nat_root;/* root of the nat entry cache */
+	struct f4fs_rwsem *nat_tree_lock;    /* protect nat_tree_lock */
+	struct list_head *nat_entries;    /* cached nat entry list (clean) */
+	struct radix_tree_root *nat_set_root;/* root of the nat set cache */
+	unsigned int *nat_cnt[MAX_NAT_STATE];        /* the # of cached nat entries */
+	spinlock_t *nat_list_lock;	/* protect clean nat entry list */
+	int nat_tree_cnt;
+#else
 	struct radix_tree_root nat_root;/* root of the nat entry cache */
 	struct radix_tree_root nat_set_root;/* root of the nat set cache */
 	struct f4fs_rwsem nat_tree_lock;	/* protect nat entry tree */
 	struct list_head nat_entries;	/* cached nat entry list (clean) */
-	spinlock_t nat_list_lock;	/* protect clean nat entry list */
 	unsigned int nat_cnt[MAX_NAT_STATE]; /* the # of cached nat entries */
+	spinlock_t nat_list_lock;	/* protect clean nat entry list */
+#endif
 	unsigned int nat_blocks;	/* # of nat blocks */
 
 	/* free node ids management */
@@ -1262,7 +1273,10 @@ struct inode_management {
 	struct radix_tree_root ino_root;	/* ino entry array */
 	spinlock_t ino_lock;			/* for ino entry lock */
 	struct list_head ino_list;		/* inode list head */
+#ifdef FILE_CELL
+#else
 	unsigned long ino_num;			/* number of entries */
+#endif
 };
 
 /* for GC_AT */
@@ -1627,7 +1641,13 @@ struct f4fs_sb_info {
 
 	/* for node-related operations */
 	struct f4fs_nm_info *nm_info;		/* node manager */
-	struct inode *node_inode;		/* cache node blocks */
+#ifdef FILE_CELL
+	struct inode **node_inode;        /* cache node blocks */
+	int node_count;
+	atomic_t *dirty_node_pages;
+#else
+	struct inode *node_inode;        /* cache node blocks */
+#endif
 
 	/* for segment-related operations */
 	struct f4fs_sm_info *sm_info;		/* segment manager */
@@ -1656,7 +1676,13 @@ struct f4fs_sb_info {
 	long interval_time[MAX_TIME];		/* to store thresholds */
 	struct ckpt_req_control cprc_info;	/* for checkpoint request control */
 
+#ifdef FILE_CELL
+	struct inode_management **im;      /* manage inode cache */
+	int inode_cache_count;
+	struct percpu_counter ino_management_num[MAX_INO_ENTRY];
+#else
 	struct inode_management im[MAX_INO_ENTRY];	/* manage inode cache */
+#endif
 
 	spinlock_t fsync_node_lock;		/* for node entry lock */
 	struct list_head fsync_node_list;	/* node list head */
@@ -1870,6 +1896,10 @@ struct f4fs_sb_info {
 #ifdef RPS
   struct max_info max_info;
 #endif
+
+#ifdef FILE_CELL
+  uint nr_file_cell;
+#endif
 };
 
 #ifdef CONFIG_F4FS_FAULT_INJECTION
@@ -2064,10 +2094,16 @@ static inline struct address_space *META_MAPPING(struct f4fs_sb_info *sbi)
 	return sbi->meta_inode->i_mapping;
 }
 
+#ifdef FILE_CELL
+static inline struct address_space *NODE_MAPPING(struct f4fs_sb_info *sbi, nid_t nid) {
+	return sbi->node_inode[nid % sbi->node_count]->i_mapping;
+}
+#else
 static inline struct address_space *NODE_MAPPING(struct f4fs_sb_info *sbi)
 {
 	return sbi->node_inode->i_mapping;
 }
+#endif
 
 static inline bool is_sbi_flag_set(struct f4fs_sb_info *sbi, unsigned int type)
 {
@@ -2435,6 +2471,24 @@ static inline void dec_valid_block_count(struct f4fs_sb_info *sbi,
 	}
 	f4fs_i_blocks_write(inode, count, false, true);
 }
+
+#ifdef FILE_CELL
+static inline void inc_dirty_node_page_count(struct f4fs_sb_info *sbi, int node_idx) {
+	atomic_inc(&sbi->dirty_node_pages[node_idx]);
+	atomic_inc(&sbi->nr_pages[F4FS_DIRTY_NODES]);
+	set_sbi_flag(sbi, SBI_IS_DIRTY);
+}
+
+static inline void dec_dirty_node_page_count(struct f4fs_sb_info *sbi, int node_idx) {
+	atomic_dec(&sbi->dirty_node_pages[node_idx]);
+	atomic_dec(&sbi->nr_pages[F4FS_DIRTY_NODES]);
+}
+
+static inline int get_dirty_node_pages(struct f4fs_sb_info *sbi, int node_idx) {
+	return atomic_read(&sbi->dirty_node_pages[node_idx]);
+}
+
+#endif
 
 static inline void inc_page_count(struct f4fs_sb_info *sbi, int count_type)
 {
@@ -3613,8 +3667,13 @@ pgoff_t f4fs_get_next_page_offset(struct dnode_of_data *dn, pgoff_t pgofs);
 int f4fs_get_dnode_of_data(struct dnode_of_data *dn, pgoff_t index, int mode);
 int f4fs_truncate_inode_blocks(struct inode *inode, pgoff_t from);
 int f4fs_truncate_xattr_node(struct inode *inode);
+#ifdef FILE_CELL
+int f4fs_wait_on_node_pages_writeback(struct f4fs_sb_info *sbi,
+					unsigned int seq_id, nid_t ino);
+#else
 int f4fs_wait_on_node_pages_writeback(struct f4fs_sb_info *sbi,
 					unsigned int seq_id);
+#endif
 bool f4fs_nat_bitmap_enabled(struct f4fs_sb_info *sbi);
 int f4fs_remove_inode_page(struct inode *inode);
 struct page *f4fs_new_inode_page(struct inode *inode);
@@ -3624,12 +3683,21 @@ struct page *f4fs_get_node_page(struct f4fs_sb_info *sbi, pgoff_t nid);
 struct page *f4fs_get_node_page_ra(struct page *parent, int start);
 int f4fs_move_node_page(struct page *node_page, int gc_type);
 void f4fs_flush_inline_data(struct f4fs_sb_info *sbi);
+#ifdef FILE_CELL
+int f4fs_fsync_node_pages(struct f4fs_sb_info *sbi, struct inode *inode,
+			struct writeback_control *wbc, bool atomic,
+			unsigned int *seq_id, nid_t node_idx);
+int f4fs_sync_node_pages(struct f4fs_sb_info *sbi,
+			struct writeback_control *wbc,
+			bool do_balance, enum iostat_type io_type, nid_t node_idx);
+#else
 int f4fs_fsync_node_pages(struct f4fs_sb_info *sbi, struct inode *inode,
 			struct writeback_control *wbc, bool atomic,
 			unsigned int *seq_id);
 int f4fs_sync_node_pages(struct f4fs_sb_info *sbi,
 			struct writeback_control *wbc,
 			bool do_balance, enum iostat_type io_type);
+#endif
 int f4fs_build_free_nids(struct f4fs_sb_info *sbi, bool sync, bool mount);
 bool f4fs_alloc_nid(struct f4fs_sb_info *sbi, nid_t *nid);
 void f4fs_alloc_nid_done(struct f4fs_sb_info *sbi, nid_t nid);
@@ -3641,7 +3709,11 @@ int f4fs_recover_inode_page(struct f4fs_sb_info *sbi, struct page *page);
 int f4fs_restore_node_summary(struct f4fs_sb_info *sbi,
 			unsigned int segno, struct f4fs_summary_block *sum);
 void f4fs_enable_nat_bits(struct f4fs_sb_info *sbi);
+#ifdef FILE_CELL
+int f4fs_flush_nat_entries_per_core(struct f4fs_sb_info *sbi, struct cp_control *cpc);
+#else
 int f4fs_flush_nat_entries(struct f4fs_sb_info *sbi, struct cp_control *cpc);
+#endif
 int f4fs_build_node_manager(struct f4fs_sb_info *sbi);
 void f4fs_destroy_node_manager(struct f4fs_sb_info *sbi);
 int __init f4fs_create_node_manager_caches(void);

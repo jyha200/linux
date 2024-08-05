@@ -27,12 +27,21 @@ static struct kmem_cache *free_nid_slab;
 static struct kmem_cache *nat_entry_set_slab;
 static struct kmem_cache *fsync_node_entry_slab;
 
+#ifdef FILE_CELL
+static struct kmem_cache *per_core_sets_pack_slab;
+#endif
+
 /*
  * Check whether the given nid is within node id range.
  */
 int f4fs_check_nid_range(struct f4fs_sb_info *sbi, nid_t nid)
 {
-	if (unlikely(nid < F4FS_ROOT_INO(sbi) || nid >= NM_I(sbi)->max_nid)) {
+#ifdef FILE_CELL
+	if (unlikely((nid <= F4FS_RESERVED_NODE_NUM && nid != F4FS_ROOT_INO(sbi)) || nid >= NM_I(sbi)->max_nid))
+#else
+	if (unlikely(nid < F4FS_ROOT_INO(sbi) || nid >= NM_I(sbi)->max_nid))
+#endif
+  {
 		set_sbi_flag(sbi, SBI_NEED_FSCK);
 		f4fs_warn(sbi, "%s: out-of-range nid=%x, run fsck to fix.",
 			  __func__, nid);
@@ -66,8 +75,20 @@ bool f4fs_available_free_memory(struct f4fs_sb_info *sbi, int type)
 				sizeof(struct free_nid)) >> PAGE_SHIFT;
 		res = mem_size < ((avail_ram * nm_i->ram_thresh / 100) >> 2);
 	} else if (type == NAT_ENTRIES) {
+#ifdef FILE_CELL
+    int i;
+    unsigned int count = 0;
+    int nat_tree_cnt = nm_i->nat_tree_cnt;
+    for (i = 0; i < nat_tree_cnt; i++) {
+	    f4fs_down_read(&nm_i->nat_tree_lock[i]);
+      count += nm_i->nat_cnt[TOTAL_NAT][i];
+	    f4fs_up_read(&nm_i->nat_tree_lock[i]);
+    }
+		mem_size = (count * sizeof(struct nat_entry)) >> PAGE_SHIFT;
+#else
 		mem_size = (nm_i->nat_cnt[TOTAL_NAT] *
 				sizeof(struct nat_entry)) >> PAGE_SHIFT;
+#endif
 		res = mem_size < ((avail_ram * nm_i->ram_thresh / 100) >> 2);
 		if (excess_cached_nats(sbi))
 			res = false;
@@ -79,10 +100,16 @@ bool f4fs_available_free_memory(struct f4fs_sb_info *sbi, int type)
 	} else if (type == INO_ENTRIES) {
 		int i;
 
+#ifdef FILE_CELL
+		for (i = 0; i <= UPDATE_INO; i++) {
+			mem_size += percpu_counter_sum_positive(&sbi->ino_management_num[i]) >> PAGE_SHIFT;
+		}
+#else
 		for (i = 0; i < MAX_INO_ENTRY; i++)
 			mem_size += sbi->im[i].ino_num *
 						sizeof(struct ino_entry);
 		mem_size >>= PAGE_SHIFT;
+#endif
 		res = mem_size < ((avail_ram * nm_i->ram_thresh / 100) >> 1);
 	} else if (type == EXTENT_CACHE) {
 		mem_size = (atomic_read(&sbi->total_ext_tree) *
@@ -120,7 +147,11 @@ static void clear_node_page_dirty(struct page *page)
 	if (PageDirty(page)) {
 		f4fs_clear_page_cache_dirty_tag(page);
 		clear_page_dirty_for_io(page);
+#ifdef FILE_CELL
+		dec_dirty_node_page_count(F4FS_M_SB(page->mapping), NODE_IDX(nid_of_node(page), F4FS_M_SB(page->mapping)));
+#else
 		dec_page_count(F4FS_P_SB(page), F4FS_DIRTY_NODES);
+#endif
 	}
 	ClearPageUptodate(page);
 }
@@ -182,51 +213,98 @@ static void __free_nat_entry(struct nat_entry *e)
 static struct nat_entry *__init_nat_entry(struct f4fs_nm_info *nm_i,
 	struct nat_entry *ne, struct f4fs_nat_entry *raw_ne, bool no_fail)
 {
+#ifdef FILE_CELL
+	int tree_idx = TREE_IDX(nat_get_nid(ne), nm_i);
+	if (no_fail)
+		f4fs_radix_tree_insert(&nm_i->nat_root[tree_idx], nat_get_nid(ne), ne);
+	else if (radix_tree_insert(&nm_i->nat_root[tree_idx], nat_get_nid(ne), ne))
+		return NULL;
+#else
 	if (no_fail)
 		f4fs_radix_tree_insert(&nm_i->nat_root, nat_get_nid(ne), ne);
 	else if (radix_tree_insert(&nm_i->nat_root, nat_get_nid(ne), ne))
 		return NULL;
+#endif
 
 	if (raw_ne)
 		node_info_from_raw_nat(&ne->ni, raw_ne);
 
+#ifdef FILE_CELL
+	spin_lock(&nm_i->nat_list_lock[tree_idx]);
+	list_add_tail(&ne->list, &nm_i->nat_entries[tree_idx]);
+	spin_unlock(&nm_i->nat_list_lock[tree_idx]);
+#else
 	spin_lock(&nm_i->nat_list_lock);
 	list_add_tail(&ne->list, &nm_i->nat_entries);
 	spin_unlock(&nm_i->nat_list_lock);
+#endif
 
+#ifdef FILE_CELL
+	nm_i->nat_cnt[TOTAL_NAT][tree_idx]++;
+	nm_i->nat_cnt[RECLAIMABLE_NAT][tree_idx]++;
+#else
 	nm_i->nat_cnt[TOTAL_NAT]++;
 	nm_i->nat_cnt[RECLAIMABLE_NAT]++;
+#endif
 	return ne;
 }
 
 static struct nat_entry *__lookup_nat_cache(struct f4fs_nm_info *nm_i, nid_t n)
 {
 	struct nat_entry *ne;
+#ifdef FILE_CELL
+	int tree_idx = TREE_IDX(n, nm_i);
 
+	ne = radix_tree_lookup(&nm_i->nat_root[tree_idx], n);
+#else
 	ne = radix_tree_lookup(&nm_i->nat_root, n);
+#endif
 
 	/* for recent accessed nat entry, move it to tail of lru list */
 	if (ne && !get_nat_flag(ne, IS_DIRTY)) {
+#ifdef FILE_CELL
+		spin_lock(&nm_i->nat_list_lock[tree_idx]);
+		if (!list_empty(&ne->list))
+			list_move_tail(&ne->list, &nm_i->nat_entries[tree_idx]);
+		spin_unlock(&nm_i->nat_list_lock[tree_idx]);
+#else
 		spin_lock(&nm_i->nat_list_lock);
 		if (!list_empty(&ne->list))
 			list_move_tail(&ne->list, &nm_i->nat_entries);
 		spin_unlock(&nm_i->nat_list_lock);
+#endif
 	}
 
 	return ne;
 }
 
+#ifdef FILE_CELL
+static unsigned int __gang_lookup_nat_cache(struct f4fs_nm_info *nm_i, int tree_id,
+											nid_t start, unsigned int nr, struct nat_entry **ep) {
+	return radix_tree_gang_lookup(&nm_i->nat_root[tree_id], (void **) ep, start, nr);
+}
+#else
 static unsigned int __gang_lookup_nat_cache(struct f4fs_nm_info *nm_i,
 		nid_t start, unsigned int nr, struct nat_entry **ep)
 {
 	return radix_tree_gang_lookup(&nm_i->nat_root, (void **)ep, start, nr);
 }
+#endif
 
 static void __del_from_nat_cache(struct f4fs_nm_info *nm_i, struct nat_entry *e)
 {
+#ifdef FILE_CELL
+  nid_t nid = nat_get_nid(e);
+	int tree_idx = TREE_IDX(nid, nm_i);
+
+	radix_tree_delete(&nm_i->nat_root[tree_idx], nid);
+	nm_i->nat_cnt[TOTAL_NAT][tree_idx]--;
+	nm_i->nat_cnt[RECLAIMABLE_NAT][tree_idx]--;
+#else
 	radix_tree_delete(&nm_i->nat_root, nat_get_nid(e));
 	nm_i->nat_cnt[TOTAL_NAT]--;
 	nm_i->nat_cnt[RECLAIMABLE_NAT]--;
+#endif
 	__free_nat_entry(e);
 }
 
@@ -235,8 +313,14 @@ static struct nat_entry_set *__grab_nat_entry_set(struct f4fs_nm_info *nm_i,
 {
 	nid_t set = NAT_BLOCK_OFFSET(ne->ni.nid);
 	struct nat_entry_set *head;
+#ifdef FILE_CELL
+  nid_t nid = nat_get_nid(ne);
+	int tree_idx = TREE_IDX(nid, nm_i);
 
+	head = radix_tree_lookup(&nm_i->nat_set_root[tree_idx], set);
+#else
 	head = radix_tree_lookup(&nm_i->nat_set_root, set);
+#endif
 	if (!head) {
 		head = f4fs_kmem_cache_alloc(nat_entry_set_slab,
 						GFP_NOFS, true, NULL);
@@ -245,7 +329,11 @@ static struct nat_entry_set *__grab_nat_entry_set(struct f4fs_nm_info *nm_i,
 		INIT_LIST_HEAD(&head->set_list);
 		head->set = set;
 		head->entry_cnt = 0;
+#ifdef FILE_CELL
+		f4fs_radix_tree_insert(&nm_i->nat_set_root[tree_idx], set, head);
+#else
 		f4fs_radix_tree_insert(&nm_i->nat_set_root, set, head);
+#endif
 	}
 	return head;
 }
@@ -273,21 +361,58 @@ static void __set_nat_cache_dirty(struct f4fs_nm_info *nm_i,
 	if (get_nat_flag(ne, IS_DIRTY))
 		goto refresh_list;
 
+#ifdef FILE_CELL
+  {
+    nid_t nid = nat_get_nid(ne);
+    int tree_idx = TREE_IDX(nid, nm_i);
+	  nm_i->nat_cnt[DIRTY_NAT][tree_idx]++;
+	  nm_i->nat_cnt[RECLAIMABLE_NAT][tree_idx]--;
+  }
+#else
 	nm_i->nat_cnt[DIRTY_NAT]++;
 	nm_i->nat_cnt[RECLAIMABLE_NAT]--;
+#endif
 	set_nat_flag(ne, IS_DIRTY, true);
 refresh_list:
+#ifdef FILE_CELL
+  {
+    nid_t nid = nat_get_nid(ne);
+    int tree_idx = TREE_IDX(nid, nm_i);
+
+    spin_lock(&nm_i->nat_list_lock[tree_idx]);
+    if (new_ne)
+      list_del_init(&ne->list);
+    else
+      list_move_tail(&ne->list, &head->entry_list);
+    spin_unlock(&nm_i->nat_list_lock[tree_idx]);
+  }
+#else
 	spin_lock(&nm_i->nat_list_lock);
 	if (new_ne)
 		list_del_init(&ne->list);
 	else
 		list_move_tail(&ne->list, &head->entry_list);
 	spin_unlock(&nm_i->nat_list_lock);
+#endif
 }
 
 static void __clear_nat_cache_dirty(struct f4fs_nm_info *nm_i,
 		struct nat_entry_set *set, struct nat_entry *ne)
 {
+#ifdef FILE_CELL
+  nid_t nid = nat_get_nid(ne);
+  int tree_idx = TREE_IDX(nid, nm_i);
+
+  spin_lock(&nm_i->nat_list_lock[tree_idx]);
+	list_move_tail(&ne->list, &nm_i->nat_entries[tree_idx]);
+	spin_unlock(&nm_i->nat_list_lock[tree_idx]);
+
+	set_nat_flag(ne, IS_DIRTY, false);
+	set->entry_cnt--;
+	nm_i->nat_cnt[DIRTY_NAT][tree_idx]--;
+	nm_i->nat_cnt[RECLAIMABLE_NAT][tree_idx]++;
+
+#else
 	spin_lock(&nm_i->nat_list_lock);
 	list_move_tail(&ne->list, &nm_i->nat_entries);
 	spin_unlock(&nm_i->nat_list_lock);
@@ -296,19 +421,32 @@ static void __clear_nat_cache_dirty(struct f4fs_nm_info *nm_i,
 	set->entry_cnt--;
 	nm_i->nat_cnt[DIRTY_NAT]--;
 	nm_i->nat_cnt[RECLAIMABLE_NAT]++;
+#endif
 }
 
+#ifdef FILE_CELL
+static unsigned int __gang_lookup_nat_set(struct f4fs_nm_info *nm_i,
+										  nid_t start, unsigned int nr, struct nat_entry_set **ep, int tree_idx) {
+	return radix_tree_gang_lookup(&nm_i->nat_set_root[tree_idx], (void **) ep, start, nr);
+}
+#else
 static unsigned int __gang_lookup_nat_set(struct f4fs_nm_info *nm_i,
 		nid_t start, unsigned int nr, struct nat_entry_set **ep)
 {
 	return radix_tree_gang_lookup(&nm_i->nat_set_root, (void **)ep,
 							start, nr);
 }
+#endif
 
 bool f4fs_in_warm_node_list(struct f4fs_sb_info *sbi, struct page *page)
 {
+#ifdef FILE_CELL
+	return NODE_MAPPING(sbi, page->mapping->host->i_ino) == page->mapping &&
+			IS_DNODE(page) && is_cold_node(page);
+#else
 	return NODE_MAPPING(sbi) == page->mapping &&
 			IS_DNODE(page) && is_cold_node(page);
+#endif
 }
 
 void f4fs_init_fsync_node_info(struct f4fs_sb_info *sbi)
@@ -377,15 +515,24 @@ int f4fs_need_dentry_mark(struct f4fs_sb_info *sbi, nid_t nid)
 	struct f4fs_nm_info *nm_i = NM_I(sbi);
 	struct nat_entry *e;
 	bool need = false;
+#ifdef FILE_CELL
+	int tree_idx = TREE_IDX(nid, nm_i);
 
+  f4fs_down_read(&nm_i->nat_tree_lock[tree_idx]);
+#else
 	f4fs_down_read(&nm_i->nat_tree_lock);
+#endif
 	e = __lookup_nat_cache(nm_i, nid);
 	if (e) {
 		if (!get_nat_flag(e, IS_CHECKPOINTED) &&
 				!get_nat_flag(e, HAS_FSYNCED_INODE))
 			need = true;
 	}
+#ifdef FILE_CELL
+	f4fs_up_read(&nm_i->nat_tree_lock[tree_idx]);
+#else
 	f4fs_up_read(&nm_i->nat_tree_lock);
+#endif
 	return need;
 }
 
@@ -394,12 +541,21 @@ bool f4fs_is_checkpointed_node(struct f4fs_sb_info *sbi, nid_t nid)
 	struct f4fs_nm_info *nm_i = NM_I(sbi);
 	struct nat_entry *e;
 	bool is_cp = true;
+#ifdef FILE_CELL
+	int tree_idx = TREE_IDX(nid, nm_i);
 
+  f4fs_down_read(&nm_i->nat_tree_lock[tree_idx]);
+#else
 	f4fs_down_read(&nm_i->nat_tree_lock);
+#endif
 	e = __lookup_nat_cache(nm_i, nid);
 	if (e && !get_nat_flag(e, IS_CHECKPOINTED))
 		is_cp = false;
+#ifdef FILE_CELL
+	f4fs_up_read(&nm_i->nat_tree_lock[tree_idx]);
+#else
 	f4fs_up_read(&nm_i->nat_tree_lock);
+#endif
 	return is_cp;
 }
 
@@ -408,14 +564,23 @@ bool f4fs_need_inode_block_update(struct f4fs_sb_info *sbi, nid_t ino)
 	struct f4fs_nm_info *nm_i = NM_I(sbi);
 	struct nat_entry *e;
 	bool need_update = true;
+#ifdef FILE_CELL
+	int tree_idx = TREE_IDX(ino, nm_i);
 
+  f4fs_down_read(&nm_i->nat_tree_lock[tree_idx]);
+#else
 	f4fs_down_read(&nm_i->nat_tree_lock);
+#endif
 	e = __lookup_nat_cache(nm_i, ino);
 	if (e && get_nat_flag(e, HAS_LAST_FSYNC) &&
 			(get_nat_flag(e, IS_CHECKPOINTED) ||
 			 get_nat_flag(e, HAS_FSYNCED_INODE)))
 		need_update = false;
+#ifdef FILE_CELL
+	f4fs_up_read(&nm_i->nat_tree_lock[tree_idx]);
+#else
 	f4fs_up_read(&nm_i->nat_tree_lock);
+#endif
 	return need_update;
 }
 
@@ -425,6 +590,9 @@ static void cache_nat_entry(struct f4fs_sb_info *sbi, nid_t nid,
 {
 	struct f4fs_nm_info *nm_i = NM_I(sbi);
 	struct nat_entry *new, *e;
+#ifdef FILE_CELL
+	int tree_idx = TREE_IDX(nid, nm_i);
+#endif
 
 	/* Let's mitigate lock contention of nat_tree_lock during checkpoint */
 	if (f4fs_rwsem_is_locked(&sbi->cp_global_sem))
@@ -434,7 +602,11 @@ static void cache_nat_entry(struct f4fs_sb_info *sbi, nid_t nid,
 	if (!new)
 		return;
 
+#ifdef FILE_CELL
+  f4fs_down_write(&nm_i->nat_tree_lock[tree_idx]);
+#else
 	f4fs_down_write(&nm_i->nat_tree_lock);
+#endif
 	e = __lookup_nat_cache(nm_i, nid);
 	if (!e)
 		e = __init_nat_entry(nm_i, new, ne, false);
@@ -443,7 +615,11 @@ static void cache_nat_entry(struct f4fs_sb_info *sbi, nid_t nid,
 				nat_get_blkaddr(e) !=
 					le32_to_cpu(ne->block_addr) ||
 				nat_get_version(e) != ne->version);
+#ifdef FILE_CELL
+	f4fs_up_write(&nm_i->nat_tree_lock[tree_idx]);
+#else
 	f4fs_up_write(&nm_i->nat_tree_lock);
+#endif
 	if (e != new)
 		__free_nat_entry(new);
 }
@@ -454,8 +630,13 @@ static void set_node_addr(struct f4fs_sb_info *sbi, struct node_info *ni,
 	struct f4fs_nm_info *nm_i = NM_I(sbi);
 	struct nat_entry *e;
 	struct nat_entry *new = __alloc_nat_entry(sbi, ni->nid, true);
+#ifdef FILE_CELL
+	int tree_idx = TREE_IDX(ni->nid, nm_i);
 
+  f4fs_down_write(&nm_i->nat_tree_lock[tree_idx]);
+#else
 	f4fs_down_write(&nm_i->nat_tree_lock);
+#endif
 	e = __lookup_nat_cache(nm_i, ni->nid);
 	if (!e) {
 		e = __init_nat_entry(nm_i, new, NULL, true);
@@ -504,18 +685,57 @@ static void set_node_addr(struct f4fs_sb_info *sbi, struct node_info *ni,
 			set_nat_flag(e, HAS_FSYNCED_INODE, true);
 		set_nat_flag(e, HAS_LAST_FSYNC, fsync_done);
 	}
+#ifdef FILE_CELL
+	f4fs_up_write(&nm_i->nat_tree_lock[tree_idx]);
+#else
 	f4fs_up_write(&nm_i->nat_tree_lock);
+#endif
 }
 
 int f4fs_try_to_free_nats(struct f4fs_sb_info *sbi, int nr_shrink)
 {
 	struct f4fs_nm_info *nm_i = NM_I(sbi);
-	int nr = nr_shrink;
+#ifdef FILE_CELL
+  int temp_nr;
+  int nr_shrink_ret = nr_shrink;
+  int divider = nm_i->nat_tree_cnt;
+  for (int i = 0 ; i < nm_i->nat_tree_cnt ; i++, divider--) {
+    if (!f4fs_down_write_trylock(&nm_i->nat_tree_lock[i]))
+      return nr_shrink_ret;
 
+    spin_lock(&nm_i->nat_list_lock[i]);
+    temp_nr = nr_shrink_ret / divider;
+
+    while (temp_nr) {
+      struct nat_entry *ne;
+
+      if (list_empty(&nm_i->nat_entries[i]))
+        break;
+
+      ne = list_first_entry(&nm_i->nat_entries[i],
+          struct nat_entry, list);
+      list_del(&ne->list);
+
+      spin_unlock(&nm_i->nat_list_lock[i]);
+
+      __del_from_nat_cache(nm_i, ne);
+      nr_shrink_ret--;
+      temp_nr--;
+      spin_lock(&nm_i->nat_list_lock[i]);
+    }
+    spin_unlock(&nm_i->nat_list_lock[i]);
+
+    f4fs_up_write(&nm_i->nat_tree_lock[i]);
+  }
+
+  return nr_shrink_ret;
+#else
+	int nr = nr_shrink;
 	if (!f4fs_down_write_trylock(&nm_i->nat_tree_lock))
 		return 0;
 
 	spin_lock(&nm_i->nat_list_lock);
+
 	while (nr_shrink) {
 		struct nat_entry *ne;
 
@@ -525,17 +745,19 @@ int f4fs_try_to_free_nats(struct f4fs_sb_info *sbi, int nr_shrink)
 		ne = list_first_entry(&nm_i->nat_entries,
 					struct nat_entry, list);
 		list_del(&ne->list);
+
 		spin_unlock(&nm_i->nat_list_lock);
 
 		__del_from_nat_cache(nm_i, ne);
 		nr_shrink--;
-
 		spin_lock(&nm_i->nat_list_lock);
 	}
 	spin_unlock(&nm_i->nat_list_lock);
 
 	f4fs_up_write(&nm_i->nat_tree_lock);
+
 	return nr - nr_shrink;
+#endif
 }
 
 int f4fs_get_node_info(struct f4fs_sb_info *sbi, nid_t nid,
@@ -552,17 +774,28 @@ int f4fs_get_node_info(struct f4fs_sb_info *sbi, nid_t nid,
 	pgoff_t index;
 	block_t blkaddr;
 	int i;
+#ifdef FILE_CELL
+  int tree_idx = TREE_IDX(nid, nm_i);
+#endif
 
 	ni->nid = nid;
 retry:
 	/* Check nat cache */
+#ifdef FILE_CELL
+  f4fs_down_read(&nm_i->nat_tree_lock[tree_idx]);
+#else
 	f4fs_down_read(&nm_i->nat_tree_lock);
+#endif
 	e = __lookup_nat_cache(nm_i, nid);
 	if (e) {
 		ni->ino = nat_get_ino(e);
 		ni->blk_addr = nat_get_blkaddr(e);
 		ni->version = nat_get_version(e);
+#ifdef FILE_CELL
+    f4fs_up_read(&nm_i->nat_tree_lock[tree_idx]);
+#else
 		f4fs_up_read(&nm_i->nat_tree_lock);
+#endif
 		return 0;
 	}
 
@@ -574,9 +807,15 @@ retry:
 	 */
 	if (!f4fs_rwsem_is_locked(&sbi->cp_global_sem) || checkpoint_context) {
 		down_read(&curseg->journal_rwsem);
+#ifdef FILE_CELL
+	} else if (f4fs_rwsem_is_contended(&nm_i->nat_tree_lock[tree_idx]) ||
+				!down_read_trylock(&curseg->journal_rwsem)) {
+		f4fs_up_read(&nm_i->nat_tree_lock[tree_idx]);
+#else
 	} else if (f4fs_rwsem_is_contended(&nm_i->nat_tree_lock) ||
 				!down_read_trylock(&curseg->journal_rwsem)) {
 		f4fs_up_read(&nm_i->nat_tree_lock);
+#endif
 		goto retry;
 	}
 
@@ -587,13 +826,21 @@ retry:
 	}
         up_read(&curseg->journal_rwsem);
 	if (i >= 0) {
+#ifdef FILE_CELL
+		f4fs_up_read(&nm_i->nat_tree_lock[tree_idx]);
+#else
 		f4fs_up_read(&nm_i->nat_tree_lock);
+#endif
 		goto cache;
 	}
 
 	/* Fill node_info from nat page */
 	index = current_nat_addr(sbi, nid);
+#ifdef FILE_CELL
+	f4fs_up_read(&nm_i->nat_tree_lock[tree_idx]);
+#else
 	f4fs_up_read(&nm_i->nat_tree_lock);
+#endif
 
 	page = f4fs_get_meta_page(sbi, index);
 	if (IS_ERR(page))
@@ -909,8 +1156,13 @@ static int truncate_node(struct dnode_of_data *dn)
 	index = dn->node_page->index;
 	f4fs_put_page(dn->node_page, 1);
 
+#ifdef FILE_CELL
+	invalidate_mapping_pages(NODE_MAPPING(sbi, dn->nid),
+			index, index);
+#else
 	invalidate_mapping_pages(NODE_MAPPING(sbi),
 			index, index);
+#endif
 
 	dn->node_page = NULL;
 	trace_f4fs_truncate_node(dn->inode, dn->nid, ni.blk_addr);
@@ -1167,7 +1419,11 @@ skip_partial:
 		if (offset[1] == 0 &&
 				ri->i_nid[offset[0] - NODE_DIR1_BLOCK]) {
 			lock_page(page);
+#ifdef FILE_CELL
+			BUG_ON(page->mapping != NODE_MAPPING(sbi, inode->i_ino));
+#else
 			BUG_ON(page->mapping != NODE_MAPPING(sbi));
+#endif
 			f4fs_wait_on_page_writeback(page, NODE, true, true);
 			ri->i_nid[offset[0] - NODE_DIR1_BLOCK] = 0;
 			set_page_dirty(page);
@@ -1278,8 +1534,11 @@ struct page *f4fs_new_node_page(struct dnode_of_data *dn, unsigned int ofs)
 
 	if (unlikely(is_inode_flag_set(dn->inode, FI_NO_ALLOC)))
 		return ERR_PTR(-EPERM);
-
+#ifdef FILE_CELL
+	page = f4fs_grab_cache_page(NODE_MAPPING(sbi, dn->nid), dn->nid, false);
+#else
 	page = f4fs_grab_cache_page(NODE_MAPPING(sbi), dn->nid, false);
+#endif
 	if (!page)
 		return ERR_PTR(-ENOMEM);
 
@@ -1387,11 +1646,19 @@ void f4fs_ra_node_page(struct f4fs_sb_info *sbi, nid_t nid)
 	if (f4fs_check_nid_range(sbi, nid))
 		return;
 
+#ifdef FILE_CELL
+	apage = xa_load(&NODE_MAPPING(sbi, nid)->i_pages, nid);
+#else
 	apage = xa_load(&NODE_MAPPING(sbi)->i_pages, nid);
+#endif
 	if (apage)
 		return;
 
+#ifdef FILE_CELL
+	apage = f4fs_grab_cache_page(NODE_MAPPING(sbi, nid), nid, false);
+#else
 	apage = f4fs_grab_cache_page(NODE_MAPPING(sbi), nid, false);
+#endif
 	if (!apage)
 		return;
 
@@ -1410,7 +1677,11 @@ static struct page *__get_node_page(struct f4fs_sb_info *sbi, pgoff_t nid,
 	if (f4fs_check_nid_range(sbi, nid))
 		return ERR_PTR(-EINVAL);
 repeat:
+#ifdef FILE_CELL
+	page = f4fs_grab_cache_page(NODE_MAPPING(sbi, nid), nid, false);
+#else
 	page = f4fs_grab_cache_page(NODE_MAPPING(sbi), nid, false);
+#endif
 	if (!page)
 		return ERR_PTR(-ENOMEM);
 
@@ -1427,7 +1698,11 @@ repeat:
 
 	lock_page(page);
 
+#ifdef FILE_CELL
+	if (unlikely(page->mapping != NODE_MAPPING(sbi, nid))) {
+#else
 	if (unlikely(page->mapping != NODE_MAPPING(sbi))) {
+#endif
 		f4fs_put_page(page, 1);
 		goto repeat;
 	}
@@ -1510,6 +1785,63 @@ iput_out:
 	iput(inode);
 }
 
+#ifdef FILE_CELL
+static struct page *last_fsync_dnode(struct f4fs_sb_info *sbi, nid_t ino, nid_t node_idx)
+{
+	pgoff_t index;
+	struct pagevec pvec;
+	struct page *last_page = NULL;
+	int nr_pages;
+
+	pagevec_init(&pvec);
+	index = 0;
+
+	while ((nr_pages = pagevec_lookup_tag(&pvec, NODE_MAPPING(sbi, node_idx), &index,
+				PAGECACHE_TAG_DIRTY))) {
+		int i;
+
+		for (i = 0; i < nr_pages; i++) {
+			struct page *page = pvec.pages[i];
+
+			if (unlikely(f4fs_cp_error(sbi))) {
+				f4fs_put_page(last_page, 0);
+				pagevec_release(&pvec);
+				return ERR_PTR(-EIO);
+			}
+
+			if (!IS_DNODE(page) || !is_cold_node(page))
+				continue;
+			if (ino_of_node(page) != ino)
+				continue;
+
+			lock_page(page);
+
+			if (unlikely(page->mapping != NODE_MAPPING(sbi, node_idx))) {
+continue_unlock:
+				unlock_page(page);
+				continue;
+			}
+			if (ino_of_node(page) != ino)
+				goto continue_unlock;
+
+			if (!PageDirty(page)) {
+				/* someone wrote it for us */
+				goto continue_unlock;
+			}
+
+			if (last_page)
+				f4fs_put_page(last_page, 0);
+
+			get_page(page);
+			last_page = page;
+			unlock_page(page);
+		}
+		pagevec_release(&pvec);
+		cond_resched();
+	}
+	return last_page;
+}
+#else
 static struct page *last_fsync_dnode(struct f4fs_sb_info *sbi, nid_t ino)
 {
 	pgoff_t index;
@@ -1565,6 +1897,7 @@ continue_unlock:
 	}
 	return last_page;
 }
+#endif
 
 static int __write_node_page(struct page *page, bool atomic, bool *submitted,
 				struct writeback_control *wbc, bool do_balance,
@@ -1741,6 +2074,126 @@ static int f4fs_write_node_page(struct page *page,
 						FS_NODE_IO, NULL);
 }
 
+#ifdef FILE_CELL
+int f4fs_fsync_node_pages(struct f4fs_sb_info *sbi, struct inode *inode,
+			struct writeback_control *wbc, bool atomic,
+			unsigned int *seq_id, nid_t node_idx)
+{
+	pgoff_t index;
+	struct pagevec pvec;
+	int ret = 0;
+	struct page *last_page = NULL;
+	bool marked = false;
+	nid_t ino = inode->i_ino;
+	int nr_pages;
+	int nwritten = 0;
+
+	if (atomic) {
+		last_page = last_fsync_dnode(sbi, ino, node_idx);
+		if (IS_ERR_OR_NULL(last_page))
+			return PTR_ERR_OR_ZERO(last_page);
+	}
+retry:
+	pagevec_init(&pvec);
+	index = 0;
+
+	while ((nr_pages = pagevec_lookup_tag(&pvec, NODE_MAPPING(sbi, node_idx), &index,
+				PAGECACHE_TAG_DIRTY))) {
+		int i;
+
+		for (i = 0; i < nr_pages; i++) {
+			struct page *page = pvec.pages[i];
+			bool submitted = false;
+
+			if (unlikely(f4fs_cp_error(sbi))) {
+				f4fs_put_page(last_page, 0);
+				pagevec_release(&pvec);
+				ret = -EIO;
+				goto out;
+			}
+
+			if (!IS_DNODE(page) || !is_cold_node(page))
+				continue;
+			if (ino_of_node(page) != ino)
+				continue;
+
+			lock_page(page);
+
+			if (unlikely(page->mapping != NODE_MAPPING(sbi, node_idx))) {
+continue_unlock:
+				unlock_page(page);
+				continue;
+			}
+			if (ino_of_node(page) != ino)
+				goto continue_unlock;
+
+			if (!PageDirty(page) && page != last_page) {
+				/* someone wrote it for us */
+				goto continue_unlock;
+			}
+
+			f4fs_wait_on_page_writeback(page, NODE, true, true);
+
+			set_fsync_mark(page, 0);
+			set_dentry_mark(page, 0);
+
+			if (!atomic || page == last_page) {
+				set_fsync_mark(page, 1);
+				percpu_counter_inc(&sbi->rf_node_block_count);
+				if (IS_INODE(page)) {
+					if (is_inode_flag_set(inode,
+								FI_DIRTY_INODE))
+						f4fs_update_inode(inode, page);
+					set_dentry_mark(page,
+						f4fs_need_dentry_mark(sbi, ino));
+				}
+				/* may be written by other thread */
+				if (!PageDirty(page))
+					set_page_dirty(page);
+			}
+
+			if (!clear_page_dirty_for_io(page))
+				goto continue_unlock;
+
+			ret = __write_node_page(page, atomic &&
+						page == last_page,
+						&submitted, wbc, true,
+						FS_NODE_IO, seq_id);
+			if (ret) {
+				unlock_page(page);
+				f4fs_put_page(last_page, 0);
+				break;
+			} else if (submitted) {
+				nwritten++;
+			}
+
+			if (page == last_page) {
+				f4fs_put_page(page, 0);
+				marked = true;
+				break;
+			}
+		}
+		pagevec_release(&pvec);
+		cond_resched();
+
+		if (ret || marked)
+			break;
+	}
+	if (!ret && atomic && !marked) {
+		f4fs_debug(sbi, "Retry to write fsync mark: ino=%u, idx=%lx",
+			   ino, last_page->index);
+		lock_page(last_page);
+		f4fs_wait_on_page_writeback(last_page, NODE, true, true);
+		set_page_dirty(last_page);
+		unlock_page(last_page);
+		goto retry;
+	}
+out:
+	if (nwritten)
+		f4fs_submit_merged_write_cond(sbi, NULL, NULL, ino, NODE);
+	return ret ? -EIO : 0;
+}
+#else
 int f4fs_fsync_node_pages(struct f4fs_sb_info *sbi, struct inode *inode,
 			struct writeback_control *wbc, bool atomic,
 			unsigned int *seq_id)
@@ -1859,6 +2312,7 @@ out:
 		f4fs_submit_merged_write_cond(sbi, NULL, NULL, ino, NODE);
 	return ret ? -EIO : 0;
 }
+#endif
 
 static int f4fs_match_ino(struct inode *inode, unsigned long ino, void *data)
 {
@@ -1908,7 +2362,45 @@ void f4fs_flush_inline_data(struct f4fs_sb_info *sbi)
 	int nr_pages;
 
 	pagevec_init(&pvec);
+#ifdef FILE_CELL
+  for (int i = 0 ; i < NM_I(sbi)->nat_tree_cnt ; i++) {
+    while ((nr_pages = pagevec_lookup_tag(&pvec,
+            NODE_MAPPING(sbi, i), &index, PAGECACHE_TAG_DIRTY))) {
+      int i;
 
+      for (i = 0; i < nr_pages; i++) {
+        struct page *page = pvec.pages[i];
+
+        if (!IS_DNODE(page))
+          continue;
+
+        lock_page(page);
+
+        if (unlikely(page->mapping != NODE_MAPPING(sbi, i))) {
+continue_unlock:
+          unlock_page(page);
+          continue;
+        }
+
+        if (!PageDirty(page)) {
+          /* someone wrote it for us */
+          goto continue_unlock;
+        }
+
+        /* flush inline_data, if it's async context. */
+        if (page_private_inline(page)) {
+          clear_page_private_inline(page);
+          unlock_page(page);
+          flush_inline_data(sbi, ino_of_node(page));
+          continue;
+        }
+        unlock_page(page);
+      }
+      pagevec_release(&pvec);
+      cond_resched();
+    }
+  }
+#else
 	while ((nr_pages = pagevec_lookup_tag(&pvec,
 			NODE_MAPPING(sbi), &index, PAGECACHE_TAG_DIRTY))) {
 		int i;
@@ -1944,8 +2436,132 @@ continue_unlock:
 		pagevec_release(&pvec);
 		cond_resched();
 	}
+#endif
 }
 
+#ifdef FILE_CELL
+int f4fs_sync_node_pages(struct f4fs_sb_info *sbi,
+				struct writeback_control *wbc,
+				bool do_balance, enum iostat_type io_type, nid_t node_idx)
+{
+	pgoff_t index;
+	struct pagevec pvec;
+	int step = 0;
+	int nwritten = 0;
+	int ret = 0;
+	int nr_pages, done = 0;
+
+	pagevec_init(&pvec);
+
+next_step:
+	index = 0;
+
+	while (!done && (nr_pages = pagevec_lookup_tag(&pvec,
+			NODE_MAPPING(sbi, node_idx), &index, PAGECACHE_TAG_DIRTY))) {
+		int i;
+
+		for (i = 0; i < nr_pages; i++) {
+			struct page *page = pvec.pages[i];
+			bool submitted = false;
+
+			/* give a priority to WB_SYNC threads */
+			if (atomic_read(&sbi->wb_sync_req[NODE]) &&
+					wbc->sync_mode == WB_SYNC_NONE) {
+				done = 1;
+				break;
+			}
+
+			/*
+			 * flushing sequence with step:
+			 * 0. indirect nodes
+			 * 1. dentry dnodes
+			 * 2. file dnodes
+			 */
+			if (step == 0 && IS_DNODE(page))
+				continue;
+			if (step == 1 && (!IS_DNODE(page) ||
+						is_cold_node(page)))
+				continue;
+			if (step == 2 && (!IS_DNODE(page) ||
+						!is_cold_node(page)))
+				continue;
+lock_node:
+			if (wbc->sync_mode == WB_SYNC_ALL)
+				lock_page(page);
+			else if (!trylock_page(page))
+				continue;
+
+			if (unlikely(page->mapping != NODE_MAPPING(sbi, node_idx))) {
+continue_unlock:
+				unlock_page(page);
+				continue;
+			}
+
+			if (!PageDirty(page)) {
+				/* someone wrote it for us */
+				goto continue_unlock;
+			}
+
+			/* flush inline_data/inode, if it's async context. */
+			if (!do_balance)
+				goto write_node;
+
+			/* flush inline_data */
+			if (page_private_inline(page)) {
+				clear_page_private_inline(page);
+				unlock_page(page);
+				flush_inline_data(sbi, ino_of_node(page));
+				goto lock_node;
+			}
+
+			/* flush dirty inode */
+			if (IS_INODE(page) && flush_dirty_inode(page))
+				goto lock_node;
+write_node:
+			f4fs_wait_on_page_writeback(page, NODE, true, true);
+
+			if (!clear_page_dirty_for_io(page))
+				goto continue_unlock;
+
+			set_fsync_mark(page, 0);
+			set_dentry_mark(page, 0);
+
+			ret = __write_node_page(page, false, &submitted,
+						wbc, do_balance, io_type, NULL);
+			if (ret)
+				unlock_page(page);
+			else if (submitted)
+				nwritten++;
+
+			if (--wbc->nr_to_write == 0)
+				break;
+		}
+		pagevec_release(&pvec);
+		cond_resched();
+
+		if (wbc->nr_to_write == 0) {
+			step = 2;
+			break;
+		}
+	}
+
+	if (step < 2) {
+		if (!is_sbi_flag_set(sbi, SBI_CP_DISABLED) &&
+				wbc->sync_mode == WB_SYNC_NONE && step == 1)
+			goto out;
+		step++;
+		goto next_step;
+	}
+out:
+	if (nwritten)
+		f4fs_submit_merged_write(sbi, NODE);
+
+	if (unlikely(f4fs_cp_error(sbi)))
+		return -EIO;
+	return ret;
+}
+
+#else
 int f4fs_sync_node_pages(struct f4fs_sb_info *sbi,
 				struct writeback_control *wbc,
 				bool do_balance, enum iostat_type io_type)
@@ -2066,7 +2682,52 @@ out:
 		return -EIO;
 	return ret;
 }
+#endif
 
+#ifdef FILE_CELL
+int f4fs_wait_on_node_pages_writeback(struct f4fs_sb_info *sbi,
+						unsigned int seq_id, nid_t ino)
+{
+	struct fsync_node_entry *fn;
+	struct page *page;
+	struct list_head *head = &sbi->fsync_node_list;
+	unsigned long flags;
+	unsigned int cur_seq_id = 0;
+	int ret2, ret = 0;
+
+	while (seq_id && cur_seq_id < seq_id) {
+		spin_lock_irqsave(&sbi->fsync_node_lock, flags);
+		if (list_empty(head)) {
+			spin_unlock_irqrestore(&sbi->fsync_node_lock, flags);
+			break;
+		}
+		fn = list_first_entry(head, struct fsync_node_entry, list);
+		if (fn->seq_id > seq_id) {
+			spin_unlock_irqrestore(&sbi->fsync_node_lock, flags);
+			break;
+		}
+		cur_seq_id = fn->seq_id;
+		page = fn->page;
+		get_page(page);
+		spin_unlock_irqrestore(&sbi->fsync_node_lock, flags);
+
+		f4fs_wait_on_page_writeback(page, NODE, true, false);
+		if (TestClearPageError(page))
+			ret = -EIO;
+
+		put_page(page);
+
+		if (ret)
+			break;
+	}
+
+	ret2 = filemap_check_errors(NODE_MAPPING(sbi, ino));
+	if (!ret)
+		ret = ret2;
+
+	return ret;
+}
+#else
 int f4fs_wait_on_node_pages_writeback(struct f4fs_sb_info *sbi,
 						unsigned int seq_id)
 {
@@ -2109,6 +2770,7 @@ int f4fs_wait_on_node_pages_writeback(struct f4fs_sb_info *sbi,
 
 	return ret;
 }
+#endif
 
 static int f4fs_write_node_pages(struct address_space *mapping,
 			    struct writeback_control *wbc)
@@ -2124,10 +2786,17 @@ static int f4fs_write_node_pages(struct address_space *mapping,
 	f4fs_balance_fs_bg(sbi, true);
 
 	/* collect a number of dirty node pages and write together */
+#ifdef FILE_CELL
+	if (wbc->sync_mode != WB_SYNC_ALL &&
+			get_dirty_node_pages(sbi, mapping->host->i_ino - F4FS_NODE_INO(sbi)) <
+					nr_pages_to_skip(sbi, NODE))
+		goto skip_write;
+#else
 	if (wbc->sync_mode != WB_SYNC_ALL &&
 			get_pages(sbi, F4FS_DIRTY_NODES) <
 					nr_pages_to_skip(sbi, NODE))
 		goto skip_write;
+#endif
 
 	if (wbc->sync_mode == WB_SYNC_ALL)
 		atomic_inc(&sbi->wb_sync_req[NODE]);
@@ -2142,7 +2811,11 @@ static int f4fs_write_node_pages(struct address_space *mapping,
 
 	diff = nr_pages_to_write(sbi, NODE, wbc);
 	blk_start_plug(&plug);
+#ifdef FILE_CELL
+	f4fs_sync_node_pages(sbi, wbc, true, FS_NODE_IO, mapping->host->i_ino - F4FS_NODE_INO(sbi));
+#else
 	f4fs_sync_node_pages(sbi, wbc, true, FS_NODE_IO);
+#endif
 	blk_finish_plug(&plug);
 	wbc->nr_to_write = max((long)0, wbc->nr_to_write - diff);
 
@@ -2151,7 +2824,11 @@ static int f4fs_write_node_pages(struct address_space *mapping,
 	return 0;
 
 skip_write:
+#ifdef FILE_CELL
+	wbc->pages_skipped += get_dirty_node_pages(sbi, mapping->host->i_ino - F4FS_NODE_INO(sbi));
+#else
 	wbc->pages_skipped += get_pages(sbi, F4FS_DIRTY_NODES);
+#endif
 	trace_f4fs_writepages(mapping->host, wbc, NODE);
 	return 0;
 }
@@ -2248,6 +2925,20 @@ bool f4fs_nat_bitmap_enabled(struct f4fs_sb_info *sbi)
 	unsigned int i;
 	bool ret = true;
 
+#ifdef FILE_CELL
+  for (int j = 0 ; j < nm_i->nat_tree_cnt ; j++) {
+    f4fs_down_read(&nm_i->nat_tree_lock[j]);
+  }
+	for (i = 0; i < nm_i->nat_blocks; i++) {
+		if (!test_bit_le(i, nm_i->nat_block_bitmap)) {
+			ret = false;
+			break;
+		}
+	}
+  for (int j = 0 ; j < nm_i->nat_tree_cnt ; j++) {
+    f4fs_up_read(&nm_i->nat_tree_lock[j]);
+  }
+#else
 	f4fs_down_read(&nm_i->nat_tree_lock);
 	for (i = 0; i < nm_i->nat_blocks; i++) {
 		if (!test_bit_le(i, nm_i->nat_block_bitmap)) {
@@ -2256,6 +2947,7 @@ bool f4fs_nat_bitmap_enabled(struct f4fs_sb_info *sbi)
 		}
 	}
 	f4fs_up_read(&nm_i->nat_tree_lock);
+#endif
 
 	return ret;
 }
@@ -2438,7 +3130,13 @@ static void scan_free_nid_bits(struct f4fs_sb_info *sbi)
 	unsigned int i, idx;
 	nid_t nid;
 
+#ifdef FILE_CELL
+  for (int j = 0 ; j < nm_i->nat_tree_cnt ; j++) {
+	  f4fs_down_read(&nm_i->nat_tree_lock[j]);
+  }
+#else
 	f4fs_down_read(&nm_i->nat_tree_lock);
+#endif
 
 	for (i = 0; i < nm_i->nat_blocks; i++) {
 		if (!test_bit_le(i, nm_i->nat_block_bitmap))
@@ -2461,7 +3159,13 @@ static void scan_free_nid_bits(struct f4fs_sb_info *sbi)
 out:
 	scan_curseg_cache(sbi);
 
+#ifdef FILE_CELL
+  for (int j = 0 ; j < nm_i->nat_tree_cnt ; j++) {
+	  f4fs_up_read(&nm_i->nat_tree_lock[j]);
+  }
+#else
 	f4fs_up_read(&nm_i->nat_tree_lock);
+#endif
 }
 
 static int __f4fs_build_free_nids(struct f4fs_sb_info *sbi,
@@ -2496,7 +3200,13 @@ static int __f4fs_build_free_nids(struct f4fs_sb_info *sbi,
 	f4fs_ra_meta_pages(sbi, NAT_BLOCK_OFFSET(nid), FREE_NID_PAGES,
 							META_NAT, true);
 
+#ifdef FILE_CELL
+  for (int j = 0 ; j < nm_i->nat_tree_cnt ; j++) {
+	  f4fs_down_read(&nm_i->nat_tree_lock[j]);
+  }
+#else
 	f4fs_down_read(&nm_i->nat_tree_lock);
+#endif
 
 	while (1) {
 		if (!test_bit_le(NAT_BLOCK_OFFSET(nid),
@@ -2511,7 +3221,13 @@ static int __f4fs_build_free_nids(struct f4fs_sb_info *sbi,
 			}
 
 			if (ret) {
+#ifdef FILE_CELL
+        for (int j = 0 ; j < nm_i->nat_tree_cnt ; j++) {
+          f4fs_up_read(&nm_i->nat_tree_lock[j]);
+        }
+#else
 				f4fs_up_read(&nm_i->nat_tree_lock);
+#endif
 				f4fs_err(sbi, "NAT is corrupt, run fsck to fix it");
 				return ret;
 			}
@@ -2531,7 +3247,13 @@ static int __f4fs_build_free_nids(struct f4fs_sb_info *sbi,
 	/* find free nids from current sum_pages */
 	scan_curseg_cache(sbi);
 
+#ifdef FILE_CELL
+  for (int j = 0 ; j < nm_i->nat_tree_cnt ; j++) {
+	  f4fs_up_read(&nm_i->nat_tree_lock[j]);
+  }
+#else
 	f4fs_up_read(&nm_i->nat_tree_lock);
+#endif
 
 	f4fs_ra_meta_pages(sbi, NAT_BLOCK_OFFSET(nm_i->next_scan_nid),
 					nm_i->ra_nid_pages, META_NAT, false);
@@ -2776,7 +3498,11 @@ int f4fs_recover_inode_page(struct f4fs_sb_info *sbi, struct page *page)
 	if (unlikely(old_ni.blk_addr != NULL_ADDR))
 		return -EINVAL;
 retry:
+#ifdef FILE_CELL
+	ipage = f4fs_grab_cache_page(NODE_MAPPING(sbi,ino), ino, false);
+#else
 	ipage = f4fs_grab_cache_page(NODE_MAPPING(sbi), ino, false);
+#endif
 	if (!ipage) {
 		memalloc_retry_wait(GFP_NOFS);
 		goto retry;
@@ -2913,24 +3639,6 @@ static void remove_nats_in_journal(struct f4fs_sb_info *sbi)
 	up_write(&curseg->journal_rwsem);
 }
 
-static void __adjust_nat_entry_set(struct nat_entry_set *nes,
-						struct list_head *head, int max)
-{
-	struct nat_entry_set *cur;
-
-	if (nes->entry_cnt >= max)
-		goto add_out;
-
-	list_for_each_entry(cur, head, set_list) {
-		if (cur->entry_cnt >= nes->entry_cnt) {
-			list_add(&nes->set_list, cur->set_list.prev);
-			return;
-		}
-	}
-add_out:
-	list_add_tail(&nes->set_list, head);
-}
-
 static void __update_nat_bits(struct f4fs_nm_info *nm_i, unsigned int nat_ofs,
 							unsigned int valid)
 {
@@ -2976,7 +3684,13 @@ void f4fs_enable_nat_bits(struct f4fs_sb_info *sbi)
 	struct f4fs_nm_info *nm_i = NM_I(sbi);
 	unsigned int nat_ofs;
 
+#ifdef FILE_CELL
+  for (int i = 0 ; i < nm_i->nat_tree_cnt ; i++) {
+	  f4fs_down_read(&nm_i->nat_tree_lock[i]);
+  }
+#else
 	f4fs_down_read(&nm_i->nat_tree_lock);
+#endif
 
 	for (nat_ofs = 0; nat_ofs < nm_i->nat_blocks; nat_ofs++) {
 		unsigned int valid = 0, nid_ofs = 0;
@@ -2996,7 +3710,13 @@ void f4fs_enable_nat_bits(struct f4fs_sb_info *sbi)
 		__update_nat_bits(nm_i, nat_ofs, valid);
 	}
 
+#ifdef FILE_CELL
+  for (int i = 0 ; i < nm_i->nat_tree_cnt ; i++) {
+	  f4fs_up_read(&nm_i->nat_tree_lock[i]);
+  }
+#else
 	f4fs_up_read(&nm_i->nat_tree_lock);
+#endif
 }
 
 static int __flush_nat_entry_set(struct f4fs_sb_info *sbi,
@@ -3009,6 +3729,11 @@ static int __flush_nat_entry_set(struct f4fs_sb_info *sbi,
 	struct f4fs_nat_block *nat_blk;
 	struct nat_entry *ne, *cur;
 	struct page *page = NULL;
+
+#ifdef FILE_CELL
+	int tree_idx = -1;
+  struct f4fs_nm_info * nm_i = NM_I(sbi);
+#endif
 
 	/*
 	 * there are two steps to flush nat entries:
@@ -3035,6 +3760,9 @@ static int __flush_nat_entry_set(struct f4fs_sb_info *sbi,
 		struct f4fs_nat_entry *raw_ne;
 		nid_t nid = nat_get_nid(ne);
 		int offset;
+#ifdef FILE_CELL
+		tree_idx = TREE_IDX(nid, nm_i);
+#endif
 
 		f4fs_bug_on(sbi, nat_get_blkaddr(ne) == NEW_ADDR);
 
@@ -3068,16 +3796,60 @@ static int __flush_nat_entry_set(struct f4fs_sb_info *sbi,
 
 	/* Allow dirty nats by node block allocation in write_begin */
 	if (!set->entry_cnt) {
+#ifdef FILE_CELL
+	  radix_tree_delete(&NM_I(sbi)->nat_set_root[tree_idx], set->set);
+#else
 		radix_tree_delete(&NM_I(sbi)->nat_set_root, set->set);
+#endif
 		kmem_cache_free(nat_entry_set_slab, set);
 	}
 	return 0;
 }
 
+#ifdef FILE_CELL
+static void __adjust_nat_entry_set_per_core(struct nat_entry_set *nes,
+						struct list_head *head, int max, int nat_tree_cnt)
+{
+	struct per_core_sets_pack *cur;
+	int flag = 0;
+	list_for_each_entry(cur, head, set_list) {
+		if (cur->set_id == nes->set) {
+			flag = 1;
+			break;
+		}
+	}
+
+	if (flag == 1) {
+		cur->set[cur->next_set_idx++] = nes;
+		cur->entry_cnt += nes->entry_cnt;
+		if (cur->entry_cnt >= max) {
+			list_move_tail(&cur->set_list, head);
+		}
+	} else {
+		struct per_core_sets_pack *new_pack;
+
+		new_pack = f4fs_kmem_cache_alloc(per_core_sets_pack_slab, GFP_ATOMIC, true, NULL);
+		init_new_per_core_sets_pack(new_pack, nes->set, (unsigned int) nat_tree_cnt);
+		new_pack->set[new_pack->next_set_idx++] = nes;
+		new_pack->entry_cnt = nes->entry_cnt;
+		if (new_pack->entry_cnt >= max || list_empty(head)) {
+			list_add_tail(&new_pack->set_list, head);
+		} else {
+			list_for_each_entry(cur, head, set_list) {
+				if (cur->entry_cnt >= new_pack->entry_cnt) {
+					list_add(&new_pack->set_list, cur->set_list.prev);
+					return;
+				}
+			}
+			list_add_tail(&new_pack->set_list, head);
+		}
+	}
+}
+
 /*
  * This function is called during the checkpointing process.
  */
-int f4fs_flush_nat_entries(struct f4fs_sb_info *sbi, struct cp_control *cpc)
+int f4fs_flush_nat_entries_per_core(struct f4fs_sb_info *sbi, struct cp_control *cpc)
 {
 	struct f4fs_nm_info *nm_i = NM_I(sbi);
 	struct curseg_info *curseg = CURSEG_I(sbi, CURSEG_HOT_DATA);
@@ -3094,11 +3866,58 @@ int f4fs_flush_nat_entries(struct f4fs_sb_info *sbi, struct cp_control *cpc)
 	 * nat_cnt[DIRTY_NAT].
 	 */
 	if (cpc->reason & CP_UMOUNT) {
+#ifdef FILE_CELL
+    for (int i = 0 ; i < nm_i->nat_tree_cnt; i++) {
+		  f4fs_down_write(&nm_i->nat_tree_lock[i]);
+    } 
+		remove_nats_in_journal(sbi);
+    for (int i = 0 ; i < nm_i->nat_tree_cnt; i++) {
+		  f4fs_up_write(&nm_i->nat_tree_lock[i]);
+    }
+#else
 		f4fs_down_write(&nm_i->nat_tree_lock);
 		remove_nats_in_journal(sbi);
 		f4fs_up_write(&nm_i->nat_tree_lock);
+#endif
 	}
 
+#ifdef FILE_CELL
+    for (int i = 0 ; i < nm_i->nat_tree_cnt; i++) {
+      if (!nm_i->nat_cnt[DIRTY_NAT][i])
+        continue;
+
+		  f4fs_down_write(&nm_i->nat_tree_lock[i]);
+
+      /*
+       * if there are no enough space in journal to store dirty nat
+       * entries, remove all entries from journal and merge them
+       * into nat entry set.
+       */
+      if (cpc->reason & CP_UMOUNT ||
+          !__has_cursum_space(journal,
+            nm_i->nat_cnt[DIRTY_NAT][i], NAT_JOURNAL))
+        remove_nats_in_journal(sbi);
+
+      while ((found = __gang_lookup_nat_set(nm_i,
+              set_idx, SETVEC_SIZE, setvec, i))) {
+        unsigned idx;
+
+        set_idx = setvec[found - 1]->set + 1;
+        for (idx = 0; idx < found; idx++)
+          __adjust_nat_entry_set_per_core(setvec[idx], &sets,
+              MAX_NAT_JENTRIES(journal), nm_i->nat_tree_cnt);
+      }
+
+      /* flush dirty nats in nat entry set */
+      list_for_each_entry_safe(set, tmp, &sets, set_list) {
+        err = __flush_nat_entry_set(sbi, set, cpc);
+        if (err)
+          break;
+      }
+
+      f4fs_up_write(&nm_i->nat_tree_lock[i]);
+    } 
+#else
 	if (!nm_i->nat_cnt[DIRTY_NAT])
 		return 0;
 
@@ -3132,10 +3951,142 @@ int f4fs_flush_nat_entries(struct f4fs_sb_info *sbi, struct cp_control *cpc)
 	}
 
 	f4fs_up_write(&nm_i->nat_tree_lock);
+#endif
 	/* Allow dirty nats by node block allocation in write_begin */
 
 	return err;
 }
+
+#else
+static void __adjust_nat_entry_set(struct nat_entry_set *nes,
+						struct list_head *head, int max)
+{
+	struct nat_entry_set *cur;
+
+	if (nes->entry_cnt >= max)
+		goto add_out;
+
+	list_for_each_entry(cur, head, set_list) {
+		if (cur->entry_cnt >= nes->entry_cnt) {
+			list_add(&nes->set_list, cur->set_list.prev);
+			return;
+		}
+	}
+add_out:
+	list_add_tail(&nes->set_list, head);
+}
+
+/*
+ * This function is called during the checkpointing process.
+ */
+int f4fs_flush_nat_entries(struct f4fs_sb_info *sbi, struct cp_control *cpc)
+{
+	struct f4fs_nm_info *nm_i = NM_I(sbi);
+	struct curseg_info *curseg = CURSEG_I(sbi, CURSEG_HOT_DATA);
+	struct f4fs_journal *journal = curseg->journal;
+	struct nat_entry_set *setvec[SETVEC_SIZE];
+	struct nat_entry_set *set, *tmp;
+	unsigned int found;
+	nid_t set_idx = 0;
+	LIST_HEAD(sets);
+	int err = 0;
+
+	/*
+	 * during unmount, let's flush nat_bits before checking
+	 * nat_cnt[DIRTY_NAT].
+	 */
+	if (cpc->reason & CP_UMOUNT) {
+#ifdef FILE_CELL
+    for (int i = 0 ; i < nm_i->nat_tree_cnt; i++) {
+		  f4fs_down_write(&nm_i->nat_tree_lock[i]);
+    } 
+		remove_nats_in_journal(sbi);
+    for (int i = 0 ; i < nm_i->nat_tree_cnt; i++) {
+		  f4fs_up_write(&nm_i->nat_tree_lock[i]);
+    }
+#else
+		f4fs_down_write(&nm_i->nat_tree_lock);
+		remove_nats_in_journal(sbi);
+		f4fs_up_write(&nm_i->nat_tree_lock);
+#endif
+	}
+
+#ifdef FILE_CELL
+    for (int i = 0 ; i < nm_i->nat_tree_cnt; i++) {
+      if (!nm_i->nat_cnt[DIRTY_NAT][i])
+        continue;
+
+		  f4fs_down_write(&nm_i->nat_tree_lock[i]);
+
+      /*
+       * if there are no enough space in journal to store dirty nat
+       * entries, remove all entries from journal and merge them
+       * into nat entry set.
+       */
+      if (cpc->reason & CP_UMOUNT ||
+          !__has_cursum_space(journal,
+            nm_i->nat_cnt[DIRTY_NAT][i], NAT_JOURNAL))
+        remove_nats_in_journal(sbi);
+
+      while ((found = __gang_lookup_nat_set(nm_i,
+              set_idx, SETVEC_SIZE, setvec, i))) {
+        unsigned idx;
+
+        set_idx = setvec[found - 1]->set + 1;
+        for (idx = 0; idx < found; idx++)
+          __adjust_nat_entry_set(setvec[idx], &sets,
+              MAX_NAT_JENTRIES(journal));
+      }
+
+      /* flush dirty nats in nat entry set */
+      list_for_each_entry_safe(set, tmp, &sets, set_list) {
+        err = __flush_nat_entry_set(sbi, set, cpc);
+        if (err)
+          break;
+      }
+
+      f4fs_up_write(&nm_i->nat_tree_lock[i]);
+    } 
+#else
+	if (!nm_i->nat_cnt[DIRTY_NAT])
+		return 0;
+
+	f4fs_down_write(&nm_i->nat_tree_lock);
+
+	/*
+	 * if there are no enough space in journal to store dirty nat
+	 * entries, remove all entries from journal and merge them
+	 * into nat entry set.
+	 */
+	if (cpc->reason & CP_UMOUNT ||
+		!__has_cursum_space(journal,
+			nm_i->nat_cnt[DIRTY_NAT], NAT_JOURNAL))
+		remove_nats_in_journal(sbi);
+
+	while ((found = __gang_lookup_nat_set(nm_i,
+					set_idx, SETVEC_SIZE, setvec))) {
+		unsigned idx;
+
+		set_idx = setvec[found - 1]->set + 1;
+		for (idx = 0; idx < found; idx++)
+			__adjust_nat_entry_set(setvec[idx], &sets,
+						MAX_NAT_JENTRIES(journal));
+	}
+
+	/* flush dirty nats in nat entry set */
+	list_for_each_entry_safe(set, tmp, &sets, set_list) {
+		err = __flush_nat_entry_set(sbi, set, cpc);
+		if (err)
+			break;
+	}
+
+	f4fs_up_write(&nm_i->nat_tree_lock);
+#endif
+	/* Allow dirty nats by node block allocation in write_begin */
+
+	return err;
+}
+#endif
 
 static int __get_nat_bitmaps(struct f4fs_sb_info *sbi)
 {
@@ -3225,6 +4176,9 @@ static int init_node_manager(struct f4fs_sb_info *sbi)
 	unsigned char *version_bitmap;
 	unsigned int nat_segs;
 	int err;
+#ifdef FILE_CELL
+  uint nat_tree_cnt;
+#endif
 
 	nm_i->nat_blkaddr = le32_to_cpu(sb_raw->nat_blkaddr);
 
@@ -3245,14 +4199,42 @@ static int init_node_manager(struct f4fs_sb_info *sbi)
 
 	INIT_RADIX_TREE(&nm_i->free_nid_root, GFP_ATOMIC);
 	INIT_LIST_HEAD(&nm_i->free_nid_list);
+
+#ifdef FILE_CELL
+	if (sbi->nr_file_cell > 0)
+		nm_i->nat_tree_cnt = sbi->nr_file_cell;
+	else 
+		nm_i->nat_tree_cnt = num_online_cpus();
+	nat_tree_cnt = nm_i->nat_tree_cnt;
+
+	nm_i->nat_root = kzalloc(nat_tree_cnt * sizeof(struct radix_tree_root), GFP_KERNEL);
+	nm_i->nat_tree_lock = kzalloc(nat_tree_cnt * sizeof(struct rw_semaphore), GFP_KERNEL);
+	nm_i->nat_set_root = kzalloc(nat_tree_cnt * sizeof(struct radix_tree_root), GFP_KERNEL);
+	nm_i->nat_entries = kzalloc(nat_tree_cnt * sizeof(struct list_head), GFP_KERNEL);
+  for (int j = 0 ; j < MAX_NAT_STATE; j++) {
+    nm_i->nat_cnt[j] = kzalloc(nat_tree_cnt * sizeof(unsigned int), GFP_KERNEL); 
+  }
+
+	for (int i = 0; i < nat_tree_cnt; i++) {
+		INIT_RADIX_TREE(&nm_i->nat_root[i], GFP_NOIO);
+		init_f4fs_rwsem(&nm_i->nat_tree_lock[i]);
+		INIT_RADIX_TREE(&nm_i->nat_set_root[i], GFP_NOIO);
+		INIT_LIST_HEAD(&nm_i->nat_entries[i]);
+    for (int j = 0 ; j < MAX_NAT_STATE; j++) {
+      nm_i->nat_cnt[j][i] = 0;
+    }
+	  spin_lock_init(&nm_i->nat_list_lock[i]);
+	}
+#else
 	INIT_RADIX_TREE(&nm_i->nat_root, GFP_NOIO);
+	init_f4fs_rwsem(&nm_i->nat_tree_lock);
 	INIT_RADIX_TREE(&nm_i->nat_set_root, GFP_NOIO);
 	INIT_LIST_HEAD(&nm_i->nat_entries);
 	spin_lock_init(&nm_i->nat_list_lock);
+#endif
 
 	mutex_init(&nm_i->build_lock);
 	spin_lock_init(&nm_i->nid_list_lock);
-	init_f4fs_rwsem(&nm_i->nat_tree_lock);
 
 	nm_i->next_scan_nid = le32_to_cpu(sbi->ckpt->next_free_nid);
 	nm_i->bitmap_size = __bitmap_size(sbi, NAT_BITMAP);
@@ -3340,6 +4322,10 @@ void f4fs_destroy_node_manager(struct f4fs_sb_info *sbi)
 	struct nat_entry_set *setvec[SETVEC_SIZE];
 	nid_t nid = 0;
 	unsigned int found;
+#ifdef FILE_CELL
+  int n;
+  int nat_tree_cnt;
+#endif
 
 	if (!nm_i)
 		return;
@@ -3358,6 +4344,45 @@ void f4fs_destroy_node_manager(struct f4fs_sb_info *sbi)
 	spin_unlock(&nm_i->nid_list_lock);
 
 	/* destroy nat cache */
+#ifdef FILE_CELL
+	nat_tree_cnt = nm_i->nat_tree_cnt;
+	for (n = 0; n < nat_tree_cnt; n++) {
+		f4fs_down_write(&nm_i->nat_tree_lock[n]);
+		nid = (nid_t) n;
+		while ((found = __gang_lookup_nat_cache(nm_i, n, nid, NATVEC_SIZE, natvec))) {
+			unsigned idx;
+			nid = nat_get_nid(natvec[found - 1]) + nat_tree_cnt;
+			for (idx = 0; idx < found; idx++)
+  			spin_lock(&nm_i->nat_list_lock[n]);
+  			list_del(&natvec[idx]->list);
+  			spin_unlock(&nm_i->nat_list_lock[n]);
+
+				__del_from_nat_cache(nm_i, natvec[idx]);
+		}
+		f4fs_bug_on(sbi, nm_i->nat_cnt[TOTAL_NAT][n]);
+
+		/* destroy nat set cache */
+		nid = 0;
+		while ((found = __gang_lookup_nat_set(nm_i, nid, SETVEC_SIZE, setvec, n))) {
+			unsigned idx;
+			nid = setvec[found - 1]->set + 1;
+			for (idx = 0; idx < found; idx++) {
+				/* entry_cnt is not zero, when cp_error was occurred */
+				f4fs_bug_on(sbi, !list_empty(&setvec[idx]->entry_list));
+				radix_tree_delete(&nm_i->nat_set_root[n], setvec[idx]->set);
+				kmem_cache_free(nat_entry_set_slab, setvec[idx]);
+			}
+		}
+		f4fs_up_write(&nm_i->nat_tree_lock[n]);
+	}
+	kfree(nm_i->nat_root);
+	kfree(nm_i->nat_set_root);
+  for (int j = 0 ; j < MAX_NAT_STATE; j++) {
+	  kfree(nm_i->nat_cnt[j]);
+  }
+	kfree(nm_i->nat_entries);
+	kfree(nm_i->nat_tree_lock);
+#else
 	f4fs_down_write(&nm_i->nat_tree_lock);
 	while ((found = __gang_lookup_nat_cache(nm_i,
 					nid, NATVEC_SIZE, natvec))) {
@@ -3389,6 +4414,7 @@ void f4fs_destroy_node_manager(struct f4fs_sb_info *sbi)
 		}
 	}
 	f4fs_up_write(&nm_i->nat_tree_lock);
+#endif
 
 	kvfree(nm_i->nat_block_bitmap);
 	if (nm_i->free_nid_bitmap) {
