@@ -3719,6 +3719,100 @@ void f4fs_enable_nat_bits(struct f4fs_sb_info *sbi)
 #endif
 }
 
+#ifdef FILE_CELL
+static int __flush_nat_entry_set_per_core(struct f4fs_sb_info *sbi,
+		struct per_core_sets_pack *sets, struct cp_control *cpc)
+{
+	struct curseg_info *curseg = CURSEG_I(sbi, CURSEG_HOT_DATA);
+	struct f4fs_journal *journal = curseg->journal;
+	nid_t start_nid = sets->set_id * NAT_ENTRY_PER_BLOCK;
+	bool to_journal = true;
+	struct f4fs_nat_block *nat_blk;
+	struct nat_entry *ne, *cur;
+	struct page *page = NULL;
+  struct f4fs_nm_info * nm_i = NM_I(sbi);
+
+	const int total_set = sets->next_set_idx;
+	int tree_idx = -1;
+	int nat_tree_cnt = nm_i->nat_tree_cnt;
+
+	/*
+	 * there are two steps to flush nat entries:
+	 * #1, flush nat entries to journal in current hot data summary block.
+	 * #2, flush nat entries to nat page.
+	 */
+	if ((cpc->reason & CP_UMOUNT) ||
+		!__has_cursum_space(journal, sets->entry_cnt, NAT_JOURNAL))
+		to_journal = false;
+
+	if (to_journal) {
+		down_write(&curseg->journal_rwsem);
+	} else {
+		page = get_next_nat_page(sbi, start_nid);
+		if (IS_ERR(page))
+			return PTR_ERR(page);
+
+		nat_blk = page_address(page);
+		f4fs_bug_on(sbi, !nat_blk);
+	}
+
+  for (int i = 0 ; i < total_set ; i++) {
+    /* flush dirty nats in nat entry set */
+    list_for_each_entry_safe(ne, cur, &sets->set[i]->entry_list, list) {
+      struct f4fs_nat_entry *raw_ne;
+      nid_t nid = nat_get_nid(ne);
+      int offset;
+      tree_idx = nid % nat_tree_cnt;
+
+      f4fs_bug_on(sbi, nat_get_blkaddr(ne) == NEW_ADDR);
+
+      if (to_journal) {
+        offset = f4fs_lookup_journal_in_cursum(journal,
+            NAT_JOURNAL, nid, 1);
+        f4fs_bug_on(sbi, offset < 0);
+        raw_ne = &nat_in_journal(journal, offset);
+        nid_in_journal(journal, offset) = cpu_to_le32(nid);
+      } else {
+        raw_ne = &nat_blk->entries[nid - start_nid];
+      }
+      raw_nat_from_node_info(raw_ne, &ne->ni);
+			f4fs_down_write(&NM_I(sbi)->nat_tree_lock[tree_idx]);
+      nat_reset_flag(ne);
+      __clear_nat_cache_dirty(NM_I(sbi), sets->set[i], ne);
+			f4fs_up_write(&NM_I(sbi)->nat_tree_lock[tree_idx]);
+      if (nat_get_blkaddr(ne) == NULL_ADDR) {
+        add_free_nid(sbi, nid, false, true);
+      } else {
+        spin_lock(&NM_I(sbi)->nid_list_lock);
+        update_free_nid_bitmap(sbi, nid, false, false);
+        spin_unlock(&NM_I(sbi)->nid_list_lock);
+      }
+    }
+  }
+
+	if (to_journal) {
+		up_write(&curseg->journal_rwsem);
+	} else {
+		update_nat_bits(sbi, start_nid, page);
+		f4fs_put_page(page, 1);
+	}
+
+	for (int i = 0; i < nat_tree_cnt; i++) {
+		f4fs_down_write(&nm_i->nat_tree_lock[i]);
+		radix_tree_delete(&NM_I(sbi)->nat_set_root[i], sets->set_id);
+		f4fs_up_write(&nm_i->nat_tree_lock[i]);
+	}
+
+	for (int i = 0; i < total_set; i++) {
+		kmem_cache_free(nat_entry_set_slab, sets->set[i]);
+	}
+	kfree(sets->set);
+
+	return 0;
+}
+
+#endif
+
 static int __flush_nat_entry_set(struct f4fs_sb_info *sbi,
 		struct nat_entry_set *set, struct cp_control *cpc)
 {
@@ -3829,6 +3923,9 @@ static void __adjust_nat_entry_set_per_core(struct nat_entry_set *nes,
 		struct per_core_sets_pack *new_pack;
 
 		new_pack = f4fs_kmem_cache_alloc(per_core_sets_pack_slab, GFP_ATOMIC, true, NULL);
+    if (!new_pack) {
+      return;
+    }
 		init_new_per_core_sets_pack(new_pack, nes->set, (unsigned int) nat_tree_cnt);
 		new_pack->set[new_pack->next_set_idx++] = nes;
 		new_pack->entry_cnt = nes->entry_cnt;
@@ -3855,7 +3952,7 @@ int f4fs_flush_nat_entries_per_core(struct f4fs_sb_info *sbi, struct cp_control 
 	struct curseg_info *curseg = CURSEG_I(sbi, CURSEG_HOT_DATA);
 	struct f4fs_journal *journal = curseg->journal;
 	struct nat_entry_set *setvec[SETVEC_SIZE];
-	struct nat_entry_set *set, *tmp;
+  struct per_core_sets_pack *set, *tmp;
 	unsigned int found;
 	nid_t set_idx = 0;
 	LIST_HEAD(sets);
@@ -3881,10 +3978,10 @@ int f4fs_flush_nat_entries_per_core(struct f4fs_sb_info *sbi, struct cp_control 
 #endif
 	}
 
-#ifdef FILE_CELL
     for (int i = 0 ; i < nm_i->nat_tree_cnt; i++) {
-      if (!nm_i->nat_cnt[DIRTY_NAT][i])
+      if (!nm_i->nat_cnt[DIRTY_NAT][i]) {
         continue;
+      }
 
 		  f4fs_down_write(&nm_i->nat_tree_lock[i]);
 
@@ -3907,51 +4004,17 @@ int f4fs_flush_nat_entries_per_core(struct f4fs_sb_info *sbi, struct cp_control 
           __adjust_nat_entry_set_per_core(setvec[idx], &sets,
               MAX_NAT_JENTRIES(journal), nm_i->nat_tree_cnt);
       }
-
-      /* flush dirty nats in nat entry set */
-      list_for_each_entry_safe(set, tmp, &sets, set_list) {
-        err = __flush_nat_entry_set(sbi, set, cpc);
-        if (err)
-          break;
-      }
-
       f4fs_up_write(&nm_i->nat_tree_lock[i]);
     } 
-#else
-	if (!nm_i->nat_cnt[DIRTY_NAT])
-		return 0;
 
-	f4fs_down_write(&nm_i->nat_tree_lock);
+    /* flush dirty nats in nat entry set */
+    list_for_each_entry_safe(set, tmp, &sets, set_list) {
+      err = __flush_nat_entry_set_per_core(sbi, set, cpc);
+      kmem_cache_free(per_core_sets_pack_slab, set);
+      if (err)
+        break;
+    }
 
-	/*
-	 * if there are no enough space in journal to store dirty nat
-	 * entries, remove all entries from journal and merge them
-	 * into nat entry set.
-	 */
-	if (cpc->reason & CP_UMOUNT ||
-		!__has_cursum_space(journal,
-			nm_i->nat_cnt[DIRTY_NAT], NAT_JOURNAL))
-		remove_nats_in_journal(sbi);
-
-	while ((found = __gang_lookup_nat_set(nm_i,
-					set_idx, SETVEC_SIZE, setvec))) {
-		unsigned idx;
-
-		set_idx = setvec[found - 1]->set + 1;
-		for (idx = 0; idx < found; idx++)
-			__adjust_nat_entry_set(setvec[idx], &sets,
-						MAX_NAT_JENTRIES(journal));
-	}
-
-	/* flush dirty nats in nat entry set */
-	list_for_each_entry_safe(set, tmp, &sets, set_list) {
-		err = __flush_nat_entry_set(sbi, set, cpc);
-		if (err)
-			break;
-	}
-
-	f4fs_up_write(&nm_i->nat_tree_lock);
-#endif
 	/* Allow dirty nats by node block allocation in write_begin */
 
 	return err;
@@ -4457,8 +4520,20 @@ int __init f4fs_create_node_manager_caches(void)
 			sizeof(struct fsync_node_entry));
 	if (!fsync_node_entry_slab)
 		goto destroy_nat_entry_set;
+
+#ifdef FILE_CELL
+  per_core_sets_pack_slab = f4fs_kmem_cache_create("f4fs_per_core_sets_pack",
+    sizeof(struct per_core_sets_pack));
+  if (!per_core_sets_pack_slab) {
+    goto destroy_fsync_node_entry;
+  }
+#endif
 	return 0;
 
+#ifdef FILE_CELL
+destroy_fsync_node_entry:
+	kmem_cache_destroy(fsync_node_entry_slab);
+#endif
 destroy_nat_entry_set:
 	kmem_cache_destroy(nat_entry_set_slab);
 destroy_free_nid:
@@ -4471,6 +4546,9 @@ fail:
 
 void f4fs_destroy_node_manager_caches(void)
 {
+#ifdef FILE_CELL
+	kmem_cache_destroy(per_core_sets_pack_slab);
+#endif
 	kmem_cache_destroy(fsync_node_entry_slab);
 	kmem_cache_destroy(nat_entry_set_slab);
 	kmem_cache_destroy(free_nid_slab);
