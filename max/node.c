@@ -4211,6 +4211,7 @@ static int init_node_manager(struct f4fs_sb_info *sbi)
 	nm_i->nat_tree_lock = kzalloc(nat_tree_cnt * sizeof(struct rw_semaphore), GFP_KERNEL);
 	nm_i->nat_set_root = kzalloc(nat_tree_cnt * sizeof(struct radix_tree_root), GFP_KERNEL);
 	nm_i->nat_entries = kzalloc(nat_tree_cnt * sizeof(struct list_head), GFP_KERNEL);
+	nm_i->nat_list_lock = kzalloc(nat_tree_cnt * sizeof(struct f4fs_rwsem), GFP_KERNEL);
   for (int j = 0 ; j < MAX_NAT_STATE; j++) {
     nm_i->nat_cnt[j] = kzalloc(nat_tree_cnt * sizeof(unsigned int), GFP_KERNEL); 
   }

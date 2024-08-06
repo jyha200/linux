@@ -4137,7 +4137,7 @@ static int read_normal_summaries(struct f4fs_sb_info *sbi, int type, int mlog)
 		blk_off = le16_to_cpu(ckpt->cur_node_blkoff[NR_CURSEG_NODE_TYPE * mlog + type -
 							CURSEG_HOT_NODE]);
 		if (__exist_node_summaries(sbi))
-			blk_addr = sum_blk_addr(sbi, NR_CURSEG_NODE_TYPE + NR_CURSEG_TYPE * (sbi->nr_mlog - mlog - 1),
+			blk_addr = sum_blk_addr(sbi, NR_CURSEG_NODE_TYPE + NR_CURSEG_PERSIST_TYPE * (sbi->nr_mlog - mlog - 1),
 							type - CURSEG_HOT_NODE);
 		else
 			blk_addr = GET_SUM_BLOCK(sbi, segno);

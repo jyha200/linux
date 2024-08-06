@@ -3438,9 +3438,16 @@ static int sanity_check_raw_super(struct f4fs_sb_info *sbi,
 	}
 
 	/* check reserved ino info */
+#ifdef FILE_CELL
+	if (le32_to_cpu(raw_super->node_ino) != 3 ||
+		le32_to_cpu(raw_super->meta_ino) != 2 ||
+		le32_to_cpu(raw_super->root_ino) != 1)
+#else
 	if (le32_to_cpu(raw_super->node_ino) != 1 ||
 		le32_to_cpu(raw_super->meta_ino) != 2 ||
-		le32_to_cpu(raw_super->root_ino) != 3) {
+		le32_to_cpu(raw_super->root_ino) != 3)
+#endif
+  {
 		f4fs_info(sbi, "Invalid Fs Meta Ino: node(%u) meta(%u) root(%u)",
 			  le32_to_cpu(raw_super->node_ino),
 			  le32_to_cpu(raw_super->meta_ino),
