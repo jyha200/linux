@@ -161,6 +161,8 @@ enum {
 	Opt_nogc_merge,
 	Opt_discard_unit,
 	Opt_memory_mode,
+  Opt_nr_IMDS,
+  Opt_nr_mlog,
 	Opt_err,
 };
 
@@ -238,6 +240,8 @@ static match_table_t f4fs_tokens = {
 	{Opt_nogc_merge, "nogc_merge"},
 	{Opt_discard_unit, "discard_unit=%s"},
 	{Opt_memory_mode, "memory=%s"},
+  {Opt_nr_IMDS, "imds=%u"},
+  {Opt_nr_mlog, "mlog=%u"},
 	{Opt_err, NULL},
 };
 
@@ -825,6 +829,20 @@ static int parse_options(struct super_block *sb, char *options, bool is_remount)
 		case Opt_noinline_data:
 			clear_opt(sbi, INLINE_DATA);
 			break;
+    case Opt_nr_mlog:
+      if (args->from && match_int(args, &arg))
+        return -EINVAL;
+      if (arg <= 0)
+        return -EINVAL;
+      sbi->nr_mlog = arg;
+      break;
+    case Opt_nr_IMDS:
+      if (args->from && match_int(args, &arg))
+        return -EINVAL;
+      if (arg <= 0)
+        return -EINVAL;
+      sbi->nr_file_cell = arg;
+      break;
 		case Opt_data_flush:
 			set_opt(sbi, DATA_FLUSH);
 			break;
