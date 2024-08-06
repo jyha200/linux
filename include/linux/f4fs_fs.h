@@ -11,6 +11,9 @@
 #include <linux/pagemap.h>
 #include <linux/types.h>
 
+#define FILE_CELL
+#define MLOG
+
 #define F4FS_SUPER_OFFSET		1024	/* byte-size offset */
 #define F4FS_MIN_LOG_SECTOR_SIZE	9	/* 9 bits for 512 bytes */
 #define F4FS_MAX_LOG_SECTOR_SIZE	12	/* 12 bits for 4096 bytes */
@@ -64,6 +67,10 @@
 #define MAX_VOLUME_NAME		512
 #define MAX_PATH_LEN		64
 #define MAX_DEVICES		8
+
+#ifdef MLOG
+#define MAX_EXTEND_LOGS 63
+#endif
 
 /*
  * For superblock
@@ -149,12 +156,20 @@ struct f4fs_checkpoint {
 	__le32 overprov_segment_count;	/* # of overprovision segments */
 	__le32 free_segment_count;	/* # of free segments in main area */
 
+#ifdef MLOG
+  __le32 nr_mlog;
+  __le32 cur_node_segno[MAX_ACTIVE_NODE_LOGS + MAX_EXTEND_LOGS *3];
+  __le16 cur_node_blkoff[MAX_ACTIVE_NODE_LOGS + MAX_EXTEND_LOGS *3];
+  __le32 cur_data_segno[MAX_ACTIVE_DATA_LOGS + MAX_EXTEND_LOGS *3];
+  __le16 cur_data_blkoff[MAX_ACTIVE_DATA_LOGS + MAX_EXTEND_LOGS *3];
+#else
 	/* information of current node segments */
 	__le32 cur_node_segno[MAX_ACTIVE_NODE_LOGS];
 	__le16 cur_node_blkoff[MAX_ACTIVE_NODE_LOGS];
 	/* information of current data segments */
 	__le32 cur_data_segno[MAX_ACTIVE_DATA_LOGS];
 	__le16 cur_data_blkoff[MAX_ACTIVE_DATA_LOGS];
+#endif
 	__le32 ckpt_flags;		/* Flags : umount and journal_present */
 	__le32 cp_pack_total_block_count;	/* total # of one cp pack */
 	__le32 cp_pack_start_sum;	/* start block number of data summary */
@@ -165,8 +180,12 @@ struct f4fs_checkpoint {
 	__le32 nat_ver_bitmap_bytesize; /* Default value 256 */
 	__le32 checksum_offset;		/* checksum offset inside cp block */
 	__le64 elapsed_time;		/* mounted time */
+#ifdef MLOG
+	unsigned char alloc_type[MAX_ACTIVE_LOGS + MAX_EXTEND_LOGS * 6];
+#else
 	/* allocation type of current segment */
 	unsigned char alloc_type[MAX_ACTIVE_LOGS];
+#endif
 
 	/* SIT and NAT version bitmap */
 	unsigned char sit_nat_version_bitmap[];

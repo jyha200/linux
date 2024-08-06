@@ -1462,6 +1462,28 @@ static int do_checkpoint(struct f4fs_sb_info *sbi, struct cp_control *cpc)
 	/* start to update checkpoint, cp ver is already updated previously */
 	ckpt->elapsed_time = cpu_to_le64(get_mtime(sbi, true));
 	ckpt->free_segment_count = cpu_to_le32(free_segments(sbi));
+#ifdef MLOG
+	for (i = 0; i < NR_CURSEG_NODE_TYPE; i++) {
+    for (int j = 0 ; j < sbi->nr_mlog ; j++) {
+      ckpt->cur_node_segno[i] =
+        cpu_to_le32(curseg_segno(sbi, i + CURSEG_HOT_NODE + j * NR_CURSEG_TYPE));
+      ckpt->cur_node_blkoff[i] =
+        cpu_to_le16(curseg_blkoff(sbi, i + CURSEG_HOT_NODE + j* NR_CURSEG_TYPE));
+      ckpt->alloc_type[i + CURSEG_HOT_NODE] =
+        curseg_alloc_type(sbi, i + CURSEG_HOT_NODE + j * NR_CURSEG_TYPE);
+    }
+	}
+	for (i = 0; i < NR_CURSEG_DATA_TYPE; i++) {
+    for (int j = 0 ; j < sbi->nr_mlog ; j++) {
+      ckpt->cur_data_segno[i] =
+        cpu_to_le32(curseg_segno(sbi, i + CURSEG_HOT_DATA + j * NR_CURSEG_TYPE));
+      ckpt->cur_data_blkoff[i] =
+        cpu_to_le16(curseg_blkoff(sbi, i + CURSEG_HOT_DATA + j * NR_CURSEG_TYPE));
+      ckpt->alloc_type[i + CURSEG_HOT_DATA] =
+        curseg_alloc_type(sbi, i + CURSEG_HOT_DATA + j * NR_CURSEG_TYPE);
+    }
+	}
+#else
 	for (i = 0; i < NR_CURSEG_NODE_TYPE; i++) {
 		ckpt->cur_node_segno[i] =
 			cpu_to_le32(curseg_segno(sbi, i + CURSEG_HOT_NODE));
@@ -1478,6 +1500,7 @@ static int do_checkpoint(struct f4fs_sb_info *sbi, struct cp_control *cpc)
 		ckpt->alloc_type[i + CURSEG_HOT_DATA] =
 				curseg_alloc_type(sbi, i + CURSEG_HOT_DATA);
 	}
+#endif
 
 	/* 2 cp + n data seg summary + orphan inode blocks */
 	data_sum_blocks = f4fs_npages_for_summary_flush(sbi, false);
@@ -1493,13 +1516,25 @@ static int do_checkpoint(struct f4fs_sb_info *sbi, struct cp_control *cpc)
 			orphan_blocks);
 
 	if (__remain_node_summaries(cpc->reason))
+#ifdef MLOG
+		ckpt->cp_pack_total_block_count = cpu_to_le32(F4FS_CP_PACKS +
+				cp_payload_blks + data_sum_blocks +
+				orphan_blocks + NR_CURSEG_NODE_TYPE + NR_CURSEG_TYPE * (sbi->nr_mlog - 1));
+#else
 		ckpt->cp_pack_total_block_count = cpu_to_le32(F4FS_CP_PACKS +
 				cp_payload_blks + data_sum_blocks +
 				orphan_blocks + NR_CURSEG_NODE_TYPE);
+#endif
 	else
+#ifdef MLOG
+		ckpt->cp_pack_total_block_count = cpu_to_le32(F4FS_CP_PACKS +
+				cp_payload_blks + data_sum_blocks +
+				orphan_blocks + NR_CURSEG_DATA_TYPE * (sbi->nr_mlog - 1));
+#else
 		ckpt->cp_pack_total_block_count = cpu_to_le32(F4FS_CP_PACKS +
 				cp_payload_blks + data_sum_blocks +
 				orphan_blocks);
+#endif
 
 	/* update ckpt flag for checkpoint */
 	update_ckpt_flags(sbi, cpc);
@@ -1555,6 +1590,17 @@ static int do_checkpoint(struct f4fs_sb_info *sbi, struct cp_control *cpc)
 		f4fs_write_node_summaries(sbi, start_blk);
 		start_blk += NR_CURSEG_NODE_TYPE;
 	}
+
+#ifdef MLOG
+  for (int i = 1 ; i < sbi->nr_mlog ; i++) {
+    f4fs_write_normal_summaries_mlog(sbi, start_blk, CURSEG_HOT_DATA, i);
+    start_blk += NR_CURSEG_DATA_TYPE;
+    if (__remain_node_summaries(cpc->reason)) {
+      f4fs_write_normal_summaries_mlog(sbi, start_blk, CURSEG_HOT_NODE, i);
+      start_blk += NR_CURSEG_NODE_TYPE;
+    }
+  }
+#endif
 
 	/* update user_block_counts */
 	sbi->last_valid_block_count = sbi->total_valid_block_count;

@@ -12,6 +12,8 @@
 #define NULL_SEGNO			((unsigned int)(~0))
 #define NULL_SECNO			((unsigned int)(~0))
 
+#define MLOG
+
 #define DEF_RECLAIM_PREFREE_SEGMENTS	5	/* 5% over total segments */
 #define DEF_MAX_RECLAIM_PREFREE_SEGMENTS	4096	/* 8GB in maximum */
 
@@ -36,6 +38,7 @@ static inline void sanity_check_seg_type(struct f4fs_sb_info *sbi,
 #define IS_WARM(t)	((t) == CURSEG_WARM_NODE || (t) == CURSEG_WARM_DATA)
 #define IS_COLD(t)	((t) == CURSEG_COLD_NODE || (t) == CURSEG_COLD_DATA)
 
+#ifndef MLOG
 #define IS_CURSEG(sbi, seg)						\
 	(((seg) == CURSEG_I(sbi, CURSEG_HOT_DATA)->segno) ||	\
 	 ((seg) == CURSEG_I(sbi, CURSEG_WARM_DATA)->segno) ||	\
@@ -63,6 +66,7 @@ static inline void sanity_check_seg_type(struct f4fs_sb_info *sbi,
 	  (sbi)->segs_per_sec) ||	\
 	 ((secno) == CURSEG_I(sbi, CURSEG_ALL_DATA_ATGC)->segno /	\
 	  (sbi)->segs_per_sec))
+#endif
 
 #define MAIN_BLKADDR(sbi)						\
 	(SM_I(sbi) ? SM_I(sbi)->main_blkaddr : 				\
@@ -223,7 +227,11 @@ struct sec_entry {
 };
 
 struct segment_allocation {
+#ifdef MLOG
+	void (*allocate_segment)(struct f4fs_sb_info *, int, bool, int);
+#else
 	void (*allocate_segment)(struct f4fs_sb_info *, int, bool);
+#endif
 };
 
 #define MAX_SKIP_GC_COUNT			16
@@ -338,6 +346,26 @@ static inline struct curseg_info *CURSEG_I(struct f4fs_sb_info *sbi, int type)
 {
 	return (struct curseg_info *)(SM_I(sbi)->curseg_array + type);
 }
+
+#ifdef MLOG
+static int IS_CURSEG(struct f4fs_sb_info *sbi, int seg) {
+  for (int i = 0 ; i < sbi->nr_mlog ; i++) {
+    for (int j = 0 ; j < NR_CURSEG_TYPE ; j++) {
+      if (seg == (CURSEG_I(sbi, j + i * NR_CURSEG_TYPE)->segno)) return 1;
+    }
+  }
+  return 0;
+}
+
+static int IS_CURSEC(struct f4fs_sb_info *sbi, int secno) {
+  for (int i = 0 ; i < sbi->nr_mlog ; i++) {
+    for (int j = 0 ; j < NR_CURSEG_TYPE ; j++) {
+      if (secno == (CURSEG_I(sbi, j+i*NR_CURSEG_TYPE)->segno / sbi->segs_per_sec)) return 1;
+    }
+  }
+  return 0;
+}
+#endif
 
 static inline struct seg_entry *get_seg_entry(struct f4fs_sb_info *sbi,
 						unsigned int segno)
@@ -844,11 +872,19 @@ static inline void set_summary(struct f4fs_summary *sum, nid_t nid,
 	sum->version = version;
 }
 
+#ifdef MLOG
+static inline block_t start_sum_block(struct f4fs_sb_info *sbi, int blk_off)
+{
+	return __start_cp_addr(sbi) +
+		le32_to_cpu(F4FS_CKPT(sbi)->cp_pack_start_sum) + blk_off;
+}
+#else
 static inline block_t start_sum_block(struct f4fs_sb_info *sbi)
 {
 	return __start_cp_addr(sbi) +
 		le32_to_cpu(F4FS_CKPT(sbi)->cp_pack_start_sum);
 }
+#endif
 
 static inline block_t sum_blk_addr(struct f4fs_sb_info *sbi, int base, int type)
 {

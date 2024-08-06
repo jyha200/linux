@@ -31,6 +31,7 @@
 
 #define RPS
 #define FILE_CELL
+#define MLOG
 
 #ifdef RPS
 #include "rps.h"
@@ -1879,6 +1880,10 @@ struct f4fs_sb_info {
 
 #ifdef RPS
   struct max_info max_info;
+#endif
+#ifdef MLOG
+  uint nr_mlog;
+  atomic_t next_mlog;
 #endif
 };
 
@@ -3729,6 +3734,10 @@ void f4fs_wait_on_block_writeback_range(struct inode *inode, block_t blkaddr,
 								block_t len);
 void f4fs_write_data_summaries(struct f4fs_sb_info *sbi, block_t start_blk);
 void f4fs_write_node_summaries(struct f4fs_sb_info *sbi, block_t start_blk);
+#ifdef MLOG
+void f4fs_write_normal_summaries_mlog(struct f4fs_sb_info *sbi, block_t start_blk, int type, int mlog);
+#endif
+
 int f4fs_lookup_journal_in_cursum(struct f4fs_journal *journal, int type,
 			unsigned int val, int alloc);
 void f4fs_flush_sit_entries(struct f4fs_sb_info *sbi, struct cp_control *cpc);
