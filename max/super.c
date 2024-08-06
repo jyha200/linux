@@ -670,6 +670,9 @@ static int parse_options(struct super_block *sb, char *options, bool is_remount)
 #ifdef FILE_CELL
   sbi->nr_file_cell = num_online_cpus() / 2;
 #endif
+#ifdef MLOG
+  sbi->nr_mlog = 1;
+#endif
 
 	if (!options)
 		goto default_check;
@@ -4143,6 +4146,9 @@ try_onemore:
     return -1;
   }
 #endif
+#ifdef MLOG
+  atomic_set(&sbi->next_mlog, 0);
+#endif
 	init_f4fs_rwsem(&sbi->node_change);
 
 	/* disallow all the data/node/meta page writes */
@@ -4218,6 +4224,11 @@ try_onemore:
 		f4fs_err(sbi, "Failed to initialize post read workqueue");
 		goto free_devices;
 	}
+
+#ifdef MLOG
+  if (sbi->nr_mlog > le32_to_cpu(sbi->ckpt->nr_mlog))
+    sbi->nr_mlog = le32_to_cpu(sbi->ckpt->nr_mlog);
+#endif
 
 	sbi->total_valid_node_count =
 				le32_to_cpu(sbi->ckpt->valid_node_count);
