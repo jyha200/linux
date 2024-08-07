@@ -936,9 +936,9 @@ struct f4fs_nm_info {
 	unsigned int dirty_nats_ratio;	/* control dirty nats ratio threshold */
 
 	/* NAT cache management */
-	struct f4fs_rwsem nat_tree_lock;	/* protect nat entry tree */
 	spinlock_t nat_list_lock;	/* protect clean nat entry list */
 #ifdef FILE_CELL
+	struct f4fs_rwsem nat_tree_lock2[NODE_TREE_CNT];	/* protect nat entry tree */
 	struct radix_tree_root nat_root2[NODE_TREE_CNT];/* root of the nat entry cache */
 	struct radix_tree_root nat_set_root2[NODE_TREE_CNT];/* root of the nat set cache */
 	struct list_head nat_entries2[NODE_TREE_CNT];	/* cached nat entry list (clean) */
