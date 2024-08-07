@@ -23,9 +23,9 @@ static unsigned long __count_nat_entries(struct f4fs_sb_info *sbi)
   int nat_tree_cnt = nm_i->nat_tree_cnt;
   unsigned long count;
   for (int i = 0; i < nat_tree_cnt; i++) {
-	    f4fs_down_read(&nm_i->nat_tree_lock[i]);
+//	    f4fs_down_read(&nm_i->nat_tree_lock[i]);
       count += nm_i->nat_cnt[RECLAIMABLE_NAT][i];
-	    f4fs_down_read(&nm_i->nat_tree_lock[i]);
+//	    f4fs_up_read(&nm_i->nat_tree_lock[i]);
   }
   return count;
 #else

@@ -80,9 +80,9 @@ bool f4fs_available_free_memory(struct f4fs_sb_info *sbi, int type)
     unsigned int count = 0;
     int nat_tree_cnt = nm_i->nat_tree_cnt;
     for (i = 0; i < nat_tree_cnt; i++) {
-	    f4fs_down_read(&nm_i->nat_tree_lock[i]);
+	    //f4fs_down_read(&nm_i->nat_tree_lock[i]);
       count += nm_i->nat_cnt[TOTAL_NAT][i];
-	    f4fs_up_read(&nm_i->nat_tree_lock[i]);
+	    //f4fs_up_read(&nm_i->nat_tree_lock[i]);
     }
 		mem_size = (count * sizeof(struct nat_entry)) >> PAGE_SHIFT;
 #else
@@ -229,15 +229,13 @@ static struct nat_entry *__init_nat_entry(struct f4fs_nm_info *nm_i,
 	if (raw_ne)
 		node_info_from_raw_nat(&ne->ni, raw_ne);
 
-#ifdef FILE_CELL
-	spin_lock(&nm_i->nat_list_lock[tree_idx]);
-	list_add_tail(&ne->list, &nm_i->nat_entries[tree_idx]);
-	spin_unlock(&nm_i->nat_list_lock[tree_idx]);
-#else
 	spin_lock(&nm_i->nat_list_lock);
+#ifdef FILE_CELL
+	list_add_tail(&ne->list, &nm_i->nat_entries[tree_idx]);
+#else
 	list_add_tail(&ne->list, &nm_i->nat_entries);
-	spin_unlock(&nm_i->nat_list_lock);
 #endif
+	spin_unlock(&nm_i->nat_list_lock);
 
 #ifdef FILE_CELL
 	nm_i->nat_cnt[TOTAL_NAT][tree_idx]++;
@@ -262,17 +260,15 @@ static struct nat_entry *__lookup_nat_cache(struct f4fs_nm_info *nm_i, nid_t n)
 
 	/* for recent accessed nat entry, move it to tail of lru list */
 	if (ne && !get_nat_flag(ne, IS_DIRTY)) {
+		spin_lock(&nm_i->nat_list_lock);
 #ifdef FILE_CELL
-		spin_lock(&nm_i->nat_list_lock[tree_idx]);
 		if (!list_empty(&ne->list))
 			list_move_tail(&ne->list, &nm_i->nat_entries[tree_idx]);
-		spin_unlock(&nm_i->nat_list_lock[tree_idx]);
 #else
-		spin_lock(&nm_i->nat_list_lock);
 		if (!list_empty(&ne->list))
 			list_move_tail(&ne->list, &nm_i->nat_entries);
-		spin_unlock(&nm_i->nat_list_lock);
 #endif
+		spin_unlock(&nm_i->nat_list_lock);
 	}
 
 	return ne;
@@ -374,26 +370,24 @@ static void __set_nat_cache_dirty(struct f4fs_nm_info *nm_i,
 #endif
 	set_nat_flag(ne, IS_DIRTY, true);
 refresh_list:
+	spin_lock(&nm_i->nat_list_lock);
 #ifdef FILE_CELL
   {
     nid_t nid = nat_get_nid(ne);
     int tree_idx = TREE_IDX(nid, nm_i);
 
-    spin_lock(&nm_i->nat_list_lock[tree_idx]);
     if (new_ne)
       list_del_init(&ne->list);
     else
       list_move_tail(&ne->list, &head->entry_list);
-    spin_unlock(&nm_i->nat_list_lock[tree_idx]);
   }
 #else
-	spin_lock(&nm_i->nat_list_lock);
 	if (new_ne)
 		list_del_init(&ne->list);
 	else
 		list_move_tail(&ne->list, &head->entry_list);
-	spin_unlock(&nm_i->nat_list_lock);
 #endif
+	spin_unlock(&nm_i->nat_list_lock);
 }
 
 static void __clear_nat_cache_dirty(struct f4fs_nm_info *nm_i,
@@ -403,9 +397,9 @@ static void __clear_nat_cache_dirty(struct f4fs_nm_info *nm_i,
   nid_t nid = nat_get_nid(ne);
   int tree_idx = TREE_IDX(nid, nm_i);
 
-  spin_lock(&nm_i->nat_list_lock[tree_idx]);
+	spin_lock(&nm_i->nat_list_lock);
 	list_move_tail(&ne->list, &nm_i->nat_entries[tree_idx]);
-	spin_unlock(&nm_i->nat_list_lock[tree_idx]);
+	spin_unlock(&nm_i->nat_list_lock);
 
 	set_nat_flag(ne, IS_DIRTY, false);
 	set->entry_cnt--;
@@ -703,7 +697,7 @@ int f4fs_try_to_free_nats(struct f4fs_sb_info *sbi, int nr_shrink)
     if (!f4fs_down_write_trylock(&nm_i->nat_tree_lock[i]))
       return nr_shrink_ret;
 
-    spin_lock(&nm_i->nat_list_lock[i]);
+    spin_lock(&nm_i->nat_list_lock);
     temp_nr = nr_shrink_ret / divider;
 
     while (temp_nr) {
@@ -716,14 +710,14 @@ int f4fs_try_to_free_nats(struct f4fs_sb_info *sbi, int nr_shrink)
           struct nat_entry, list);
       list_del(&ne->list);
 
-      spin_unlock(&nm_i->nat_list_lock[i]);
+      spin_unlock(&nm_i->nat_list_lock);
 
       __del_from_nat_cache(nm_i, ne);
       nr_shrink_ret--;
       temp_nr--;
-      spin_lock(&nm_i->nat_list_lock[i]);
+      spin_lock(&nm_i->nat_list_lock);
     }
-    spin_unlock(&nm_i->nat_list_lock[i]);
+    spin_unlock(&nm_i->nat_list_lock);
 
     f4fs_up_write(&nm_i->nat_tree_lock[i]);
   }
@@ -4274,7 +4268,6 @@ static int init_node_manager(struct f4fs_sb_info *sbi)
 	nm_i->nat_tree_lock = kzalloc(nat_tree_cnt * sizeof(struct rw_semaphore), GFP_KERNEL);
 	nm_i->nat_set_root = kzalloc(nat_tree_cnt * sizeof(struct radix_tree_root), GFP_KERNEL);
 	nm_i->nat_entries = kzalloc(nat_tree_cnt * sizeof(struct list_head), GFP_KERNEL);
-	nm_i->nat_list_lock = kzalloc(nat_tree_cnt * sizeof(struct f4fs_rwsem), GFP_KERNEL);
   for (int j = 0 ; j < MAX_NAT_STATE; j++) {
     nm_i->nat_cnt[j] = kzalloc(nat_tree_cnt * sizeof(unsigned int), GFP_KERNEL); 
   }
@@ -4287,15 +4280,14 @@ static int init_node_manager(struct f4fs_sb_info *sbi)
     for (int j = 0 ; j < MAX_NAT_STATE; j++) {
       nm_i->nat_cnt[j][i] = 0;
     }
-	  spin_lock_init(&nm_i->nat_list_lock[i]);
 	}
 #else
 	INIT_RADIX_TREE(&nm_i->nat_root, GFP_NOIO);
 	init_f4fs_rwsem(&nm_i->nat_tree_lock);
 	INIT_RADIX_TREE(&nm_i->nat_set_root, GFP_NOIO);
 	INIT_LIST_HEAD(&nm_i->nat_entries);
-	spin_lock_init(&nm_i->nat_list_lock);
 #endif
+	spin_lock_init(&nm_i->nat_list_lock);
 
 	mutex_init(&nm_i->build_lock);
 	spin_lock_init(&nm_i->nid_list_lock);
@@ -4416,12 +4408,13 @@ void f4fs_destroy_node_manager(struct f4fs_sb_info *sbi)
 		while ((found = __gang_lookup_nat_cache(nm_i, n, nid, NATVEC_SIZE, natvec))) {
 			unsigned idx;
 			nid = nat_get_nid(natvec[found - 1]) + nat_tree_cnt;
-			for (idx = 0; idx < found; idx++)
-  			spin_lock(&nm_i->nat_list_lock[n]);
-  			list_del(&natvec[idx]->list);
-  			spin_unlock(&nm_i->nat_list_lock[n]);
+			for (idx = 0; idx < found; idx++) {
+        spin_lock(&nm_i->nat_list_lock);
+        list_del(&natvec[idx]->list);
+        spin_unlock(&nm_i->nat_list_lock);
 
-				__del_from_nat_cache(nm_i, natvec[idx]);
+        __del_from_nat_cache(nm_i, natvec[idx]);
+      }
 		}
 		f4fs_bug_on(sbi, nm_i->nat_cnt[TOTAL_NAT][n]);
 

@@ -941,7 +941,6 @@ struct f4fs_nm_info {
 	struct list_head *nat_entries;    /* cached nat entry list (clean) */
 	struct radix_tree_root *nat_set_root;/* root of the nat set cache */
 	unsigned int *nat_cnt[MAX_NAT_STATE];        /* the # of cached nat entries */
-	spinlock_t *nat_list_lock;	/* protect clean nat entry list */
 	int nat_tree_cnt;
 #else
 	struct radix_tree_root nat_root;/* root of the nat entry cache */
@@ -949,8 +948,8 @@ struct f4fs_nm_info {
 	struct f4fs_rwsem nat_tree_lock;	/* protect nat entry tree */
 	struct list_head nat_entries;	/* cached nat entry list (clean) */
 	unsigned int nat_cnt[MAX_NAT_STATE]; /* the # of cached nat entries */
-	spinlock_t nat_list_lock;	/* protect clean nat entry list */
 #endif
+	spinlock_t nat_list_lock;	/* protect clean nat entry list */
 	unsigned int nat_blocks;	/* # of nat blocks */
 
 	/* free node ids management */
