@@ -44,6 +44,10 @@
 /* check pinned file's alignment status of physical blocks */
 #define FILE_NOT_ALIGNED	1
 
+#ifdef FILE_CELL
+#define TREE_IDX(nid) ((nid) % NODE_TREE_CNT)
+#endif
+
 /* For flag in struct node_info */
 enum {
 	IS_CHECKPOINTED,	/* is it checkpointed before? */
@@ -132,13 +136,29 @@ static inline void raw_nat_from_node_info(struct f4fs_nat_entry *raw_ne,
 
 static inline bool excess_dirty_nats(struct f4fs_sb_info *sbi)
 {
+#ifdef FILE_CELL
+  int total = 0;
+  for (int i = 0 ; i < NODE_TREE_CNT ; i++) {
+    total += NM_I(sbi)->nat_cnt2[DIRTY_NAT][i];
+  }
+  return total >= NM_I(sbi)->max_nid * NM_I(sbi)->dirty_nats_ratio / 100;
+#else
 	return NM_I(sbi)->nat_cnt[DIRTY_NAT] >= NM_I(sbi)->max_nid *
 					NM_I(sbi)->dirty_nats_ratio / 100;
+#endif
 }
 
 static inline bool excess_cached_nats(struct f4fs_sb_info *sbi)
 {
+#ifdef FILE_CELL
+  int total = 0;
+  for (int i = 0 ; i < NODE_TREE_CNT ; i++) {
+    total += NM_I(sbi)->nat_cnt2[TOTAL_NAT][i];
+  }
+	return total >= DEF_NAT_CACHE_THRESHOLD;
+#else
 	return NM_I(sbi)->nat_cnt[TOTAL_NAT] >= DEF_NAT_CACHE_THRESHOLD;
+#endif
 }
 
 enum mem_type {

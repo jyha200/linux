@@ -1619,6 +1619,9 @@ int f4fs_write_checkpoint(struct f4fs_sb_info *sbi, struct cp_control *cpc)
 	struct f4fs_checkpoint *ckpt = F4FS_CKPT(sbi);
 	unsigned long long ckpt_ver;
 	int err = 0;
+#ifdef FILE_CELL
+  int total = 0;
+#endif
 
 	if (f4fs_readonly(sbi->sb) || f4fs_hw_is_readonly(sbi))
 		return -EROFS;
@@ -1656,7 +1659,19 @@ int f4fs_write_checkpoint(struct f4fs_sb_info *sbi, struct cp_control *cpc)
 			unblock_operations(sbi);
 			goto out;
 		}
-
+#ifdef FILE_CELL
+    for (int i = 0 ; i < NODE_TREE_CNT ; i++) {
+      total += NM_I(sbi)->nat_cnt2[DIRTY_NAT][i];
+    }
+		if (total == 0 &&
+				SIT_I(sbi)->dirty_sentries == 0 &&
+				prefree_segments(sbi) == 0) {
+			f4fs_flush_sit_entries(sbi, cpc);
+			f4fs_clear_prefree_segments(sbi, cpc);
+			unblock_operations(sbi);
+			goto out;
+		}
+#else
 		if (NM_I(sbi)->nat_cnt[DIRTY_NAT] == 0 &&
 				SIT_I(sbi)->dirty_sentries == 0 &&
 				prefree_segments(sbi) == 0) {
@@ -1665,6 +1680,7 @@ int f4fs_write_checkpoint(struct f4fs_sb_info *sbi, struct cp_control *cpc)
 			unblock_operations(sbi);
 			goto out;
 		}
+#endif
 	}
 
 	/*

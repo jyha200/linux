@@ -30,6 +30,7 @@
 #include <linux/fsverity.h>
 
 #define RPS
+#define FILE_CELL
 
 #ifdef RPS
 #include "rps.h"
@@ -922,6 +923,8 @@ enum nat_state {
 	MAX_NAT_STATE,
 };
 
+#define NODE_TREE_CNT (72)
+
 struct f4fs_nm_info {
 	block_t nat_blkaddr;		/* base disk address of NAT */
 	nid_t max_nid;			/* maximum possible node ids */
@@ -938,7 +941,11 @@ struct f4fs_nm_info {
 	struct f4fs_rwsem nat_tree_lock;	/* protect nat entry tree */
 	struct list_head nat_entries;	/* cached nat entry list (clean) */
 	spinlock_t nat_list_lock;	/* protect clean nat entry list */
+#ifdef FILE_CELL
+	unsigned int nat_cnt2[MAX_NAT_STATE][NODE_TREE_CNT]; /* the # of cached nat entries */
+#else
 	unsigned int nat_cnt[MAX_NAT_STATE]; /* the # of cached nat entries */
+#endif
 	unsigned int nat_blocks;	/* # of nat blocks */
 
 	/* free node ids management */

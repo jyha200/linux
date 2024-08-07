@@ -66,8 +66,16 @@ bool f4fs_available_free_memory(struct f4fs_sb_info *sbi, int type)
 				sizeof(struct free_nid)) >> PAGE_SHIFT;
 		res = mem_size < ((avail_ram * nm_i->ram_thresh / 100) >> 2);
 	} else if (type == NAT_ENTRIES) {
+#ifdef FILE_CELL
+    int total = 0;
+    for (int i = 0 ; i < NODE_TREE_CNT ; i++) {
+      total += NM_I(sbi)->nat_cnt2[TOTAL_NAT][i];
+    }
+		mem_size = total * sizeof(struct nat_entry) >> PAGE_SHIFT;
+#else
 		mem_size = (nm_i->nat_cnt[TOTAL_NAT] *
 				sizeof(struct nat_entry)) >> PAGE_SHIFT;
+#endif
 		res = mem_size < ((avail_ram * nm_i->ram_thresh / 100) >> 2);
 		if (excess_cached_nats(sbi))
 			res = false;
@@ -182,6 +190,10 @@ static void __free_nat_entry(struct nat_entry *e)
 static struct nat_entry *__init_nat_entry(struct f4fs_nm_info *nm_i,
 	struct nat_entry *ne, struct f4fs_nat_entry *raw_ne, bool no_fail)
 {
+#ifdef FILE_CELL
+	nid_t nid = ne->ni.nid;
+	int tree_idx = TREE_IDX(nid);
+#endif
 	if (no_fail)
 		f4fs_radix_tree_insert(&nm_i->nat_root, nat_get_nid(ne), ne);
 	else if (radix_tree_insert(&nm_i->nat_root, nat_get_nid(ne), ne))
@@ -194,8 +206,13 @@ static struct nat_entry *__init_nat_entry(struct f4fs_nm_info *nm_i,
 	list_add_tail(&ne->list, &nm_i->nat_entries);
 	spin_unlock(&nm_i->nat_list_lock);
 
+#ifdef FILE_CELL
+	nm_i->nat_cnt2[TOTAL_NAT][tree_idx]++;
+	nm_i->nat_cnt2[RECLAIMABLE_NAT][tree_idx]++;
+#else
 	nm_i->nat_cnt[TOTAL_NAT]++;
 	nm_i->nat_cnt[RECLAIMABLE_NAT]++;
+#endif
 	return ne;
 }
 
@@ -224,9 +241,19 @@ static unsigned int __gang_lookup_nat_cache(struct f4fs_nm_info *nm_i,
 
 static void __del_from_nat_cache(struct f4fs_nm_info *nm_i, struct nat_entry *e)
 {
+#ifdef FILE_CELL
+	nid_t nid = nat_get_nid(e);
+	int tree_idx = TREE_IDX(nid);
+#endif
+
 	radix_tree_delete(&nm_i->nat_root, nat_get_nid(e));
+#ifdef FILE_CELL
+	nm_i->nat_cnt2[TOTAL_NAT][tree_idx]--;
+	nm_i->nat_cnt2[RECLAIMABLE_NAT][tree_idx]--;
+#else
 	nm_i->nat_cnt[TOTAL_NAT]--;
 	nm_i->nat_cnt[RECLAIMABLE_NAT]--;
+#endif
 	__free_nat_entry(e);
 }
 
@@ -255,6 +282,10 @@ static void __set_nat_cache_dirty(struct f4fs_nm_info *nm_i,
 {
 	struct nat_entry_set *head;
 	bool new_ne = nat_get_blkaddr(ne) == NEW_ADDR;
+#ifdef FILE_CELL
+	nid_t nid = ne->ni.nid;
+	int tree_idx = TREE_IDX(nid);
+#endif
 
 	if (!new_ne)
 		head = __grab_nat_entry_set(nm_i, ne);
@@ -273,8 +304,13 @@ static void __set_nat_cache_dirty(struct f4fs_nm_info *nm_i,
 	if (get_nat_flag(ne, IS_DIRTY))
 		goto refresh_list;
 
+#ifdef FILE_CELL
+	nm_i->nat_cnt2[DIRTY_NAT][tree_idx]++;
+	nm_i->nat_cnt2[RECLAIMABLE_NAT][tree_idx]--;
+#else
 	nm_i->nat_cnt[DIRTY_NAT]++;
 	nm_i->nat_cnt[RECLAIMABLE_NAT]--;
+#endif
 	set_nat_flag(ne, IS_DIRTY, true);
 refresh_list:
 	spin_lock(&nm_i->nat_list_lock);
@@ -288,14 +324,24 @@ refresh_list:
 static void __clear_nat_cache_dirty(struct f4fs_nm_info *nm_i,
 		struct nat_entry_set *set, struct nat_entry *ne)
 {
+#ifdef FILE_CELL
+	nid_t nid = ne->ni.nid;
+	int tree_idx = TREE_IDX(nid);
+#endif
+
 	spin_lock(&nm_i->nat_list_lock);
 	list_move_tail(&ne->list, &nm_i->nat_entries);
 	spin_unlock(&nm_i->nat_list_lock);
 
 	set_nat_flag(ne, IS_DIRTY, false);
 	set->entry_cnt--;
+#ifdef FILE_CELL
+	nm_i->nat_cnt2[DIRTY_NAT][tree_idx]--;
+	nm_i->nat_cnt2[RECLAIMABLE_NAT][tree_idx]++;
+#else
 	nm_i->nat_cnt[DIRTY_NAT]--;
 	nm_i->nat_cnt[RECLAIMABLE_NAT]++;
+#endif
 }
 
 static unsigned int __gang_lookup_nat_set(struct f4fs_nm_info *nm_i,
@@ -3088,6 +3134,9 @@ int f4fs_flush_nat_entries(struct f4fs_sb_info *sbi, struct cp_control *cpc)
 	nid_t set_idx = 0;
 	LIST_HEAD(sets);
 	int err = 0;
+#ifdef FILE_CELL
+  int total_dirty = 0;
+#endif
 
 	/*
 	 * during unmount, let's flush nat_bits before checking
@@ -3099,8 +3148,16 @@ int f4fs_flush_nat_entries(struct f4fs_sb_info *sbi, struct cp_control *cpc)
 		f4fs_up_write(&nm_i->nat_tree_lock);
 	}
 
+#ifdef FILE_CELL
+  for (int i = 0 ; i < NODE_TREE_CNT; i++) {
+    total_dirty += nm_i->nat_cnt2[DIRTY_NAT][i];
+  }
+  if (!total_dirty)
+    return 0;
+#else
 	if (!nm_i->nat_cnt[DIRTY_NAT])
 		return 0;
+#endif
 
 	f4fs_down_write(&nm_i->nat_tree_lock);
 
@@ -3109,10 +3166,22 @@ int f4fs_flush_nat_entries(struct f4fs_sb_info *sbi, struct cp_control *cpc)
 	 * entries, remove all entries from journal and merge them
 	 * into nat entry set.
 	 */
+#ifdef FILE_CELL
+  total_dirty = 0;
+  for (int i = 0 ; i < NODE_TREE_CNT; i++) {
+    total_dirty += nm_i->nat_cnt2[DIRTY_NAT][i];
+  }
+
+	if (cpc->reason & CP_UMOUNT ||
+		!__has_cursum_space(journal,
+			total_dirty, NAT_JOURNAL))
+		remove_nats_in_journal(sbi);
+#else
 	if (cpc->reason & CP_UMOUNT ||
 		!__has_cursum_space(journal,
 			nm_i->nat_cnt[DIRTY_NAT], NAT_JOURNAL))
 		remove_nats_in_journal(sbi);
+#endif
 
 	while ((found = __gang_lookup_nat_set(nm_i,
 					set_idx, SETVEC_SIZE, setvec))) {
@@ -3340,6 +3409,9 @@ void f4fs_destroy_node_manager(struct f4fs_sb_info *sbi)
 	struct nat_entry_set *setvec[SETVEC_SIZE];
 	nid_t nid = 0;
 	unsigned int found;
+#ifdef FILE_CELL
+  int total = 0;
+#endif
 
 	if (!nm_i)
 		return;
@@ -3372,7 +3444,14 @@ void f4fs_destroy_node_manager(struct f4fs_sb_info *sbi)
 			__del_from_nat_cache(nm_i, natvec[idx]);
 		}
 	}
+#ifdef FILE_CELL
+  for (int i = 0 ; i < NODE_TREE_CNT ; i++) {
+    total += nm_i->nat_cnt2[TOTAL_NAT][i];
+  }
+	f4fs_bug_on(sbi, total);
+#else
 	f4fs_bug_on(sbi, nm_i->nat_cnt[TOTAL_NAT]);
+#endif
 
 	/* destroy nat set cache */
 	nid = 0;

@@ -18,7 +18,15 @@ static unsigned int shrinker_run_no;
 
 static unsigned long __count_nat_entries(struct f4fs_sb_info *sbi)
 {
+#ifdef FILE_CELL
+  int total = 0;
+  for (int i = 0 ; i < NODE_TREE_CNT ; i++) {
+    total += NM_I(sbi)->nat_cnt2[RECLAIMABLE_NAT][i];
+  }
+	return total;
+#else
 	return NM_I(sbi)->nat_cnt[RECLAIMABLE_NAT];
+#endif
 }
 
 static unsigned long __count_free_nids(struct f4fs_sb_info *sbi)
