@@ -161,6 +161,8 @@ enum {
 	Opt_nogc_merge,
 	Opt_discard_unit,
 	Opt_memory_mode,
+  Opt_nr_IMDS,
+  Opt_nr_mlog,
 	Opt_err,
 };
 
@@ -238,6 +240,8 @@ static match_table_t f4fs_tokens = {
 	{Opt_nogc_merge, "nogc_merge"},
 	{Opt_discard_unit, "discard_unit=%s"},
 	{Opt_memory_mode, "memory=%s"},
+	{Opt_nr_IMDS, "imds=%u"},
+	{Opt_nr_mlog, "mlog=%u"},
 	{Opt_err, NULL},
 };
 
@@ -667,6 +671,10 @@ static int parse_options(struct super_block *sb, char *options, bool is_remount)
 	kgid_t gid;
 	int ret;
 
+#ifdef MLOG
+  sbi->nr_mlog = 1;
+#endif
+
 	if (!options)
 		goto default_check;
 
@@ -821,6 +829,19 @@ static int parse_options(struct super_block *sb, char *options, bool is_remount)
 		case Opt_data_flush:
 			set_opt(sbi, DATA_FLUSH);
 			break;
+		case Opt_nr_mlog:
+      if (args->from && match_int(args, &arg))
+        return -EINVAL;
+      if (arg <= 0)
+        return -EINVAL;
+      sbi->nr_mlog = arg;
+      break;
+    case Opt_nr_IMDS:
+       if (args->from && match_int(args, &arg))
+        return -EINVAL;
+      if (arg <= 0)
+        return -EINVAL;
+      break;
 		case Opt_reserve_root:
 			if (args->from && match_int(args, &arg))
 				return -EINVAL;
@@ -3404,6 +3425,17 @@ static int sanity_check_raw_super(struct f4fs_sb_info *sbi,
 	}
 
 	/* check reserved ino info */
+#ifdef FILE_CELL
+	if (le32_to_cpu(raw_super->node_ino) != 3 ||
+		le32_to_cpu(raw_super->meta_ino) != 2 ||
+		le32_to_cpu(raw_super->root_ino) != 1) {
+		f4fs_info(sbi, "Invalid Fs Meta Ino: node(%u) meta(%u) root(%u)",
+			  le32_to_cpu(raw_super->node_ino),
+			  le32_to_cpu(raw_super->meta_ino),
+			  le32_to_cpu(raw_super->root_ino));
+		return -EFSCORRUPTED;
+	}
+#else
 	if (le32_to_cpu(raw_super->node_ino) != 1 ||
 		le32_to_cpu(raw_super->meta_ino) != 2 ||
 		le32_to_cpu(raw_super->root_ino) != 3) {
@@ -3413,6 +3445,7 @@ static int sanity_check_raw_super(struct f4fs_sb_info *sbi,
 			  le32_to_cpu(raw_super->root_ino));
 		return -EFSCORRUPTED;
 	}
+#endif
 
 	/* check CP/SIT/NAT/SSA/MAIN_AREA area boundary */
 	if (sanity_check_area_boundary(sbi, bh))
@@ -4121,6 +4154,10 @@ try_onemore:
 #endif
 	init_f4fs_rwsem(&sbi->node_change);
 
+#ifdef MLOG
+  atomic_set(&sbi->next_mlog, 0);
+#endif
+
 	/* disallow all the data/node/meta page writes */
 	set_sbi_flag(sbi, SBI_POR_DOING);
 	spin_lock_init(&sbi->stat_lock);
@@ -4194,6 +4231,11 @@ try_onemore:
 		f4fs_err(sbi, "Failed to initialize post read workqueue");
 		goto free_devices;
 	}
+
+#ifdef MLOG
+  if (sbi->nr_mlog > le32_to_cpu(sbi->ckpt->nr_mlog))
+    sbi->nr_mlog = le32_to_cpu(sbi->ckpt->nr_mlog);
+#endif
 
 	sbi->total_valid_node_count =
 				le32_to_cpu(sbi->ckpt->valid_node_count);

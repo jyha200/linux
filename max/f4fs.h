@@ -31,6 +31,7 @@
 
 #define RPS
 #define FILE_CELL
+#define MLOG
 
 #ifdef RPS
 #include "rps.h"
@@ -1879,6 +1880,10 @@ struct f4fs_sb_info {
 
 #ifdef RPS
   struct max_info max_info;
+#endif
+#ifdef MLOG
+  uint nr_mlog;
+  atomic_t next_mlog;
 #endif
 };
 

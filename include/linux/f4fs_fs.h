@@ -21,6 +21,13 @@
 #define F4FS_EXTENSION_LEN		8	/* max size of extension */
 #define F4FS_BLK_ALIGN(x)	(((x) + F4FS_BLKSIZE - 1) >> F4FS_BLKSIZE_BITS)
 
+#define FILE_CELL
+#define MLOG
+
+#ifdef MLOG
+#define MAX_EXTEND_LOGS (63)
+#endif
+
 #define NULL_ADDR		((block_t)0)	/* used as block_t addresses */
 #define NEW_ADDR		((block_t)-1)	/* used as block_t addresses */
 #define COMPRESS_ADDR		((block_t)-2)	/* used as compressed data flag */
@@ -149,12 +156,22 @@ struct f4fs_checkpoint {
 	__le32 overprov_segment_count;	/* # of overprovision segments */
 	__le32 free_segment_count;	/* # of free segments in main area */
 
+#ifdef MLOG
+  __le32 nr_mlog;
+	/* information of current node segments */
+	__le32 cur_node_segno[MAX_ACTIVE_NODE_LOGS + MAX_EXTEND_LOGS * 3];
+	__le16 cur_node_blkoff[MAX_ACTIVE_NODE_LOGS + MAX_EXTEND_LOGS * 3];
+	/* information of current data segments */
+	__le32 cur_data_segno[MAX_ACTIVE_DATA_LOGS + MAX_EXTEND_LOGS * 3];
+	__le16 cur_data_blkoff[MAX_ACTIVE_DATA_LOGS + MAX_EXTEND_LOGS * 3];
+#else
 	/* information of current node segments */
 	__le32 cur_node_segno[MAX_ACTIVE_NODE_LOGS];
 	__le16 cur_node_blkoff[MAX_ACTIVE_NODE_LOGS];
 	/* information of current data segments */
 	__le32 cur_data_segno[MAX_ACTIVE_DATA_LOGS];
 	__le16 cur_data_blkoff[MAX_ACTIVE_DATA_LOGS];
+#endif
 	__le32 ckpt_flags;		/* Flags : umount and journal_present */
 	__le32 cp_pack_total_block_count;	/* total # of one cp pack */
 	__le32 cp_pack_start_sum;	/* start block number of data summary */
@@ -166,7 +183,11 @@ struct f4fs_checkpoint {
 	__le32 checksum_offset;		/* checksum offset inside cp block */
 	__le64 elapsed_time;		/* mounted time */
 	/* allocation type of current segment */
+#ifdef MLOG
+	unsigned char alloc_type[MAX_ACTIVE_LOGS + MAX_EXTEND_LOGS * 6];
+#else
 	unsigned char alloc_type[MAX_ACTIVE_LOGS];
+#endif
 
 	/* SIT and NAT version bitmap */
 	unsigned char sit_nat_version_bitmap[];

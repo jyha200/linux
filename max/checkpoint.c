@@ -1493,13 +1493,25 @@ static int do_checkpoint(struct f4fs_sb_info *sbi, struct cp_control *cpc)
 			orphan_blocks);
 
 	if (__remain_node_summaries(cpc->reason))
+#ifdef MLOG
+		ckpt->cp_pack_total_block_count = cpu_to_le32(F4FS_CP_PACKS +
+				cp_payload_blks + data_sum_blocks +
+				orphan_blocks + NR_CURSEG_NODE_TYPE * NR_CURSEG_TYPE * (sbi->nr_mlog -1));
+#else
 		ckpt->cp_pack_total_block_count = cpu_to_le32(F4FS_CP_PACKS +
 				cp_payload_blks + data_sum_blocks +
 				orphan_blocks + NR_CURSEG_NODE_TYPE);
+#endif
 	else
+#ifdef MLOG
+		ckpt->cp_pack_total_block_count = cpu_to_le32(F4FS_CP_PACKS +
+				cp_payload_blks + data_sum_blocks +
+				orphan_blocks + NR_CURSEG_DATA_TYPE * (sbi->nr_mlog - 1));
+#else
 		ckpt->cp_pack_total_block_count = cpu_to_le32(F4FS_CP_PACKS +
 				cp_payload_blks + data_sum_blocks +
 				orphan_blocks);
+#endif
 
 	/* update ckpt flag for checkpoint */
 	update_ckpt_flags(sbi, cpc);
