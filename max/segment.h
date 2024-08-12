@@ -36,6 +36,10 @@ static inline void sanity_check_seg_type(struct f4fs_sb_info *sbi,
 #define IS_WARM(t)	((t) == CURSEG_WARM_NODE || (t) == CURSEG_WARM_DATA)
 #define IS_COLD(t)	((t) == CURSEG_COLD_NODE || (t) == CURSEG_COLD_DATA)
 
+#ifdef MLOG
+  int IS_CURSEG(struct f4fs_sb_info * sbi, int seg);
+  int IS_CURSEC(struct f4fs_sb_info * sbi, int secno);
+#else
 #define IS_CURSEG(sbi, seg)						\
 	(((seg) == CURSEG_I(sbi, CURSEG_HOT_DATA)->segno) ||	\
 	 ((seg) == CURSEG_I(sbi, CURSEG_WARM_DATA)->segno) ||	\
@@ -63,6 +67,7 @@ static inline void sanity_check_seg_type(struct f4fs_sb_info *sbi,
 	  (sbi)->segs_per_sec) ||	\
 	 ((secno) == CURSEG_I(sbi, CURSEG_ALL_DATA_ATGC)->segno /	\
 	  (sbi)->segs_per_sec))
+#endif
 
 #define MAIN_BLKADDR(sbi)						\
 	(SM_I(sbi) ? SM_I(sbi)->main_blkaddr : 				\

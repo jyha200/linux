@@ -86,6 +86,26 @@ static inline unsigned long __reverse_ffs(unsigned long word)
 	return num;
 }
 
+#ifdef MLOG
+int IS_CURSEG(struct f4fs_sb_info *sbi, int seg) {
+  for (int i = 0 ; i < sbi->nr_mlog ; i++) {
+    for (int j = 0 ; j < NR_CURSEG_TYPE ; j++) {
+      if (seg == (CURSEG_I(sbi, j + i * NR_CURSEG_TYPE)->segno)) return 1;
+    }
+  }
+  return 0;
+}
+
+int IS_CURSEC(struct f4fs_sb_info *sbi, int secno) {
+  for (int i = 0 ; i < sbi->nr_mlog ; i++) {
+    for (int j = 0 ; j < NR_CURSEG_TYPE ; j++) {
+      if (secno == (CURSEG_I(sbi, j+i*NR_CURSEG_TYPE)->segno / sbi->segs_per_sec)) return 1;
+    }
+  }
+  return 0;
+}
+#endif
+
 /*
  * __find_rev_next(_zero)_bit is copied from lib/find_next_bit.c because
  * f4fs_set_bit makes MSB and LSB reversed in a byte.
