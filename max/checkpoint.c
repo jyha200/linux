@@ -1251,6 +1251,27 @@ retry_flush_nodes:
 	f4fs_down_write(&sbi->node_write);
 #endif
 
+#ifdef FILE_CELL
+  for (int i = 0 ; i < NODE_TREE_CNT ; i++) {
+    if (get_dirty_node_pages(sbi, i)) {
+#ifdef RPS
+      rps_up_write(&sbi->max_info.rps_node_write);
+#else
+      f4fs_up_write(&sbi->node_write);
+#endif
+      atomic_inc(&sbi->wb_sync_req[NODE]);
+      err = f4fs_sync_node_pages(sbi, &wbc, false, FS_CP_NODE_IO, i);
+      atomic_dec(&sbi->wb_sync_req[NODE]);
+      if (err) {
+        f4fs_up_write(&sbi->node_change);
+        f4fs_unlock_all(sbi);
+        return err;
+      }
+      cond_resched();
+      goto retry_flush_nodes;
+    }
+  }
+#else
 	if (get_pages(sbi, F4FS_DIRTY_NODES)) {
 #ifdef RPS
  rps_up_write(&sbi->max_info.rps_node_write);
@@ -1268,6 +1289,7 @@ retry_flush_nodes:
 		cond_resched();
 		goto retry_flush_nodes;
 	}
+#endif
 
 	/*
 	 * sbi->node_change is used only for AIO write_begin path which produces
@@ -1617,9 +1639,22 @@ static int do_checkpoint(struct f4fs_sb_info *sbi, struct cp_control *cpc)
 	 * redirty superblock if metadata like node page or inode cache is
 	 * updated during writing checkpoint.
 	 */
+#ifdef FILE_CELL
+  if (get_pages(sbi, F4FS_DIRTY_IMETA)) {
+		set_sbi_flag(sbi, SBI_IS_DIRTY);
+  } else {
+    for (int i = 0 ; i < NODE_TREE_CNT ; i++) {
+      if (get_dirty_node_pages(sbi, i)) {
+		    set_sbi_flag(sbi, SBI_IS_DIRTY);
+        break;
+      }
+    }
+  }
+#else
 	if (get_pages(sbi, F4FS_DIRTY_NODES) ||
 			get_pages(sbi, F4FS_DIRTY_IMETA))
 		set_sbi_flag(sbi, SBI_IS_DIRTY);
+#endif
 
 	f4fs_bug_on(sbi, get_pages(sbi, F4FS_DIRTY_DENTS));
 

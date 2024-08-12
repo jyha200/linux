@@ -1412,8 +1412,14 @@ static int f4fs_drop_inode(struct inode *inode)
 	 * drop useless meta/node dirty pages.
 	 */
 	if (unlikely(is_sbi_flag_set(sbi, SBI_CP_DISABLED))) {
+#ifdef FILE_CELL
+		if (F4FS_IS_NODE(sbi, inode->i_ino) ||
+			inode->i_ino == F4FS_META_INO(sbi))
+#else
 		if (inode->i_ino == F4FS_NODE_INO(sbi) ||
-			inode->i_ino == F4FS_META_INO(sbi)) {
+			inode->i_ino == F4FS_META_INO(sbi))
+#endif
+    {
 			trace_f4fs_drop_inode(inode, 1);
 			return 1;
 		}
@@ -1511,8 +1517,13 @@ static void f4fs_dirty_inode(struct inode *inode, int flags)
 {
 	struct f4fs_sb_info *sbi = F4FS_I_SB(inode);
 
+#ifdef FILE_CELL
+	if (F4FS_IS_NODE(sbi, inode->i_ino) ||
+			inode->i_ino == F4FS_META_INO(sbi))
+#else
 	if (inode->i_ino == F4FS_NODE_INO(sbi) ||
 			inode->i_ino == F4FS_META_INO(sbi))
+#endif
 		return;
 
 	if (is_inode_flag_set(inode, FI_AUTO_RECOVER))
@@ -1609,8 +1620,15 @@ static void f4fs_put_super(struct super_block *sb)
 
 	f4fs_destroy_compress_inode(sbi);
 
+#ifdef FILE_CELL
+  for (int i = 0 ; i < NODE_TREE_CNT ; i++) {
+    iput(sbi->node_inode2[i]);
+	  sbi->node_inode2[i] = NULL;
+  }
+#else
 	iput(sbi->node_inode);
 	sbi->node_inode = NULL;
+#endif
 
 	iput(sbi->meta_inode);
 	sbi->meta_inode = NULL;
@@ -3635,7 +3653,7 @@ static void init_sb_info(struct f4fs_sb_info *sbi)
 		(le32_to_cpu(raw_super->segment_count_nat) / 2)
 			* sbi->blocks_per_seg * NAT_ENTRY_PER_BLOCK;
 	F4FS_ROOT_INO(sbi) = le32_to_cpu(raw_super->root_ino);
-	F4FS_NODE_INO(sbi) = le32_to_cpu(raw_super->node_ino);
+	F4FS_NODE_INO2(sbi) = le32_to_cpu(raw_super->node_ino);
 	F4FS_META_INO(sbi) = le32_to_cpu(raw_super->meta_ino);
 	sbi->cur_victim_sec = NULL_SECNO;
 	sbi->gc_mode = GC_NORMAL;
@@ -4309,12 +4327,25 @@ try_onemore:
 		goto free_nm;
 
 	/* get an inode for node space */
+#ifdef FILE_CELL
+  for (int i = 0 ; i < NODE_TREE_CNT ; i++) {
+    sbi->node_inode2[i] = f4fs_iget(sb, F4FS_NODE_INO2(sbi) + i);
+    if (IS_ERR(sbi->node_inode2[i])) {
+      f4fs_err(sbi, "Failed to read node inode");
+      err = PTR_ERR(sbi->node_inode2[i]);
+      goto free_stats;
+    }
+
+    atomic_set(&sbi->dirty_node_pages[i], 0);
+  }
+#else
 	sbi->node_inode = f4fs_iget(sb, F4FS_NODE_INO(sbi));
 	if (IS_ERR(sbi->node_inode)) {
 		f4fs_err(sbi, "Failed to read node inode");
 		err = PTR_ERR(sbi->node_inode);
 		goto free_stats;
 	}
+#endif
 
 	/* read root inode and dentry */
 	root = f4fs_iget(sb, F4FS_ROOT_INO(sbi));
@@ -4491,9 +4522,17 @@ free_root_inode:
 	sb->s_root = NULL;
 free_node_inode:
 	f4fs_release_ino_entry(sbi, true);
+#ifdef FILE_CELL
+  for (int i = 0 ; i < NODE_TREE_CNT ; i++) {
+	  truncate_inode_pages_final(NODE_MAPPING(sbi, i));
+    iput(sbi->node_inode2[i]);
+    sbi->node_inode2[i] = NULL;
+  }
+#else
 	truncate_inode_pages_final(NODE_MAPPING(sbi));
 	iput(sbi->node_inode);
 	sbi->node_inode = NULL;
+#endif
 free_stats:
 	f4fs_destroy_stats(sbi);
 free_nm:

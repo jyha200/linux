@@ -36,10 +36,16 @@
 #define F4FS_BLK_TO_BYTES(blk)		((blk) << F4FS_BLKSIZE_BITS)
 
 /* 0, 1(node nid), 2(meta nid) are reserved node id */
+#ifdef FILE_CELL
+#define F4FS_RESERVED_NODE_NUM		((PAGE_SIZE / sizeof(struct f4fs_nat_entry)) - 1)
+#else
 #define F4FS_RESERVED_NODE_NUM		3
+#endif
 
 #define F4FS_ROOT_INO(sbi)	((sbi)->root_ino_num)
-#define F4FS_NODE_INO(sbi)	((sbi)->node_ino_num)
+#ifdef FILE_CELL
+#define F4FS_NODE_INO2(sbi)	((sbi)->node_ino_num)
+#endif
 #define F4FS_META_INO(sbi)	((sbi)->meta_ino_num)
 #define F4FS_COMPRESS_INO(sbi)	(NM_I(sbi)->max_nid)
 

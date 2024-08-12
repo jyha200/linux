@@ -190,7 +190,7 @@ found:
 
 bool f4fs_need_SSR(struct f4fs_sb_info *sbi)
 {
-	int node_secs = get_blocktype_secs(sbi, F4FS_DIRTY_NODES);
+	int node_secs = get_blocktype_secs(sbi, F4FS_DIRTY_NODES2);
 	int dent_secs = get_blocktype_secs(sbi, F4FS_DIRTY_DENTS);
 	int imeta_secs = get_blocktype_secs(sbi, F4FS_DIRTY_IMETA);
 
@@ -443,7 +443,7 @@ static inline bool excess_dirty_threshold(struct f4fs_sb_info *sbi)
 #endif
 	unsigned int dents = get_pages(sbi, F4FS_DIRTY_DENTS);
 	unsigned int qdata = get_pages(sbi, F4FS_DIRTY_QDATA);
-	unsigned int nodes = get_pages(sbi, F4FS_DIRTY_NODES);
+	unsigned int nodes = get_pages(sbi, F4FS_DIRTY_NODES2);
 	unsigned int meta = get_pages(sbi, F4FS_DIRTY_META);
 	unsigned int imeta = get_pages(sbi, F4FS_DIRTY_IMETA);
 	unsigned int threshold = sbi->blocks_per_seg * factor *

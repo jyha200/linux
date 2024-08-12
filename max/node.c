@@ -131,7 +131,11 @@ static void clear_node_page_dirty(struct page *page)
 	if (PageDirty(page)) {
 		f4fs_clear_page_cache_dirty_tag(page);
 		clear_page_dirty_for_io(page);
+#ifdef FILE_CELL
+		dec_dirty_node_page_count(F4FS_M_SB(page->mapping), NODE_IDX(nid_of_node(page)));
+#else
 		dec_page_count(F4FS_P_SB(page), F4FS_DIRTY_NODES);
+#endif
 	}
 	ClearPageUptodate(page);
 }
@@ -411,8 +415,13 @@ static unsigned int __gang_lookup_nat_set(struct f4fs_nm_info *nm_i,
 
 bool f4fs_in_warm_node_list(struct f4fs_sb_info *sbi, struct page *page)
 {
+#ifdef FILE_CELL
+	return NODE_MAPPING(sbi, nid_of_node(page)) == page->mapping &&
+			IS_DNODE(page) && is_cold_node(page);
+#else
 	return NODE_MAPPING(sbi) == page->mapping &&
 			IS_DNODE(page) && is_cold_node(page);
+#endif
 }
 
 void f4fs_init_fsync_node_info(struct f4fs_sb_info *sbi)
@@ -1128,8 +1137,13 @@ static int truncate_node(struct dnode_of_data *dn)
 	index = dn->node_page->index;
 	f4fs_put_page(dn->node_page, 1);
 
+#ifdef FILE_CELL
+	invalidate_mapping_pages(NODE_MAPPING(sbi, dn->nid),
+			index, index);
+#else
 	invalidate_mapping_pages(NODE_MAPPING(sbi),
 			index, index);
+#endif
 
 	dn->node_page = NULL;
 	trace_f4fs_truncate_node(dn->inode, dn->nid, ni.blk_addr);
@@ -1386,7 +1400,11 @@ skip_partial:
 		if (offset[1] == 0 &&
 				ri->i_nid[offset[0] - NODE_DIR1_BLOCK]) {
 			lock_page(page);
+#ifdef FILE_CELL
+			BUG_ON(page->mapping != NODE_MAPPING(sbi, inode->i_ino));
+#else
 			BUG_ON(page->mapping != NODE_MAPPING(sbi));
+#endif
 			f4fs_wait_on_page_writeback(page, NODE, true, true);
 			ri->i_nid[offset[0] - NODE_DIR1_BLOCK] = 0;
 			set_page_dirty(page);
@@ -1498,7 +1516,11 @@ struct page *f4fs_new_node_page(struct dnode_of_data *dn, unsigned int ofs)
 	if (unlikely(is_inode_flag_set(dn->inode, FI_NO_ALLOC)))
 		return ERR_PTR(-EPERM);
 
+#ifdef FILE_CELL
+	page = f4fs_grab_cache_page(NODE_MAPPING(sbi, dn->nid), dn->nid, false);
+#else
 	page = f4fs_grab_cache_page(NODE_MAPPING(sbi), dn->nid, false);
+#endif
 	if (!page)
 		return ERR_PTR(-ENOMEM);
 
@@ -1606,11 +1628,19 @@ void f4fs_ra_node_page(struct f4fs_sb_info *sbi, nid_t nid)
 	if (f4fs_check_nid_range(sbi, nid))
 		return;
 
+#ifdef FILE_CELL
+	apage = xa_load(&NODE_MAPPING(sbi, nid)->i_pages, nid);
+#else
 	apage = xa_load(&NODE_MAPPING(sbi)->i_pages, nid);
+#endif
 	if (apage)
 		return;
 
+#ifdef FILE_CELL
+	apage = f4fs_grab_cache_page(NODE_MAPPING(sbi, nid), nid, false);
+#else
 	apage = f4fs_grab_cache_page(NODE_MAPPING(sbi), nid, false);
+#endif
 	if (!apage)
 		return;
 
@@ -1629,7 +1659,11 @@ static struct page *__get_node_page(struct f4fs_sb_info *sbi, pgoff_t nid,
 	if (f4fs_check_nid_range(sbi, nid))
 		return ERR_PTR(-EINVAL);
 repeat:
+#ifdef FILE_CELL
+	page = f4fs_grab_cache_page(NODE_MAPPING(sbi, nid), nid, false);
+#else
 	page = f4fs_grab_cache_page(NODE_MAPPING(sbi), nid, false);
+#endif
 	if (!page)
 		return ERR_PTR(-ENOMEM);
 
@@ -1646,10 +1680,17 @@ repeat:
 
 	lock_page(page);
 
+#ifdef FILE_CELL
+	if (unlikely(page->mapping != NODE_MAPPING(sbi, nid))) {
+		f4fs_put_page(page, 1);
+		goto repeat;
+	}
+#else
 	if (unlikely(page->mapping != NODE_MAPPING(sbi))) {
 		f4fs_put_page(page, 1);
 		goto repeat;
 	}
+#endif
 
 	if (unlikely(!PageUptodate(page))) {
 		err = -EIO;
@@ -1729,6 +1770,63 @@ iput_out:
 	iput(inode);
 }
 
+#ifdef FILE_CELL
+static struct page *last_fsync_dnode(struct f4fs_sb_info *sbi, nid_t ino, nid_t node_idx)
+{
+	pgoff_t index;
+	struct pagevec pvec;
+	struct page *last_page = NULL;
+	int nr_pages;
+
+	pagevec_init(&pvec);
+	index = 0;
+
+	while ((nr_pages = pagevec_lookup_tag(&pvec, NODE_MAPPING(sbi, node_idx), &index,
+				PAGECACHE_TAG_DIRTY))) {
+		int i;
+
+		for (i = 0; i < nr_pages; i++) {
+			struct page *page = pvec.pages[i];
+
+			if (unlikely(f4fs_cp_error(sbi))) {
+				f4fs_put_page(last_page, 0);
+				pagevec_release(&pvec);
+				return ERR_PTR(-EIO);
+			}
+
+			if (!IS_DNODE(page) || !is_cold_node(page))
+				continue;
+			if (ino_of_node(page) != ino)
+				continue;
+
+			lock_page(page);
+
+			if (unlikely(page->mapping != NODE_MAPPING(sbi, node_idx))) {
+continue_unlock:
+				unlock_page(page);
+				continue;
+			}
+			if (ino_of_node(page) != ino)
+				goto continue_unlock;
+
+			if (!PageDirty(page)) {
+				/* someone wrote it for us */
+				goto continue_unlock;
+			}
+
+			if (last_page)
+				f4fs_put_page(last_page, 0);
+
+			get_page(page);
+			last_page = page;
+			unlock_page(page);
+		}
+		pagevec_release(&pvec);
+		cond_resched();
+	}
+	return last_page;
+}
+#else
 static struct page *last_fsync_dnode(struct f4fs_sb_info *sbi, nid_t ino)
 {
 	pgoff_t index;
@@ -1784,6 +1882,7 @@ continue_unlock:
 	}
 	return last_page;
 }
+#endif
 
 static int __write_node_page(struct page *page, bool atomic, bool *submitted,
 				struct writeback_control *wbc, bool do_balance,
@@ -1810,7 +1909,11 @@ static int __write_node_page(struct page *page, bool atomic, bool *submitted,
 
 	if (unlikely(f4fs_cp_error(sbi))) {
 		ClearPageUptodate(page);
+#ifdef FILE_CELL
+		dec_dirty_node_page_count(sbi, NODE_IDX(nid_of_node(page)));
+#else
 		dec_page_count(sbi, F4FS_DIRTY_NODES);
+#endif
 		unlock_page(page);
 		return 0;
 	}
@@ -1848,7 +1951,11 @@ static int __write_node_page(struct page *page, bool atomic, bool *submitted,
 	/* This page is already truncated */
 	if (unlikely(ni.blk_addr == NULL_ADDR)) {
 		ClearPageUptodate(page);
+#ifdef FILE_CELL
+		dec_dirty_node_page_count(sbi, NODE_IDX(nid_of_node(page)));
+#else
 		dec_page_count(sbi, F4FS_DIRTY_NODES);
+#endif
 #ifdef RPS
     rps_up_read(&sbi->max_info.rps_node_write);
 #else
@@ -1885,7 +1992,12 @@ static int __write_node_page(struct page *page, bool atomic, bool *submitted,
 	fio.old_blkaddr = ni.blk_addr;
 	f4fs_do_write_node_page(nid, &fio);
 	set_node_addr(sbi, &ni, fio.new_blkaddr, is_fsync_dnode(page));
+
+#ifdef FILE_CELL
+		dec_dirty_node_page_count(sbi, NODE_IDX(nid_of_node(page)));
+#else
 	dec_page_count(sbi, F4FS_DIRTY_NODES);
+#endif
 #ifdef RPS
     rps_up_read(&sbi->max_info.rps_node_write);
 #else
@@ -1960,6 +2072,126 @@ static int f4fs_write_node_page(struct page *page,
 						FS_NODE_IO, NULL);
 }
 
+#ifdef FILE_CELL
+int f4fs_fsync_node_pages(struct f4fs_sb_info *sbi, struct inode *inode,
+			struct writeback_control *wbc, bool atomic,
+			unsigned int *seq_id, nid_t node_idx)
+{
+	pgoff_t index;
+	struct pagevec pvec;
+	int ret = 0;
+	struct page *last_page = NULL;
+	bool marked = false;
+	nid_t ino = inode->i_ino;
+	int nr_pages;
+	int nwritten = 0;
+
+	if (atomic) {
+		last_page = last_fsync_dnode(sbi, ino, node_idx);
+		if (IS_ERR_OR_NULL(last_page))
+			return PTR_ERR_OR_ZERO(last_page);
+	}
+retry:
+	pagevec_init(&pvec);
+	index = 0;
+
+	while ((nr_pages = pagevec_lookup_tag(&pvec, NODE_MAPPING(sbi, node_idx), &index,
+				PAGECACHE_TAG_DIRTY))) {
+		int i;
+
+		for (i = 0; i < nr_pages; i++) {
+			struct page *page = pvec.pages[i];
+			bool submitted = false;
+
+			if (unlikely(f4fs_cp_error(sbi))) {
+				f4fs_put_page(last_page, 0);
+				pagevec_release(&pvec);
+				ret = -EIO;
+				goto out;
+			}
+
+			if (!IS_DNODE(page) || !is_cold_node(page))
+				continue;
+			if (ino_of_node(page) != ino)
+				continue;
+
+			lock_page(page);
+
+			if (unlikely(page->mapping != NODE_MAPPING(sbi, node_idx))) {
+continue_unlock:
+				unlock_page(page);
+				continue;
+			}
+			if (ino_of_node(page) != ino)
+				goto continue_unlock;
+
+			if (!PageDirty(page) && page != last_page) {
+				/* someone wrote it for us */
+				goto continue_unlock;
+			}
+
+			f4fs_wait_on_page_writeback(page, NODE, true, true);
+
+			set_fsync_mark(page, 0);
+			set_dentry_mark(page, 0);
+
+			if (!atomic || page == last_page) {
+				set_fsync_mark(page, 1);
+				percpu_counter_inc(&sbi->rf_node_block_count);
+				if (IS_INODE(page)) {
+					if (is_inode_flag_set(inode,
+								FI_DIRTY_INODE))
+						f4fs_update_inode(inode, page);
+					set_dentry_mark(page,
+						f4fs_need_dentry_mark(sbi, ino));
+				}
+				/* may be written by other thread */
+				if (!PageDirty(page))
+					set_page_dirty(page);
+			}
+
+			if (!clear_page_dirty_for_io(page))
+				goto continue_unlock;
+
+			ret = __write_node_page(page, atomic &&
+						page == last_page,
+						&submitted, wbc, true,
+						FS_NODE_IO, seq_id);
+			if (ret) {
+				unlock_page(page);
+				f4fs_put_page(last_page, 0);
+				break;
+			} else if (submitted) {
+				nwritten++;
+			}
+
+			if (page == last_page) {
+				f4fs_put_page(page, 0);
+				marked = true;
+				break;
+			}
+		}
+		pagevec_release(&pvec);
+		cond_resched();
+
+		if (ret || marked)
+			break;
+	}
+	if (!ret && atomic && !marked) {
+		f4fs_debug(sbi, "Retry to write fsync mark: ino=%u, idx=%lx",
+			   ino, last_page->index);
+		lock_page(last_page);
+		f4fs_wait_on_page_writeback(last_page, NODE, true, true);
+		set_page_dirty(last_page);
+		unlock_page(last_page);
+		goto retry;
+	}
+out:
+	if (nwritten)
+		f4fs_submit_merged_write_cond(sbi, NULL, NULL, ino, NODE);
+	return ret ? -EIO : 0;
+}
+#else
 int f4fs_fsync_node_pages(struct f4fs_sb_info *sbi, struct inode *inode,
 			struct writeback_control *wbc, bool atomic,
 			unsigned int *seq_id)
@@ -2078,6 +2310,7 @@ out:
 		f4fs_submit_merged_write_cond(sbi, NULL, NULL, ino, NODE);
 	return ret ? -EIO : 0;
 }
+#endif
 
 static int f4fs_match_ino(struct inode *inode, unsigned long ino, void *data)
 {
@@ -2128,6 +2361,45 @@ void f4fs_flush_inline_data(struct f4fs_sb_info *sbi)
 
 	pagevec_init(&pvec);
 
+#ifdef FILE_CELL
+  for (int j = 0 ; j < NODE_TREE_CNT ; j++) {
+    while ((nr_pages = pagevec_lookup_tag(&pvec,
+            NODE_MAPPING(sbi, j), &index, PAGECACHE_TAG_DIRTY))) {
+      int i;
+
+      for (i = 0; i < nr_pages; i++) {
+        struct page *page = pvec.pages[i];
+
+        if (!IS_DNODE(page))
+          continue;
+
+        lock_page(page);
+
+        if (unlikely(page->mapping != sbi->node_inode2[j]->i_mapping)) {
+continue_unlock:
+          unlock_page(page);
+          continue;
+        }
+
+        if (!PageDirty(page)) {
+          /* someone wrote it for us */
+          goto continue_unlock;
+        }
+
+        /* flush inline_data, if it's async context. */
+        if (page_private_inline(page)) {
+          clear_page_private_inline(page);
+          unlock_page(page);
+          flush_inline_data(sbi, ino_of_node(page));
+          continue;
+        }
+        unlock_page(page);
+      }
+      pagevec_release(&pvec);
+      cond_resched();
+    }
+  }
+#else
 	while ((nr_pages = pagevec_lookup_tag(&pvec,
 			NODE_MAPPING(sbi), &index, PAGECACHE_TAG_DIRTY))) {
 		int i;
@@ -2163,8 +2435,131 @@ continue_unlock:
 		pagevec_release(&pvec);
 		cond_resched();
 	}
+#endif
 }
 
+#ifdef FILE_CELL
+int f4fs_sync_node_pages(struct f4fs_sb_info *sbi,
+				struct writeback_control *wbc,
+				bool do_balance, enum iostat_type io_type, nid_t node_idx)
+{
+	pgoff_t index;
+	struct pagevec pvec;
+	int step = 0;
+	int nwritten = 0;
+	int ret = 0;
+	int nr_pages, done = 0;
+
+	pagevec_init(&pvec);
+
+next_step:
+	index = 0;
+
+	while (!done && (nr_pages = pagevec_lookup_tag(&pvec,
+			NODE_MAPPING(sbi, node_idx), &index, PAGECACHE_TAG_DIRTY))) {
+		int i;
+
+		for (i = 0; i < nr_pages; i++) {
+			struct page *page = pvec.pages[i];
+			bool submitted = false;
+
+			/* give a priority to WB_SYNC threads */
+			if (atomic_read(&sbi->wb_sync_req[NODE]) &&
+					wbc->sync_mode == WB_SYNC_NONE) {
+				done = 1;
+				break;
+			}
+
+			/*
+			 * flushing sequence with step:
+			 * 0. indirect nodes
+			 * 1. dentry dnodes
+			 * 2. file dnodes
+			 */
+			if (step == 0 && IS_DNODE(page))
+				continue;
+			if (step == 1 && (!IS_DNODE(page) ||
+						is_cold_node(page)))
+				continue;
+			if (step == 2 && (!IS_DNODE(page) ||
+						!is_cold_node(page)))
+				continue;
+lock_node:
+			if (wbc->sync_mode == WB_SYNC_ALL)
+				lock_page(page);
+			else if (!trylock_page(page))
+				continue;
+
+			if (unlikely(page->mapping != NODE_MAPPING(sbi, node_idx))) {
+continue_unlock:
+				unlock_page(page);
+				continue;
+			}
+
+			if (!PageDirty(page)) {
+				/* someone wrote it for us */
+				goto continue_unlock;
+			}
+
+			/* flush inline_data/inode, if it's async context. */
+			if (!do_balance)
+				goto write_node;
+
+			/* flush inline_data */
+			if (page_private_inline(page)) {
+				clear_page_private_inline(page);
+				unlock_page(page);
+				flush_inline_data(sbi, ino_of_node(page));
+				goto lock_node;
+			}
+
+			/* flush dirty inode */
+			if (IS_INODE(page) && flush_dirty_inode(page))
+				goto lock_node;
+write_node:
+			f4fs_wait_on_page_writeback(page, NODE, true, true);
+
+			if (!clear_page_dirty_for_io(page))
+				goto continue_unlock;
+
+			set_fsync_mark(page, 0);
+			set_dentry_mark(page, 0);
+
+			ret = __write_node_page(page, false, &submitted,
+						wbc, do_balance, io_type, NULL);
+			if (ret)
+				unlock_page(page);
+			else if (submitted)
+				nwritten++;
+
+			if (--wbc->nr_to_write == 0)
+				break;
+		}
+		pagevec_release(&pvec);
+		cond_resched();
+
+		if (wbc->nr_to_write == 0) {
+			step = 2;
+			break;
+		}
+	}
+
+	if (step < 2) {
+		if (!is_sbi_flag_set(sbi, SBI_CP_DISABLED) &&
+				wbc->sync_mode == WB_SYNC_NONE && step == 1)
+			goto out;
+		step++;
+		goto next_step;
+	}
+out:
+	if (nwritten)
+		f4fs_submit_merged_write(sbi, NODE);
+
+	if (unlikely(f4fs_cp_error(sbi)))
+		return -EIO;
+	return ret;
+}
+#else
 int f4fs_sync_node_pages(struct f4fs_sb_info *sbi,
 				struct writeback_control *wbc,
 				bool do_balance, enum iostat_type io_type)
@@ -2285,6 +2680,7 @@ out:
 		return -EIO;
 	return ret;
 }
+#endif
 
 int f4fs_wait_on_node_pages_writeback(struct f4fs_sb_info *sbi,
 						unsigned int seq_id)
@@ -2322,9 +2718,19 @@ int f4fs_wait_on_node_pages_writeback(struct f4fs_sb_info *sbi,
 			break;
 	}
 
+#ifdef FILE_CELL
+  for (int i = 0 ; i < NODE_TREE_CNT ; i++) {
+    ret2 = filemap_check_errors(NODE_MAPPING(sbi, i));
+    if (!ret) {
+      ret = ret2;
+      break;
+    }
+  }
+#else
 	ret2 = filemap_check_errors(NODE_MAPPING(sbi));
 	if (!ret)
 		ret = ret2;
+#endif
 
 	return ret;
 }
@@ -2343,10 +2749,17 @@ static int f4fs_write_node_pages(struct address_space *mapping,
 	f4fs_balance_fs_bg(sbi, true);
 
 	/* collect a number of dirty node pages and write together */
+#ifdef FILE_CELL
+	if (wbc->sync_mode != WB_SYNC_ALL &&
+			get_dirty_node_pages(sbi, mapping->host->i_ino) - F4FS_NODE_INO2(sbi) <
+					nr_pages_to_skip(sbi, NODE))
+		goto skip_write;
+#else
 	if (wbc->sync_mode != WB_SYNC_ALL &&
 			get_pages(sbi, F4FS_DIRTY_NODES) <
 					nr_pages_to_skip(sbi, NODE))
 		goto skip_write;
+#endif
 
 	if (wbc->sync_mode == WB_SYNC_ALL)
 		atomic_inc(&sbi->wb_sync_req[NODE]);
@@ -2361,7 +2774,11 @@ static int f4fs_write_node_pages(struct address_space *mapping,
 
 	diff = nr_pages_to_write(sbi, NODE, wbc);
 	blk_start_plug(&plug);
+#ifdef FILE_CELL
+	f4fs_sync_node_pages(sbi, wbc, true, FS_NODE_IO, mapping->host->i_ino - F4FS_NODE_INO2(sbi));
+#else
 	f4fs_sync_node_pages(sbi, wbc, true, FS_NODE_IO);
+#endif
 	blk_finish_plug(&plug);
 	wbc->nr_to_write = max((long)0, wbc->nr_to_write - diff);
 
@@ -2370,7 +2787,11 @@ static int f4fs_write_node_pages(struct address_space *mapping,
 	return 0;
 
 skip_write:
+#ifdef FILE_CELL
+	wbc->pages_skipped += get_dirty_node_pages(sbi, mapping->host->i_ino - F4FS_NODE_INO2(sbi));
+#else
 	wbc->pages_skipped += get_pages(sbi, F4FS_DIRTY_NODES);
+#endif
 	trace_f4fs_writepages(mapping->host, wbc, NODE);
 	return 0;
 }
@@ -2388,7 +2809,11 @@ static bool f4fs_dirty_node_folio(struct address_space *mapping,
 #endif
 	if (!folio_test_dirty(folio)) {
 		filemap_dirty_folio(mapping, folio);
+#ifdef FILE_CELL
+		inc_dirty_node_page_count(F4FS_P_SB(&folio->page), NODE_IDX(nid_of_node(&folio->page)));
+#else
 		inc_page_count(F4FS_M_SB(mapping), F4FS_DIRTY_NODES);
+#endif
 		set_page_private_reference(&folio->page);
 		return true;
 	}
@@ -3037,7 +3462,11 @@ int f4fs_recover_inode_page(struct f4fs_sb_info *sbi, struct page *page)
 	if (unlikely(old_ni.blk_addr != NULL_ADDR))
 		return -EINVAL;
 retry:
+#ifdef FILE_CELL
+	ipage = f4fs_grab_cache_page(NODE_MAPPING(sbi, ino), ino, false);
+#else
 	ipage = f4fs_grab_cache_page(NODE_MAPPING(sbi), ino, false);
+#endif
 	if (!ipage) {
 		memalloc_retry_wait(GFP_NOFS);
 		goto retry;

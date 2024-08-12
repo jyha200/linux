@@ -613,7 +613,7 @@ static inline bool has_curseg_enough_space(struct f4fs_sb_info *sbi,
 static inline bool has_not_enough_free_secs(struct f4fs_sb_info *sbi,
 					int freed, int needed)
 {
-	unsigned int total_node_blocks = get_pages(sbi, F4FS_DIRTY_NODES) +
+	unsigned int total_node_blocks = get_pages(sbi, F4FS_DIRTY_NODES2) +
 					get_pages(sbi, F4FS_DIRTY_DENTS) +
 					get_pages(sbi, F4FS_DIRTY_IMETA);
 	unsigned int total_dent_blocks = get_pages(sbi, F4FS_DIRTY_DENTS);

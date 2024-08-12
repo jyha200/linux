@@ -45,6 +45,7 @@
 #define FILE_NOT_ALIGNED	1
 
 #ifdef FILE_CELL
+#define NODE_IDX(nid) ((nid) % NODE_TREE_CNT)
 #define TREE_IDX(nid) ((nid) % NODE_TREE_CNT)
 #endif
 

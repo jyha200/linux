@@ -494,7 +494,11 @@ struct inode *f4fs_iget(struct super_block *sb, unsigned long ino)
 		trace_f4fs_iget(inode);
 		return inode;
 	}
+#ifdef FILE_CELL
+	if (F4FS_IS_NODE(sbi, ino) || ino == F4FS_META_INO(sbi))
+#else
 	if (ino == F4FS_NODE_INO(sbi) || ino == F4FS_META_INO(sbi))
+#endif
 		goto make_now;
 
 #ifdef CONFIG_F4FS_FS_COMPRESSION
@@ -506,7 +510,12 @@ struct inode *f4fs_iget(struct super_block *sb, unsigned long ino)
 	if (ret)
 		goto bad_inode;
 make_now:
-	if (ino == F4FS_NODE_INO(sbi)) {
+#ifdef FILE_CELL
+	if (F4FS_IS_NODE(sbi, ino))
+#else
+	if (ino == F4FS_NODE_INO(sbi))
+#endif
+  {
 		inode->i_mapping->a_ops = &f4fs_node_aops;
 		mapping_set_gfp_mask(inode->i_mapping, GFP_NOFS);
 	} else if (ino == F4FS_META_INO(sbi)) {
@@ -711,8 +720,13 @@ int f4fs_write_inode(struct inode *inode, struct writeback_control *wbc)
 {
 	struct f4fs_sb_info *sbi = F4FS_I_SB(inode);
 
+#ifdef FILE_CELL
+	if (F4FS_IS_NODE(sbi, inode->i_ino) ||
+			inode->i_ino == F4FS_META_INO(sbi))
+#else
 	if (inode->i_ino == F4FS_NODE_INO(sbi) ||
 			inode->i_ino == F4FS_META_INO(sbi))
+#endif
 		return 0;
 
 	/*
@@ -753,9 +767,15 @@ void f4fs_evict_inode(struct inode *inode)
 		test_opt(sbi, COMPRESS_CACHE) && f4fs_compressed_file(inode))
 		f4fs_invalidate_compress_pages(sbi, inode->i_ino);
 
+#ifdef FILE_CELL
+	if (F4FS_IS_NODE(sbi, inode->i_ino) ||
+			inode->i_ino == F4FS_META_INO(sbi) ||
+			inode->i_ino == F4FS_COMPRESS_INO(sbi))
+#else
 	if (inode->i_ino == F4FS_NODE_INO(sbi) ||
 			inode->i_ino == F4FS_META_INO(sbi) ||
 			inode->i_ino == F4FS_COMPRESS_INO(sbi))
+#endif
 		goto out_clear;
 
 	f4fs_bug_on(sbi, get_dirty_pages(inode));
@@ -841,11 +861,19 @@ no_delete:
 		f4fs_inode_synced(inode);
 
 	/* for the case f4fs_new_inode() was failed, .i_ino is zero, skip it */
+#ifdef FILE_CELL
+	if (inode->i_ino)
+		invalidate_mapping_pages(NODE_MAPPING(sbi, inode->i_ino), inode->i_ino,
+							inode->i_ino);
+	if (xnid)
+		invalidate_mapping_pages(NODE_MAPPING(sbi, inode->i_ino), xnid, xnid);
+#else
 	if (inode->i_ino)
 		invalidate_mapping_pages(NODE_MAPPING(sbi), inode->i_ino,
 							inode->i_ino);
 	if (xnid)
 		invalidate_mapping_pages(NODE_MAPPING(sbi), xnid, xnid);
+#endif
 	if (inode->i_nlink) {
 		if (is_inode_flag_set(inode, FI_APPEND_WRITE))
 			f4fs_add_ino_entry(sbi, inode->i_ino, APPEND_INO);

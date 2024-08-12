@@ -1766,7 +1766,7 @@ int f4fs_gc(struct f4fs_sb_info *sbi, struct f4fs_gc_control *gc_control)
 
 	trace_f4fs_gc_begin(sbi->sb, gc_type, gc_control->no_bg_gc,
 				gc_control->nr_free_secs,
-				get_pages(sbi, F4FS_DIRTY_NODES),
+				get_pages(sbi, F4FS_DIRTY_NODES2),
 				get_pages(sbi, F4FS_DIRTY_DENTS),
 				get_pages(sbi, F4FS_DIRTY_IMETA),
 				free_sections(sbi),
@@ -1867,7 +1867,7 @@ stop:
 		f4fs_unpin_all_sections(sbi, true);
 
 	trace_f4fs_gc_end(sbi->sb, ret, total_freed, sec_freed,
-				get_pages(sbi, F4FS_DIRTY_NODES),
+				get_pages(sbi, F4FS_DIRTY_NODES2),
 				get_pages(sbi, F4FS_DIRTY_DENTS),
 				get_pages(sbi, F4FS_DIRTY_IMETA),
 				free_sections(sbi),

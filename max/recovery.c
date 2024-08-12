@@ -852,7 +852,13 @@ skip:
 			(loff_t)MAIN_BLKADDR(sbi) << PAGE_SHIFT, -1);
 
 	if (err) {
+#ifdef FILE_CELL
+    for (int i = 0  ; i < NODE_TREE_CNT ; i++) {
+      truncate_inode_pages_final(NODE_MAPPING(sbi, i));
+    }
+#else
 		truncate_inode_pages_final(NODE_MAPPING(sbi));
+#endif
 		truncate_inode_pages_final(META_MAPPING(sbi));
 	}
 

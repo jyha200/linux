@@ -49,6 +49,10 @@ struct pagevec;
 	} while (0)
 #endif
 
+#ifdef FILE_CELL
+#define F4FS_IS_NODE(sbi, nid) ( (nid) >= F4FS_NODE_INO2(sbi) && (nid) <= F4FS_RESERVED_NODE_NUM )
+#endif
+
 enum {
 	FAULT_KMALLOC,
 	FAULT_KVMALLOC,
@@ -1107,7 +1111,7 @@ enum count_type {
 	F4FS_DIRTY_DENTS,
 	F4FS_DIRTY_DATA,
 	F4FS_DIRTY_QDATA,
-	F4FS_DIRTY_NODES,
+	F4FS_DIRTY_NODES2,
 	F4FS_DIRTY_META,
 	F4FS_DIRTY_IMETA,
 	F4FS_WB_CP_DATA,
@@ -1638,7 +1642,13 @@ struct f4fs_sb_info {
 
 	/* for node-related operations */
 	struct f4fs_nm_info *nm_info;		/* node manager */
+#ifdef FILE_CELL
+	struct inode *node_inode2[NODE_TREE_CNT];		/* cache node blocks */
+  int node_count;
+  atomic_t dirty_node_pages[NODE_TREE_CNT];
+#else
 	struct inode *node_inode;		/* cache node blocks */
+#endif
 
 	/* for segment-related operations */
 	struct f4fs_sm_info *sm_info;		/* segment manager */
@@ -2079,10 +2089,17 @@ static inline struct address_space *META_MAPPING(struct f4fs_sb_info *sbi)
 	return sbi->meta_inode->i_mapping;
 }
 
+#ifdef FILE_CELL
+static inline struct address_space *NODE_MAPPING(struct f4fs_sb_info *sbi, nid_t nid)
+{
+	return sbi->node_inode2[nid % NODE_TREE_CNT]->i_mapping;
+}
+#else
 static inline struct address_space *NODE_MAPPING(struct f4fs_sb_info *sbi)
 {
 	return sbi->node_inode->i_mapping;
 }
+#endif
 
 static inline bool is_sbi_flag_set(struct f4fs_sb_info *sbi, unsigned int type)
 {
@@ -2093,6 +2110,23 @@ static inline void set_sbi_flag(struct f4fs_sb_info *sbi, unsigned int type)
 {
 	set_bit(type, &sbi->s_flag);
 }
+
+#ifdef FILE_CELL
+static inline void inc_dirty_node_page_count(struct f4fs_sb_info *sbi, int node_idx) {
+  atomic_inc(&sbi->dirty_node_pages[node_idx]);
+  atomic_inc(&sbi->nr_pages[F4FS_DIRTY_NODES2]);
+  set_sbi_flag(sbi, SBI_IS_DIRTY);
+}
+
+static inline void dec_dirty_node_page_count(struct f4fs_sb_info *sbi, int node_idx) {
+  atomic_dec(&sbi->dirty_node_pages[node_idx]);
+  atomic_dec(&sbi->nr_pages[F4FS_DIRTY_NODES2]);
+}
+
+static inline int get_dirty_node_pages(struct f4fs_sb_info *sbi, int node_idx) {
+  return atomic_read(&sbi->dirty_node_pages[node_idx]);
+}
+#endif
 
 static inline void clear_sbi_flag(struct f4fs_sb_info *sbi, unsigned int type)
 {
@@ -2456,7 +2490,7 @@ static inline void inc_page_count(struct f4fs_sb_info *sbi, int count_type)
 	atomic_inc(&sbi->nr_pages[count_type]);
 
 	if (count_type == F4FS_DIRTY_DENTS ||
-			count_type == F4FS_DIRTY_NODES ||
+			count_type == F4FS_DIRTY_NODES2 ||
 			count_type == F4FS_DIRTY_META ||
 			count_type == F4FS_DIRTY_QDATA ||
 			count_type == F4FS_DIRTY_IMETA)
@@ -3639,12 +3673,21 @@ struct page *f4fs_get_node_page(struct f4fs_sb_info *sbi, pgoff_t nid);
 struct page *f4fs_get_node_page_ra(struct page *parent, int start);
 int f4fs_move_node_page(struct page *node_page, int gc_type);
 void f4fs_flush_inline_data(struct f4fs_sb_info *sbi);
+#ifdef FILE_CELL
+int f4fs_fsync_node_pages(struct f4fs_sb_info *sbi, struct inode *inode,
+			struct writeback_control *wbc, bool atomic,
+			unsigned int *seq_id, nid_t node_idx);
+int f4fs_sync_node_pages(struct f4fs_sb_info *sbi,
+			struct writeback_control *wbc,
+			bool do_balance, enum iostat_type io_type, nid_t node_idx);
+#else
 int f4fs_fsync_node_pages(struct f4fs_sb_info *sbi, struct inode *inode,
 			struct writeback_control *wbc, bool atomic,
 			unsigned int *seq_id);
 int f4fs_sync_node_pages(struct f4fs_sb_info *sbi,
 			struct writeback_control *wbc,
 			bool do_balance, enum iostat_type io_type);
+#endif
 int f4fs_build_free_nids(struct f4fs_sb_info *sbi, bool sync, bool mount);
 bool f4fs_alloc_nid(struct f4fs_sb_info *sbi, nid_t *nid);
 void f4fs_alloc_nid_done(struct f4fs_sb_info *sbi, nid_t nid);
