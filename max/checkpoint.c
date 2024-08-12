@@ -1692,7 +1692,11 @@ int f4fs_write_checkpoint(struct f4fs_sb_info *sbi, struct cp_control *cpc)
 	ckpt->checkpoint_ver = cpu_to_le64(++ckpt_ver);
 
 	/* write cached NAT/SIT entries to NAT/SIT area */
+#ifdef FILE_CELL
+	err = f4fs_flush_nat_entries_per_core(sbi, cpc);
+#else
 	err = f4fs_flush_nat_entries(sbi, cpc);
+#endif
 	if (err) {
 		f4fs_err(sbi, "f4fs_flush_nat_entries failed err:%d, stop checkpoint", err);
 		f4fs_bug_on(sbi, !f4fs_cp_error(sbi));

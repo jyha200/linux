@@ -84,6 +84,16 @@ struct nat_entry {
 
 #define inc_node_version(version)	(++(version))
 
+#ifdef FILE_CELL
+struct per_core_sets_pack {
+	struct nat_entry_set *set[NODE_TREE_CNT];
+	nid_t set_id;            /* set number*/
+	unsigned int entry_cnt;        /* the total  # of nat entries in set */
+	struct list_head set_list;    /* link with other nat sets */
+	unsigned int next_set_idx;
+};
+#endif
+
 static inline void copy_node_info(struct node_info *dst,
 						struct node_info *src)
 {

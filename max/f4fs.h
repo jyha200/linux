@@ -3651,7 +3651,11 @@ int f4fs_recover_inode_page(struct f4fs_sb_info *sbi, struct page *page);
 int f4fs_restore_node_summary(struct f4fs_sb_info *sbi,
 			unsigned int segno, struct f4fs_summary_block *sum);
 void f4fs_enable_nat_bits(struct f4fs_sb_info *sbi);
+#ifdef FILE_CELL
+int f4fs_flush_nat_entries_per_core(struct f4fs_sb_info *sbi, struct cp_control *cpc);
+#else
 int f4fs_flush_nat_entries(struct f4fs_sb_info *sbi, struct cp_control *cpc);
+#endif
 int f4fs_build_node_manager(struct f4fs_sb_info *sbi);
 void f4fs_destroy_node_manager(struct f4fs_sb_info *sbi);
 int __init f4fs_create_node_manager_caches(void);
