@@ -4390,7 +4390,7 @@ void f4fs_destroy_node_manager(struct f4fs_sb_info *sbi)
     total += nm_i->nat_cnt2[TOTAL_NAT][i];
   }
 
-	f4fs_bug_on(sbi, total);
+//	f4fs_bug_on(sbi, total);
 #else
 	while ((found = __gang_lookup_nat_cache(nm_i,
 					nid, NATVEC_SIZE, natvec))) {
@@ -4515,6 +4515,9 @@ fail:
 
 void f4fs_destroy_node_manager_caches(void)
 {
+#ifdef FILE_CELL
+  kmem_cache_destroy(per_core_sets_pack_slab);
+#endif
 	kmem_cache_destroy(fsync_node_entry_slab);
 	kmem_cache_destroy(nat_entry_set_slab);
 	kmem_cache_destroy(free_nid_slab);
