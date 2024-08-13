@@ -741,7 +741,7 @@ int f4fs_get_node_info(struct f4fs_sb_info *sbi, nid_t nid,
 				struct node_info *ni, bool checkpoint_context)
 {
 	struct f4fs_nm_info *nm_i = NM_I(sbi);
-	struct curseg_info *curseg = CURSEG_I(sbi, CURSEG_HOT_DATA);
+	struct curseg_info *curseg = CURSEG_I2(sbi, CURSEG_HOT_DATA);
 	struct f4fs_journal *journal = curseg->journal;
 	nid_t start_nid = START_NID(nid);
 	struct f4fs_nat_block *nat_blk;
@@ -3069,7 +3069,7 @@ static int scan_nat_page(struct f4fs_sb_info *sbi,
 
 static void scan_curseg_cache(struct f4fs_sb_info *sbi)
 {
-	struct curseg_info *curseg = CURSEG_I(sbi, CURSEG_HOT_DATA);
+	struct curseg_info *curseg = CURSEG_I2(sbi, CURSEG_HOT_DATA);
 	struct f4fs_journal *journal = curseg->journal;
 	int i;
 
@@ -3564,7 +3564,7 @@ int f4fs_restore_node_summary(struct f4fs_sb_info *sbi,
 static void remove_nats_in_journal(struct f4fs_sb_info *sbi)
 {
 	struct f4fs_nm_info *nm_i = NM_I(sbi);
-	struct curseg_info *curseg = CURSEG_I(sbi, CURSEG_HOT_DATA);
+	struct curseg_info *curseg = CURSEG_I2(sbi, CURSEG_HOT_DATA);
 	struct f4fs_journal *journal = curseg->journal;
 	int i;
 
@@ -3703,7 +3703,7 @@ void f4fs_enable_nat_bits(struct f4fs_sb_info *sbi)
 static int __flush_nat_entry_set(struct f4fs_sb_info *sbi,
 		struct nat_entry_set *set, struct cp_control *cpc)
 {
-	struct curseg_info *curseg = CURSEG_I(sbi, CURSEG_HOT_DATA);
+	struct curseg_info *curseg = CURSEG_I2(sbi, CURSEG_HOT_DATA);
 	struct f4fs_journal *journal = curseg->journal;
 	nid_t start_nid = set->set * NAT_ENTRY_PER_BLOCK;
 	bool to_journal = true;
@@ -3804,7 +3804,7 @@ init_new_per_core_sets_pack(struct per_core_sets_pack *pack, unsigned int set_id
 static int __flush_nat_entry_set_per_core(struct f4fs_sb_info *sbi,
 		struct per_core_sets_pack *sets, struct cp_control *cpc)
 {
-	struct curseg_info *curseg = CURSEG_I(sbi, CURSEG_HOT_DATA);
+	struct curseg_info *curseg = CURSEG_I2(sbi, CURSEG_HOT_DATA);
 	struct f4fs_journal *journal = curseg->journal;
 	nid_t start_nid = sets->set_id * NAT_ENTRY_PER_BLOCK;
 	bool to_journal = true;
@@ -3928,7 +3928,7 @@ static void __adjust_nat_entry_set_per_core(struct nat_entry_set *nes,
 int f4fs_flush_nat_entries_per_core(struct f4fs_sb_info *sbi, struct cp_control *cpc)
 {
 	struct f4fs_nm_info *nm_i = NM_I(sbi);
-	struct curseg_info *curseg = CURSEG_I(sbi, CURSEG_HOT_DATA);
+	struct curseg_info *curseg = CURSEG_I2(sbi, CURSEG_HOT_DATA);
 	struct f4fs_journal *journal = curseg->journal;
 	struct nat_entry_set *setvec[SETVEC_SIZE];
 	struct per_core_sets_pack *set, *tmp;

@@ -1776,6 +1776,12 @@ static long f4fs_fallocate(struct file *file, int mode,
 			FALLOC_FL_INSERT_RANGE))
 		return -EOPNOTSUPP;
 
+#ifdef MLOG
+  if (mode & FALLOC_FL_COLLAPSE_RANGE || mode & FALLOC_FL_INSERT_RANGE)
+    // todo: modify the f2fs_replace_block function.
+    return -EOPNOTSUPP;
+#endif
+
 	inode_lock(inode);
 
 	ret = file_modified(file);

@@ -90,7 +90,7 @@ static inline unsigned long __reverse_ffs(unsigned long word)
 int IS_CURSEG(struct f4fs_sb_info *sbi, int seg) {
   for (int i = 0 ; i < sbi->nr_mlog ; i++) {
     for (int j = 0 ; j < NR_CURSEG_TYPE ; j++) {
-      if (seg == (CURSEG_I(sbi, j + i * NR_CURSEG_TYPE)->segno)) return 1;
+      if (seg == (CURSEG_I2(sbi, j + i * NR_CURSEG_TYPE)->segno)) return 1;
     }
   }
   return 0;
@@ -99,7 +99,7 @@ int IS_CURSEG(struct f4fs_sb_info *sbi, int seg) {
 int IS_CURSEC(struct f4fs_sb_info *sbi, int secno) {
   for (int i = 0 ; i < sbi->nr_mlog ; i++) {
     for (int j = 0 ; j < NR_CURSEG_TYPE ; j++) {
-      if (secno == (CURSEG_I(sbi, j+i*NR_CURSEG_TYPE)->segno / sbi->segs_per_sec)) return 1;
+      if (secno == (CURSEG_I2(sbi, j+i*NR_CURSEG_TYPE)->segno / sbi->segs_per_sec)) return 1;
     }
   }
   return 0;
@@ -2338,6 +2338,17 @@ bool f4fs_is_checkpointed_data(struct f4fs_sb_info *sbi, block_t blkaddr)
 /*
  * This function should be resided under the curseg_mutex lock
  */
+#ifdef MLOG
+static void __add_sum_entry(struct f4fs_sb_info *sbi, int type,
+					struct f4fs_summary *sum, int mlog)
+{
+	struct curseg_info *curseg = CURSEG_I2(sbi, type + mlog * NR_CURSEG_TYPE);
+	void *addr = curseg->sum_blk;
+
+	addr += curseg->next_blkoff * sizeof(struct f4fs_summary);
+	memcpy(addr, sum, sizeof(struct f4fs_summary));
+}
+#else
 static void __add_sum_entry(struct f4fs_sb_info *sbi, int type,
 					struct f4fs_summary *sum)
 {
@@ -2347,6 +2358,7 @@ static void __add_sum_entry(struct f4fs_sb_info *sbi, int type,
 	addr += curseg->next_blkoff * sizeof(struct f4fs_summary);
 	memcpy(addr, sum, sizeof(struct f4fs_summary));
 }
+#endif
 
 /*
  * Calculate the number of current summary pages for writing
@@ -2404,10 +2416,38 @@ static void write_sum_page(struct f4fs_sb_info *sbi,
 	f4fs_update_meta_page(sbi, (void *)sum_blk, blk_addr);
 }
 
+#ifdef MLOG
+static void write_current_sum_page_mlog(struct f4fs_sb_info *sbi,
+						int type, block_t blk_addr, int mlog)
+{
+	struct curseg_info *curseg = CURSEG_I2(sbi, type + mlog * NR_CURSEG_TYPE);
+	struct page *page = f4fs_grab_meta_page(sbi, blk_addr);
+	struct f4fs_summary_block *src = curseg->sum_blk;
+	struct f4fs_summary_block *dst;
+
+	dst = (struct f4fs_summary_block *)page_address(page);
+	memset(dst, 0, PAGE_SIZE);
+
+	mutex_lock(&curseg->curseg_mutex);
+
+	down_read(&curseg->journal_rwsem);
+	memcpy(&dst->journal, curseg->journal, SUM_JOURNAL_SIZE);
+	up_read(&curseg->journal_rwsem);
+
+	memcpy(dst->entries, src->entries, SUM_ENTRY_SIZE);
+	memcpy(&dst->footer, &src->footer, SUM_FOOTER_SIZE);
+
+	mutex_unlock(&curseg->curseg_mutex);
+
+	set_page_dirty(page);
+	f4fs_put_page(page, 1);
+}
+#endif
+
 static void write_current_sum_page(struct f4fs_sb_info *sbi,
 						int type, block_t blk_addr)
 {
-	struct curseg_info *curseg = CURSEG_I(sbi, type);
+	struct curseg_info *curseg = CURSEG_I2(sbi, type);
 	struct page *page = f4fs_grab_meta_page(sbi, blk_addr);
 	struct f4fs_summary_block *src = curseg->sum_blk;
 	struct f4fs_summary_block *dst;
@@ -2509,9 +2549,16 @@ skip_left:
 		if (go_left && zoneno == 0)
 			goto got_it;
 	}
+#ifdef MLOG
+	for (int j = 0; i < sbi->nr_mlog; j++)
+	for (i = 0; i < NR_CURSEG_TYPE; i++)
+		if (CURSEG_I2(sbi, i + j * NR_CURSEG_TYPE)->zone == zoneno)
+			break;
+#else
 	for (i = 0; i < NR_CURSEG_TYPE; i++)
 		if (CURSEG_I(sbi, i)->zone == zoneno)
 			break;
+#endif
 
 	if (i < NR_CURSEG_TYPE) {
 		/* zone is in user, try another */
@@ -2532,6 +2579,31 @@ got_it:
 	spin_unlock(&free_i->segmap_lock);
 }
 
+#ifdef MLOG
+static void reset_curseg_mlog(struct f4fs_sb_info *sbi, int type, int modified, int mlog)
+{
+	struct curseg_info *curseg = CURSEG_I2(sbi, type + NR_CURSEG_TYPE * mlog);
+	struct summary_footer *sum_footer;
+	unsigned short seg_type = curseg->seg_type;
+
+	curseg->inited = true;
+	curseg->segno = curseg->next_segno;
+	curseg->zone = GET_ZONE_FROM_SEG(sbi, curseg->segno);
+	curseg->next_blkoff = 0;
+	curseg->next_segno = NULL_SEGNO;
+
+	sum_footer = &(curseg->sum_blk->footer);
+	memset(sum_footer, 0, sizeof(struct summary_footer));
+
+	sanity_check_seg_type(sbi, seg_type);
+
+	if (IS_DATASEG(seg_type))
+		SET_SUM_TYPE(sum_footer, SUM_TYPE_DATA);
+	if (IS_NODESEG(seg_type))
+		SET_SUM_TYPE(sum_footer, SUM_TYPE_NODE);
+	__set_sit_entry_type(sbi, seg_type, curseg->segno, modified);
+}
+#else
 static void reset_curseg(struct f4fs_sb_info *sbi, int type, int modified)
 {
 	struct curseg_info *curseg = CURSEG_I(sbi, type);
@@ -2555,7 +2627,44 @@ static void reset_curseg(struct f4fs_sb_info *sbi, int type, int modified)
 		SET_SUM_TYPE(sum_footer, SUM_TYPE_NODE);
 	__set_sit_entry_type(sbi, seg_type, curseg->segno, modified);
 }
+#endif
 
+#ifdef MLOG
+static unsigned int __get_next_segno(struct f4fs_sb_info *sbi, int type, int mlog)
+{
+	struct curseg_info *curseg = CURSEG_I2(sbi, type + mlog * NR_CURSEG_TYPE);
+	unsigned short seg_type = curseg->seg_type;
+
+	sanity_check_seg_type(sbi, seg_type);
+	if (f4fs_need_rand_seg(sbi))
+		return prandom_u32() % (MAIN_SECS(sbi) * sbi->segs_per_sec);
+
+	/* if segs_per_sec is large than 1, we need to keep original policy. */
+	if (__is_large_section(sbi))
+		return curseg->segno;
+
+	/* inmem log may not locate on any segment after mount */
+	if (!curseg->inited)
+		return 0;
+
+	if (unlikely(is_sbi_flag_set(sbi, SBI_CP_DISABLED)))
+		return 0;
+
+	if (test_opt(sbi, NOHEAP) &&
+		(seg_type == CURSEG_HOT_DATA || IS_NODESEG(seg_type)))
+		return 0;
+
+	if (SIT_I(sbi)->last_victim[ALLOC_NEXT])
+		return SIT_I(sbi)->last_victim[ALLOC_NEXT];
+
+	/* find segments from 0 to reuse freed segments */
+	if (F4FS_OPTION(sbi).alloc_mode == ALLOC_MODE_REUSE)
+		return 0;
+
+	return curseg->segno;
+}
+
+#else
 static unsigned int __get_next_segno(struct f4fs_sb_info *sbi, int type)
 {
 	struct curseg_info *curseg = CURSEG_I(sbi, type);
@@ -2589,11 +2698,39 @@ static unsigned int __get_next_segno(struct f4fs_sb_info *sbi, int type)
 
 	return curseg->segno;
 }
+#endif
 
 /*
  * Allocate a current working segment.
  * This function always allocates a free segment in LFS manner.
  */
+#ifdef MLOG
+static void new_curseg_mlog(struct f4fs_sb_info *sbi, int type, bool new_sec, int mlog)
+{
+	struct curseg_info *curseg = CURSEG_I2(sbi, type + mlog * NR_CURSEG_TYPE);
+	unsigned short seg_type = curseg->seg_type;
+	unsigned int segno = curseg->segno;
+	int dir = ALLOC_LEFT;
+
+	if (curseg->inited)
+		write_sum_page(sbi, curseg->sum_blk,
+				GET_SUM_BLOCK(sbi, segno));
+	if (seg_type == CURSEG_WARM_DATA || seg_type == CURSEG_COLD_DATA)
+		dir = ALLOC_RIGHT;
+
+	if (test_opt(sbi, NOHEAP))
+		dir = ALLOC_RIGHT;
+
+	segno = __get_next_segno(sbi, type, mlog);
+	get_new_segment(sbi, &segno, new_sec, dir);
+	curseg->next_segno = segno;
+	reset_curseg_mlog(sbi, type, 1, mlog);
+	curseg->alloc_type = LFS;
+	if (F4FS_OPTION(sbi).fs_mode == FS_MODE_FRAGMENT_BLK)
+		curseg->fragment_remained_chunk =
+				prandom_u32() % sbi->max_fragment_chunk + 1;
+}
+#else
 static void new_curseg(struct f4fs_sb_info *sbi, int type, bool new_sec)
 {
 	struct curseg_info *curseg = CURSEG_I(sbi, type);
@@ -2619,6 +2756,7 @@ static void new_curseg(struct f4fs_sb_info *sbi, int type, bool new_sec)
 		curseg->fragment_remained_chunk =
 				prandom_u32() % sbi->max_fragment_chunk + 1;
 }
+#endif
 
 static int __next_free_blkoff(struct f4fs_sb_info *sbi,
 					int segno, block_t start)
@@ -2671,6 +2809,41 @@ bool f4fs_segment_has_free_slot(struct f4fs_sb_info *sbi, int segno)
  * This function always allocates a used segment(from dirty seglist) by SSR
  * manner, so it should recover the existing segment information of valid blocks
  */
+#ifdef MLOG
+static void change_curseg_mlog(struct f4fs_sb_info *sbi, int type, bool flush, int mlog)
+{
+	struct dirty_seglist_info *dirty_i = DIRTY_I(sbi);
+	struct curseg_info *curseg = CURSEG_I2(sbi, type + mlog * NR_CURSEG_TYPE);
+	unsigned int new_segno = curseg->next_segno;
+	struct f4fs_summary_block *sum_node;
+	struct page *sum_page;
+
+	if (flush)
+		write_sum_page(sbi, curseg->sum_blk,
+					GET_SUM_BLOCK(sbi, curseg->segno));
+
+	__set_test_and_inuse(sbi, new_segno);
+
+	mutex_lock(&dirty_i->seglist_lock);
+	__remove_dirty_segment(sbi, new_segno, PRE);
+	__remove_dirty_segment(sbi, new_segno, DIRTY);
+	mutex_unlock(&dirty_i->seglist_lock);
+
+	reset_curseg_mlog(sbi, type, 1, mlog);
+	curseg->alloc_type = SSR;
+	curseg->next_blkoff = __next_free_blkoff(sbi, curseg->segno, 0);
+
+	sum_page = f4fs_get_sum_page(sbi, new_segno);
+	if (IS_ERR(sum_page)) {
+		/* GC won't be able to use stale summary pages by cp_error */
+		memset(curseg->sum_blk, 0, SUM_ENTRY_SIZE);
+		return;
+	}
+	sum_node = (struct f4fs_summary_block *)page_address(sum_page);
+	memcpy(curseg->sum_blk, sum_node, SUM_ENTRY_SIZE);
+	f4fs_put_page(sum_page, 1);
+}
+#else
 static void change_curseg(struct f4fs_sb_info *sbi, int type, bool flush)
 {
 	struct dirty_seglist_info *dirty_i = DIRTY_I(sbi);
@@ -2704,7 +2877,33 @@ static void change_curseg(struct f4fs_sb_info *sbi, int type, bool flush)
 	memcpy(curseg->sum_blk, sum_node, SUM_ENTRY_SIZE);
 	f4fs_put_page(sum_page, 1);
 }
+#endif
 
+#ifdef MLOG
+static int get_ssr_segment_mlog(struct f4fs_sb_info *sbi, int type,
+				int alloc_mode, unsigned long long age, int mlog);
+
+static void get_atssr_segment_mlog(struct f4fs_sb_info *sbi, int type,
+					int target_type, int alloc_mode,
+					unsigned long long age, int mlog)
+{
+	struct curseg_info *curseg = CURSEG_I2(sbi, type + mlog * NR_CURSEG_TYPE);
+
+	curseg->seg_type = target_type;
+
+	if (get_ssr_segment_mlog(sbi, type, alloc_mode, age, mlog)) {
+		struct seg_entry *se = get_seg_entry(sbi, curseg->next_segno);
+
+		curseg->seg_type = se->type;
+		change_curseg_mlog(sbi, type, true, mlog);
+	} else {
+		/* allocate cold segment by default */
+		curseg->seg_type = CURSEG_COLD_DATA;
+		new_curseg_mlog(sbi, type, true, mlog);
+	}
+	stat_inc_seg_type(sbi, curseg);
+}
+#else
 static int get_ssr_segment(struct f4fs_sb_info *sbi, int type,
 				int alloc_mode, unsigned long long age);
 
@@ -2728,9 +2927,30 @@ static void get_atssr_segment(struct f4fs_sb_info *sbi, int type,
 	}
 	stat_inc_seg_type(sbi, curseg);
 }
+#endif
 
 static void __f4fs_init_atgc_curseg(struct f4fs_sb_info *sbi)
 {
+#ifdef MLOG
+  for (int i = 0 ; i < sbi->nr_mlog ; i++) {
+    struct curseg_info *curseg = CURSEG_I2(sbi, CURSEG_ALL_DATA_ATGC + i * NR_CURSEG_TYPE);
+
+    if (!sbi->am.atgc_enabled)
+      return;
+
+    f4fs_down_read(&SM_I(sbi)->curseg_lock);
+
+    mutex_lock(&curseg->curseg_mutex);
+    down_write(&SIT_I(sbi)->sentry_lock);
+
+    get_atssr_segment_mlog(sbi, CURSEG_ALL_DATA_ATGC, CURSEG_COLD_DATA, SSR, 0, i);
+
+    up_write(&SIT_I(sbi)->sentry_lock);
+    mutex_unlock(&curseg->curseg_mutex);
+
+    f4fs_up_read(&SM_I(sbi)->curseg_lock);
+  }
+#else
 	struct curseg_info *curseg = CURSEG_I(sbi, CURSEG_ALL_DATA_ATGC);
 
 	if (!sbi->am.atgc_enabled)
@@ -2747,7 +2967,7 @@ static void __f4fs_init_atgc_curseg(struct f4fs_sb_info *sbi)
 	mutex_unlock(&curseg->curseg_mutex);
 
 	f4fs_up_read(&SM_I(sbi)->curseg_lock);
-
+#endif
 }
 void f4fs_init_inmem_curseg(struct f4fs_sb_info *sbi)
 {
@@ -2756,7 +2976,7 @@ void f4fs_init_inmem_curseg(struct f4fs_sb_info *sbi)
 
 static void __f4fs_save_inmem_curseg(struct f4fs_sb_info *sbi, int type)
 {
-	struct curseg_info *curseg = CURSEG_I(sbi, type);
+	struct curseg_info *curseg = CURSEG_I2(sbi, type);
 
 	mutex_lock(&curseg->curseg_mutex);
 	if (!curseg->inited)
@@ -2784,7 +3004,7 @@ void f4fs_save_inmem_curseg(struct f4fs_sb_info *sbi)
 
 static void __f4fs_restore_inmem_curseg(struct f4fs_sb_info *sbi, int type)
 {
-	struct curseg_info *curseg = CURSEG_I(sbi, type);
+	struct curseg_info *curseg = CURSEG_I2(sbi, type);
 
 	mutex_lock(&curseg->curseg_mutex);
 	if (!curseg->inited)
@@ -2807,6 +3027,64 @@ void f4fs_restore_inmem_curseg(struct f4fs_sb_info *sbi)
 		__f4fs_restore_inmem_curseg(sbi, CURSEG_ALL_DATA_ATGC);
 }
 
+#ifdef MLOG
+static int get_ssr_segment_mlog(struct f4fs_sb_info *sbi, int type,
+				int alloc_mode, unsigned long long age, int mlog)
+{
+	struct curseg_info *curseg = CURSEG_I2(sbi, type + mlog * NR_CURSEG_TYPE);
+	const struct victim_selection *v_ops = DIRTY_I(sbi)->v_ops;
+	unsigned segno = NULL_SEGNO;
+	unsigned short seg_type = curseg->seg_type;
+	int i, cnt;
+	bool reversed = false;
+
+	sanity_check_seg_type(sbi, seg_type);
+
+	/* f4fs_need_SSR() already forces to do this */
+	if (!v_ops->get_victim(sbi, &segno, BG_GC, seg_type, alloc_mode, age)) {
+		curseg->next_segno = segno;
+		return 1;
+	}
+
+	/* For node segments, let's do SSR more intensively */
+	if (IS_NODESEG(seg_type)) {
+		if (seg_type >= CURSEG_WARM_NODE) {
+			reversed = true;
+			i = CURSEG_COLD_NODE;
+		} else {
+			i = CURSEG_HOT_NODE;
+		}
+		cnt = NR_CURSEG_NODE_TYPE;
+	} else {
+		if (seg_type >= CURSEG_WARM_DATA) {
+			reversed = true;
+			i = CURSEG_COLD_DATA;
+		} else {
+			i = CURSEG_HOT_DATA;
+		}
+		cnt = NR_CURSEG_DATA_TYPE;
+	}
+
+	for (; cnt-- > 0; reversed ? i-- : i++) {
+		if (i == seg_type)
+			continue;
+		if (!v_ops->get_victim(sbi, &segno, BG_GC, i, alloc_mode, age)) {
+			curseg->next_segno = segno;
+			return 1;
+		}
+	}
+
+	/* find valid_blocks=0 in dirty list */
+	if (unlikely(is_sbi_flag_set(sbi, SBI_CP_DISABLED))) {
+		segno = get_free_segment(sbi);
+		if (segno != NULL_SEGNO) {
+			curseg->next_segno = segno;
+			return 1;
+		}
+	}
+	return 0;
+}
+#else
 static int get_ssr_segment(struct f4fs_sb_info *sbi, int type,
 				int alloc_mode, unsigned long long age)
 {
@@ -2863,11 +3141,37 @@ static int get_ssr_segment(struct f4fs_sb_info *sbi, int type,
 	}
 	return 0;
 }
+#endif
 
 /*
  * flush out current segment and replace it with new segment
  * This function should be returned with success, otherwise BUG
  */
+#ifdef MLOG
+static void allocate_segment_by_default(struct f4fs_sb_info *sbi,
+						int type, bool force, int mlog)
+{
+	struct curseg_info *curseg = CURSEG_I2(sbi, type + mlog * NR_CURSEG_TYPE);
+
+	if (force)
+		new_curseg_mlog(sbi, type, true, mlog);
+	else if (!is_set_ckpt_flags(sbi, CP_CRC_RECOVERY_FLAG) &&
+					curseg->seg_type == CURSEG_WARM_NODE)
+		new_curseg_mlog(sbi, type, false, mlog);
+	else if (curseg->alloc_type == LFS &&
+			is_next_segment_free(sbi, curseg, type) &&
+			likely(!is_sbi_flag_set(sbi, SBI_CP_DISABLED)))
+		new_curseg_mlog(sbi, type, false, mlog);
+	else if (f4fs_need_SSR(sbi) &&
+			get_ssr_segment_mlog(sbi, type, SSR, 0, mlog))
+		change_curseg_mlog(sbi, type, true, mlog);
+	else
+		new_curseg_mlog(sbi, type, false, mlog);
+
+	stat_inc_seg_type(sbi, curseg);
+}
+
+#else
 static void allocate_segment_by_default(struct f4fs_sb_info *sbi,
 						int type, bool force)
 {
@@ -2890,25 +3194,26 @@ static void allocate_segment_by_default(struct f4fs_sb_info *sbi,
 
 	stat_inc_seg_type(sbi, curseg);
 }
+#endif
 
 void f4fs_allocate_segment_for_resize(struct f4fs_sb_info *sbi, int type,
 					unsigned int start, unsigned int end)
 {
-	struct curseg_info *curseg = CURSEG_I(sbi, type);
+	struct curseg_info *curseg = CURSEG_I2(sbi, type);
 	unsigned int segno;
 
 	f4fs_down_read(&SM_I(sbi)->curseg_lock);
 	mutex_lock(&curseg->curseg_mutex);
 	down_write(&SIT_I(sbi)->sentry_lock);
 
-	segno = CURSEG_I(sbi, type)->segno;
+	segno = CURSEG_I2(sbi, type)->segno;
 	if (segno < start || segno > end)
 		goto unlock;
 
-	if (f4fs_need_SSR(sbi) && get_ssr_segment(sbi, type, SSR, 0))
-		change_curseg(sbi, type, true);
+	if (f4fs_need_SSR(sbi) && get_ssr_segment_mlog(sbi, type, SSR, 0, 0))
+		change_curseg_mlog(sbi, type, true, 0);
 	else
-		new_curseg(sbi, type, true);
+		new_curseg_mlog(sbi, type, true, 0);
 
 	stat_inc_seg_type(sbi, curseg);
 
@@ -2924,10 +3229,11 @@ unlock:
 	f4fs_up_read(&SM_I(sbi)->curseg_lock);
 }
 
+#ifdef MLOG
 static void __allocate_new_segment(struct f4fs_sb_info *sbi, int type,
-						bool new_sec, bool force)
+						bool new_sec, bool force, int mlog)
 {
-	struct curseg_info *curseg = CURSEG_I(sbi, type);
+	struct curseg_info *curseg = CURSEG_I2(sbi, type + mlog * NR_CURSEG_TYPE);
 	unsigned int old_segno;
 
 	if (!curseg->inited)
@@ -2941,14 +3247,36 @@ static void __allocate_new_segment(struct f4fs_sb_info *sbi, int type,
 		return;
 alloc:
 	old_segno = curseg->segno;
-	SIT_I(sbi)->s_ops->allocate_segment(sbi, type, true);
+	SIT_I(sbi)->s_ops->allocate_segment(sbi, type, true, 0);
 	locate_dirty_segment(sbi, old_segno);
 }
+#else
+static void __allocate_new_segment(struct f4fs_sb_info *sbi, int type,
+						bool new_sec, bool force)
+{
+	struct curseg_info *curseg = CURSEG_Ii(sbi, type);
+	unsigned int old_segno;
+
+	if (!curseg->inited)
+		goto alloc;
+
+	if (force || curseg->next_blkoff ||
+		get_valid_blocks(sbi, curseg->segno, new_sec))
+		goto alloc;
+
+	if (!get_ckpt_valid_blocks(sbi, curseg->segno, new_sec))
+		return;
+alloc:
+	old_segno = curseg->segno;
+	SIT_I(sbi)->s_ops->allocate_segment(sbi, type, true, 0);
+	locate_dirty_segment(sbi, old_segno);
+}
+#endif
 
 static void __allocate_new_section(struct f4fs_sb_info *sbi,
 						int type, bool force)
 {
-	__allocate_new_segment(sbi, type, true, force);
+	__allocate_new_segment(sbi, type, true, force, 0);
 }
 
 void f4fs_allocate_new_section(struct f4fs_sb_info *sbi, int type, bool force)
@@ -2967,7 +3295,11 @@ void f4fs_allocate_new_segments(struct f4fs_sb_info *sbi)
 	f4fs_down_read(&SM_I(sbi)->curseg_lock);
 	down_write(&SIT_I(sbi)->sentry_lock);
 	for (i = CURSEG_HOT_DATA; i <= CURSEG_COLD_DATA; i++)
+#ifdef MLOG
+		__allocate_new_segment(sbi, i, false, false, 0);
+#else
 		__allocate_new_segment(sbi, i, false, false);
+#endif
 	up_write(&SIT_I(sbi)->sentry_lock);
 	f4fs_up_read(&SM_I(sbi)->curseg_lock);
 }
@@ -3245,7 +3577,12 @@ void f4fs_allocate_data_block(struct f4fs_sb_info *sbi, struct page *page,
 		struct f4fs_io_info *fio)
 {
 	struct sit_info *sit_i = SIT_I(sbi);
+#ifdef MLOG
+  int mlog = atomic_inc_return(&sbi->next_mlog) % sbi->nr_mlog;
+	struct curseg_info *curseg = CURSEG_I2(sbi, type + mlog * NR_CURSEG_TYPE);
+#else
 	struct curseg_info *curseg = CURSEG_I(sbi, type);
+#endif
 	unsigned long long old_mtime;
 	bool from_gc = (type == CURSEG_ALL_DATA_ATGC);
 	struct seg_entry *se = NULL;
@@ -3272,7 +3609,7 @@ void f4fs_allocate_data_block(struct f4fs_sb_info *sbi, struct page *page,
 	 * because, this function updates a summary entry in the
 	 * current summary block.
 	 */
-	__add_sum_entry(sbi, type, sum);
+	__add_sum_entry(sbi, type, sum, mlog);
 
 	__refresh_next_blkoff(sbi, curseg);
 
@@ -3296,10 +3633,19 @@ void f4fs_allocate_data_block(struct f4fs_sb_info *sbi, struct page *page,
 
 	if (!__has_curseg_space(sbi, curseg)) {
 		if (from_gc)
+#ifdef MLOG
+			get_atssr_segment_mlog(sbi, type, se->type,
+						AT_SSR, se->mtime, mlog);
+#else
 			get_atssr_segment(sbi, type, se->type,
 						AT_SSR, se->mtime);
+#endif
 		else
+#ifdef MLOG
+			sit_i->s_ops->allocate_segment(sbi, type, false, mlog);
+#else
 			sit_i->s_ops->allocate_segment(sbi, type, false);
+#endif
 	}
 	/*
 	 * segment dirty status should be updated after segment allocation,
@@ -3502,7 +3848,7 @@ static inline int __f4fs_get_curseg(struct f4fs_sb_info *sbi,
 	int i;
 
 	for (i = CURSEG_HOT_DATA; i < NO_CHECK_TYPE; i++) {
-		if (CURSEG_I(sbi, i)->segno == segno)
+		if (CURSEG_I2(sbi, i)->segno == segno)
 			break;
 	}
 	return i;
@@ -3546,7 +3892,7 @@ void f4fs_do_replace_block(struct f4fs_sb_info *sbi, struct f4fs_summary *sum,
 	}
 
 	f4fs_bug_on(sbi, !IS_DATASEG(type));
-	curseg = CURSEG_I(sbi, type);
+	curseg = CURSEG_I2(sbi, type);
 
 	mutex_lock(&curseg->curseg_mutex);
 	down_write(&sit_i->sentry_lock);
@@ -3558,11 +3904,19 @@ void f4fs_do_replace_block(struct f4fs_sb_info *sbi, struct f4fs_summary *sum,
 	/* change the current segment */
 	if (segno != curseg->segno) {
 		curseg->next_segno = segno;
+#ifdef MLOG
+		change_curseg_mlog(sbi, type, true, 0);
+#else
 		change_curseg(sbi, type, true);
+#endif
 	}
 
 	curseg->next_blkoff = GET_BLKOFF_FROM_SEG0(sbi, new_blkaddr);
+#ifdef MLOG
+	__add_sum_entry(sbi, type, sum, 0);
+#else
 	__add_sum_entry(sbi, type, sum);
+#endif
 
 	if (!recover_curseg || recover_newaddr) {
 		if (!from_gc)
@@ -3586,7 +3940,11 @@ void f4fs_do_replace_block(struct f4fs_sb_info *sbi, struct f4fs_summary *sum,
 	if (recover_curseg) {
 		if (old_cursegno != curseg->segno) {
 			curseg->next_segno = old_cursegno;
+#ifdef MLOG
+			change_curseg_mlog(sbi, type, true, 0);
+#else
 			change_curseg(sbi, type, true);
+#endif
 		}
 		curseg->next_blkoff = old_blkoff;
 		curseg->alloc_type = old_alloc_type;
@@ -3673,7 +4031,11 @@ static int read_compacted_summaries(struct f4fs_sb_info *sbi)
 	block_t start;
 	int i, j, offset;
 
+#ifdef MLOG
+	start = start_sum_block(sbi, 0);
+#else
 	start = start_sum_block(sbi);
+#endif
 
 	page = f4fs_get_meta_page(sbi, start++);
 	if (IS_ERR(page))
@@ -3681,11 +4043,11 @@ static int read_compacted_summaries(struct f4fs_sb_info *sbi)
 	kaddr = (unsigned char *)page_address(page);
 
 	/* Step 1: restore nat cache */
-	seg_i = CURSEG_I(sbi, CURSEG_HOT_DATA);
+	seg_i = CURSEG_I2(sbi, CURSEG_HOT_DATA);
 	memcpy(seg_i->journal, kaddr, SUM_JOURNAL_SIZE);
 
 	/* Step 2: restore sit cache */
-	seg_i = CURSEG_I(sbi, CURSEG_COLD_DATA);
+	seg_i = CURSEG_I2(sbi, CURSEG_COLD_DATA);
 	memcpy(seg_i->journal, kaddr + SUM_JOURNAL_SIZE, SUM_JOURNAL_SIZE);
 	offset = 2 * SUM_JOURNAL_SIZE;
 
@@ -3694,11 +4056,15 @@ static int read_compacted_summaries(struct f4fs_sb_info *sbi)
 		unsigned short blk_off;
 		unsigned int segno;
 
-		seg_i = CURSEG_I(sbi, i);
+		seg_i = CURSEG_I2(sbi, i);
 		segno = le32_to_cpu(ckpt->cur_data_segno[i]);
 		blk_off = le16_to_cpu(ckpt->cur_data_blkoff[i]);
 		seg_i->next_segno = segno;
+#ifdef MLOG
+		reset_curseg_mlog(sbi, i, 0, 0);
+#else
 		reset_curseg(sbi, i, 0);
+#endif
 		seg_i->alloc_type = ckpt->alloc_type[i];
 		seg_i->next_blkoff = blk_off;
 
@@ -3729,6 +4095,81 @@ static int read_compacted_summaries(struct f4fs_sb_info *sbi)
 	return 0;
 }
 
+#ifdef MLOG
+static int read_normal_summaries(struct f4fs_sb_info *sbi, int type, int mlog)
+{
+	struct f4fs_checkpoint *ckpt = F4FS_CKPT(sbi);
+	struct f4fs_summary_block *sum;
+	struct curseg_info *curseg;
+	struct page *new;
+	unsigned short blk_off;
+	unsigned int segno = 0;
+	block_t blk_addr = 0;
+	int err = 0;
+
+	/* get segment number and block addr */
+	if (IS_DATASEG(type)) {
+		segno = le32_to_cpu(ckpt->cur_data_segno[type + NR_CURSEG_DATA_TYPE * mlog]);
+		blk_off = le16_to_cpu(ckpt->cur_data_blkoff[type -
+							CURSEG_HOT_DATA + NR_CURSEG_DATA_TYPE + mlog]);
+		if (__exist_node_summaries(sbi))
+			blk_addr = sum_blk_addr(sbi, NR_CURSEG_PERSIST_TYPE * (sbi->nr_mlog - mlog), type);
+		else
+			blk_addr = sum_blk_addr(sbi, NR_CURSEG_DATA_TYPE * (sbi->nr_mlog - mlog), type);
+	} else {
+		segno = le32_to_cpu(ckpt->cur_node_segno[type -
+							CURSEG_HOT_NODE + NR_CURSEG_NODE_TYPE * mlog]);
+		blk_off = le16_to_cpu(ckpt->cur_node_blkoff[type -
+							CURSEG_HOT_NODE + NR_CURSEG_NODE_TYPE * mlog]);
+		if (__exist_node_summaries(sbi))
+			blk_addr = sum_blk_addr(sbi, NR_CURSEG_NODE_TYPE + NR_CURSEG_PERSIST_TYPE * (sbi->nr_mlog - mlog - 1),
+							type - CURSEG_HOT_NODE);
+		else
+			blk_addr = GET_SUM_BLOCK(sbi, segno);
+	}
+
+	new = f4fs_get_meta_page(sbi, blk_addr);
+	if (IS_ERR(new))
+		return PTR_ERR(new);
+	sum = (struct f4fs_summary_block *)page_address(new);
+
+	if (IS_NODESEG(type)) {
+		if (__exist_node_summaries(sbi)) {
+			struct f4fs_summary *ns = &sum->entries[0];
+			int i;
+
+			for (i = 0; i < sbi->blocks_per_seg; i++, ns++) {
+				ns->version = 0;
+				ns->ofs_in_node = 0;
+			}
+		} else {
+			err = f4fs_restore_node_summary(sbi, segno, sum);
+			if (err)
+				goto out;
+		}
+	}
+
+	/* set uncompleted segment to curseg */
+	curseg = CURSEG_I2(sbi, type + NR_CURSEG_TYPE * mlog);
+	mutex_lock(&curseg->curseg_mutex);
+
+	/* update journal info */
+	down_write(&curseg->journal_rwsem);
+	memcpy(curseg->journal, &sum->journal, SUM_JOURNAL_SIZE);
+	up_write(&curseg->journal_rwsem);
+
+	memcpy(curseg->sum_blk->entries, sum->entries, SUM_ENTRY_SIZE);
+	memcpy(&curseg->sum_blk->footer, &sum->footer, SUM_FOOTER_SIZE);
+	curseg->next_segno = segno;
+	reset_curseg_mlog(sbi, type, 0, mlog);
+	curseg->alloc_type = ckpt->alloc_type[type];
+	curseg->next_blkoff = blk_off;
+	mutex_unlock(&curseg->curseg_mutex);
+out:
+	f4fs_put_page(new, 1);
+	return err;
+}
+#else
 static int read_normal_summaries(struct f4fs_sb_info *sbi, int type)
 {
 	struct f4fs_checkpoint *ckpt = F4FS_CKPT(sbi);
@@ -3802,11 +4243,12 @@ out:
 	f4fs_put_page(new, 1);
 	return err;
 }
+#endif
 
 static int restore_curseg_summaries(struct f4fs_sb_info *sbi)
 {
-	struct f4fs_journal *sit_j = CURSEG_I(sbi, CURSEG_COLD_DATA)->journal;
-	struct f4fs_journal *nat_j = CURSEG_I(sbi, CURSEG_HOT_DATA)->journal;
+	struct f4fs_journal *sit_j = CURSEG_I2(sbi, CURSEG_COLD_DATA)->journal;
+	struct f4fs_journal *nat_j = CURSEG_I2(sbi, CURSEG_HOT_DATA)->journal;
 	int type = CURSEG_HOT_DATA;
 	int err;
 
@@ -3814,8 +4256,13 @@ static int restore_curseg_summaries(struct f4fs_sb_info *sbi)
 		int npages = f4fs_npages_for_summary_flush(sbi, true);
 
 		if (npages >= 2)
+#ifdef MLOG
+			f4fs_ra_meta_pages(sbi, start_sum_block(sbi, 0), npages,
+							META_CP, true);
+#else
 			f4fs_ra_meta_pages(sbi, start_sum_block(sbi), npages,
 							META_CP, true);
+#endif
 
 		/* restore for compacted data summary */
 		err = read_compacted_summaries(sbi);
@@ -3825,12 +4272,22 @@ static int restore_curseg_summaries(struct f4fs_sb_info *sbi)
 	}
 
 	if (__exist_node_summaries(sbi))
+#ifdef MLOG
+		f4fs_ra_meta_pages(sbi,
+				sum_blk_addr(sbi, NR_CURSEG_PERSIST_TYPE * sbi->nr_mlog, type),
+				NR_CURSEG_PERSIST_TYPE - type, META_CP, true);
+#else
 		f4fs_ra_meta_pages(sbi,
 				sum_blk_addr(sbi, NR_CURSEG_PERSIST_TYPE, type),
 				NR_CURSEG_PERSIST_TYPE - type, META_CP, true);
+#endif
 
 	for (; type <= CURSEG_COLD_NODE; type++) {
+#ifdef MLOG
+		err = read_normal_summaries(sbi, type, 0);
+#else
 		err = read_normal_summaries(sbi, type);
+#endif
 		if (err)
 			return err;
 	}
@@ -3842,6 +4299,23 @@ static int restore_curseg_summaries(struct f4fs_sb_info *sbi)
 			 nats_in_cursum(nat_j), sits_in_cursum(sit_j));
 		return -EINVAL;
 	}
+
+#ifdef MLOG
+if (__exist_node_summaries(sbi))
+    f4fs_ra_meta_pages(
+      sbi,
+      sum_blk_addr(sbi, NR_CURSEG_TYPE * (sbi->nr_mlog - 1) , 0),
+      NR_CURSEG_PERSIST_TYPE * (sbi->nr_mlog - 1),
+      META_CP, true);
+  // restore segment summaries for mlog 1 to N
+  for (int i = 1; i < sbi->nr_mlog; i++) {
+    for (type = CURSEG_HOT_DATA; type <= CURSEG_COLD_NODE; type++) {
+      err = read_normal_summaries(sbi, type, i);
+      if (err)
+        return err;
+    }
+  }
+#endif
 
 	return 0;
 }
@@ -3860,12 +4334,12 @@ static void write_compacted_summaries(struct f4fs_sb_info *sbi, block_t blkaddr)
 	memset(kaddr, 0, PAGE_SIZE);
 
 	/* Step 1: write nat cache */
-	seg_i = CURSEG_I(sbi, CURSEG_HOT_DATA);
+	seg_i = CURSEG_I2(sbi, CURSEG_HOT_DATA);
 	memcpy(kaddr, seg_i->journal, SUM_JOURNAL_SIZE);
 	written_size += SUM_JOURNAL_SIZE;
 
 	/* Step 2: write sit cache */
-	seg_i = CURSEG_I(sbi, CURSEG_COLD_DATA);
+	seg_i = CURSEG_I2(sbi, CURSEG_COLD_DATA);
 	memcpy(kaddr + written_size, seg_i->journal, SUM_JOURNAL_SIZE);
 	written_size += SUM_JOURNAL_SIZE;
 
@@ -3873,7 +4347,7 @@ static void write_compacted_summaries(struct f4fs_sb_info *sbi, block_t blkaddr)
 	for (i = CURSEG_HOT_DATA; i <= CURSEG_COLD_DATA; i++) {
 		unsigned short blkoff;
 
-		seg_i = CURSEG_I(sbi, i);
+		seg_i = CURSEG_I2(sbi, i);
 		if (sbi->ckpt->alloc_type[i] == SSR)
 			blkoff = sbi->blocks_per_seg;
 		else
@@ -3905,6 +4379,22 @@ static void write_compacted_summaries(struct f4fs_sb_info *sbi, block_t blkaddr)
 	}
 }
 
+#ifdef MLOG
+void write_normal_summaries_mlog(struct f4fs_sb_info *sbi,
+					block_t blkaddr, int type, int mlog)
+{
+	int i, end;
+
+	if (IS_DATASEG(type))
+		end = type + NR_CURSEG_DATA_TYPE;
+	else
+		end = type + NR_CURSEG_NODE_TYPE;
+
+	for (i = type; i < end; i++)
+		write_current_sum_page_mlog(sbi, i, blkaddr + (i - type), mlog);
+}
+
+#endif
 static void write_normal_summaries(struct f4fs_sb_info *sbi,
 					block_t blkaddr, int type)
 {
@@ -4046,7 +4536,7 @@ static void add_sits_in_set(struct f4fs_sb_info *sbi)
 
 static void remove_sits_in_journal(struct f4fs_sb_info *sbi)
 {
-	struct curseg_info *curseg = CURSEG_I(sbi, CURSEG_COLD_DATA);
+	struct curseg_info *curseg = CURSEG_I2(sbi, CURSEG_COLD_DATA);
 	struct f4fs_journal *journal = curseg->journal;
 	int i;
 
@@ -4073,7 +4563,7 @@ void f4fs_flush_sit_entries(struct f4fs_sb_info *sbi, struct cp_control *cpc)
 {
 	struct sit_info *sit_i = SIT_I(sbi);
 	unsigned long *bitmap = sit_i->dirty_sentries_bitmap;
-	struct curseg_info *curseg = CURSEG_I(sbi, CURSEG_COLD_DATA);
+	struct curseg_info *curseg = CURSEG_I2(sbi, CURSEG_COLD_DATA);
 	struct f4fs_journal *journal = curseg->journal;
 	struct sit_entry_set *ses, *tmp;
 	struct list_head *head = &SM_I(sbi)->sit_entry_set;
@@ -4337,14 +4827,23 @@ static int build_curseg(struct f4fs_sb_info *sbi)
 	struct curseg_info *array;
 	int i;
 
+#ifdef MLOG
+	array = f4fs_kzalloc(sbi, array_size(NR_CURSEG_TYPE * sbi->nr_mlog,
+					sizeof(*array)), GFP_KERNEL);
+#else
 	array = f4fs_kzalloc(sbi, array_size(NR_CURSEG_TYPE,
 					sizeof(*array)), GFP_KERNEL);
+#endif
 	if (!array)
 		return -ENOMEM;
 
 	SM_I(sbi)->curseg_array = array;
-
-	for (i = 0; i < NO_CHECK_TYPE; i++) {
+#ifdef MLOG
+	for (i = 0; i < NO_CHECK_TYPE * sbi->nr_mlog; i++)
+#else
+	for (i = 0; i < NO_CHECK_TYPE; i++)
+#endif
+  {
 		mutex_init(&array[i].curseg_mutex);
 		array[i].sum_blk = f4fs_kzalloc(sbi, PAGE_SIZE, GFP_KERNEL);
 		if (!array[i].sum_blk)
@@ -4370,7 +4869,7 @@ static int build_curseg(struct f4fs_sb_info *sbi)
 static int build_sit_entries(struct f4fs_sb_info *sbi)
 {
 	struct sit_info *sit_i = SIT_I(sbi);
-	struct curseg_info *curseg = CURSEG_I(sbi, CURSEG_COLD_DATA);
+	struct curseg_info *curseg = CURSEG_I2(sbi, CURSEG_COLD_DATA);
 	struct f4fs_journal *journal = curseg->journal;
 	struct seg_entry *se;
 	struct f4fs_sit_entry sit;
@@ -4525,11 +5024,20 @@ static void init_free_segmap(struct f4fs_sb_info *sbi)
 	}
 
 	/* set use the current segments */
+#ifdef MLOG
+  for (int i = 0 ; i < sbi->nr_mlog; i++)
+	for (type = CURSEG_HOT_DATA; type <= CURSEG_COLD_NODE; type++) {
+		struct curseg_info *curseg_t = CURSEG_I2(sbi, type + i * NR_CURSEG_TYPE);
+
+		__set_test_and_inuse(sbi, curseg_t->segno);
+	}
+#else
 	for (type = CURSEG_HOT_DATA; type <= CURSEG_COLD_NODE; type++) {
 		struct curseg_info *curseg_t = CURSEG_I(sbi, type);
 
 		__set_test_and_inuse(sbi, curseg_t->segno);
 	}
+#endif
 }
 
 static void init_dirty_segmap(struct f4fs_sb_info *sbi)
@@ -4637,7 +5145,7 @@ static int sanity_check_curseg(struct f4fs_sb_info *sbi)
 	 * In LFS curseg, all blkaddr after .next_blkoff should be unused.
 	 */
 	for (i = 0; i < NR_PERSISTENT_LOG; i++) {
-		struct curseg_info *curseg = CURSEG_I(sbi, i);
+		struct curseg_info *curseg = CURSEG_I2(sbi, i);
 		struct seg_entry *se = get_seg_entry(sbi, curseg->segno);
 		unsigned int blkofs = curseg->next_blkoff;
 
@@ -4705,7 +5213,7 @@ static int check_zone_write_pointer(struct f4fs_sb_info *sbi,
 	 */
 	for (i = 0; i < NO_CHECK_TYPE; i++)
 		if (zone_secno == GET_SEC_FROM_SEG(sbi,
-						   CURSEG_I(sbi, i)->segno))
+						   CURSEG_I2(sbi, i)->segno))
 			return 0;
 
 	/*
@@ -4785,7 +5293,7 @@ static int report_one_zone_cb(struct blk_zone *zone, unsigned int idx,
 
 static int fix_curseg_write_pointer(struct f4fs_sb_info *sbi, int type)
 {
-	struct curseg_info *cs = CURSEG_I(sbi, type);
+	struct curseg_info *cs = CURSEG_I2(sbi, type);
 	struct f4fs_dev_info *zbd;
 	struct blk_zone zone;
 	unsigned int cs_section, wp_segno, wp_blkoff, wp_sector_off;

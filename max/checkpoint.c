@@ -1474,7 +1474,7 @@ static int do_checkpoint(struct f4fs_sb_info *sbi, struct cp_control *cpc)
 	__u32 crc32 = 0;
 	int i;
 	int cp_payload_blks = __cp_payload(sbi);
-	struct curseg_info *seg_i = CURSEG_I(sbi, CURSEG_HOT_NODE);
+	struct curseg_info *seg_i = CURSEG_I2(sbi, CURSEG_HOT_NODE);
 	u64 kbytes_written;
 	int err;
 
@@ -1484,6 +1484,28 @@ static int do_checkpoint(struct f4fs_sb_info *sbi, struct cp_control *cpc)
 	/* start to update checkpoint, cp ver is already updated previously */
 	ckpt->elapsed_time = cpu_to_le64(get_mtime(sbi, true));
 	ckpt->free_segment_count = cpu_to_le32(free_segments(sbi));
+#ifdef MLOG
+	for (i = 0; i < NR_CURSEG_NODE_TYPE; i++) {
+    for (int j = 0 ; j < sbi->nr_mlog ; j++) {
+		ckpt->cur_node_segno[i + j * NR_CURSEG_NODE_TYPE] =
+			cpu_to_le32(curseg_segno(sbi, i + CURSEG_HOT_NODE + j * NR_CURSEG_TYPE));
+		ckpt->cur_node_blkoff[i] =
+			cpu_to_le16(curseg_blkoff(sbi, i + CURSEG_HOT_NODE + j * NR_CURSEG_TYPE));
+		ckpt->alloc_type[i + CURSEG_HOT_NODE + j * NR_CURSEG_PERSIST_TYPE] =
+				curseg_alloc_type(sbi, i + CURSEG_HOT_NODE + j * NR_CURSEG_TYPE);
+    }
+	}
+	for (i = 0; i < NR_CURSEG_DATA_TYPE; i++) {
+    for (int j = 0 ; j < sbi->nr_mlog ; j++) {
+		ckpt->cur_data_segno[i + j * NR_CURSEG_DATA_TYPE] =
+			cpu_to_le32(curseg_segno(sbi, i + CURSEG_HOT_DATA + j * NR_CURSEG_TYPE));
+		ckpt->cur_data_blkoff[i + j * NR_CURSEG_DATA_TYPE] =
+			cpu_to_le16(curseg_blkoff(sbi, i + CURSEG_HOT_DATA + j * NR_CURSEG_TYPE));
+		ckpt->alloc_type[i + CURSEG_HOT_DATA + j * NR_CURSEG_PERSIST_TYPE] =
+				curseg_alloc_type(sbi, i + CURSEG_HOT_DATA + j * NR_CURSEG_TYPE);
+    }
+	}
+#else
 	for (i = 0; i < NR_CURSEG_NODE_TYPE; i++) {
 		ckpt->cur_node_segno[i] =
 			cpu_to_le32(curseg_segno(sbi, i + CURSEG_HOT_NODE));
@@ -1500,6 +1522,7 @@ static int do_checkpoint(struct f4fs_sb_info *sbi, struct cp_control *cpc)
 		ckpt->alloc_type[i + CURSEG_HOT_DATA] =
 				curseg_alloc_type(sbi, i + CURSEG_HOT_DATA);
 	}
+#endif
 
 	/* 2 cp + n data seg summary + orphan inode blocks */
 	data_sum_blocks = f4fs_npages_for_summary_flush(sbi, false);
@@ -1589,6 +1612,17 @@ static int do_checkpoint(struct f4fs_sb_info *sbi, struct cp_control *cpc)
 		f4fs_write_node_summaries(sbi, start_blk);
 		start_blk += NR_CURSEG_NODE_TYPE;
 	}
+
+#ifdef MLOG
+  for (int i = 1; i < sbi->nr_mlog; i++) {
+    write_normal_summaries_mlog(sbi, start_blk, CURSEG_HOT_DATA, i);
+    start_blk += NR_CURSEG_DATA_TYPE;
+    if (__remain_node_summaries(cpc->reason)) {
+      write_normal_summaries_mlog(sbi, start_blk, CURSEG_HOT_NODE, i);
+      start_blk += NR_CURSEG_NODE_TYPE;
+    }
+  }
+#endif
 
 	/* update user_block_counts */
 	sbi->last_valid_block_count = sbi->total_valid_block_count;

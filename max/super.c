@@ -4315,7 +4315,7 @@ try_onemore:
 	sbi->sectors_written_start = f4fs_get_sectors_written(sbi);
 
 	/* Read accumulated write IO statistics if exists */
-	seg_i = CURSEG_I(sbi, CURSEG_HOT_NODE);
+	seg_i = CURSEG_I2(sbi, CURSEG_HOT_NODE);
 	if (__exist_node_summaries(sbi))
 		sbi->kbytes_written =
 			le64_to_cpu(seg_i->journal->info.kbytes_written);

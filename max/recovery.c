@@ -373,7 +373,7 @@ static int find_fsync_dnodes(struct f4fs_sb_info *sbi, struct list_head *head,
 	int err = 0;
 
 	/* get node pages in the current segment */
-	curseg = CURSEG_I(sbi, CURSEG_WARM_NODE);
+	curseg = CURSEG_I2(sbi, CURSEG_WARM_NODE);
 	blkaddr = NEXT_FREE_BLKADDR(sbi, curseg);
 
 	while (1) {
@@ -484,7 +484,7 @@ static int check_index_in_prev_nodes(struct f4fs_sb_info *sbi,
 
 	/* Get the previous summary */
 	for (i = CURSEG_HOT_DATA; i <= CURSEG_COLD_DATA; i++) {
-		struct curseg_info *curseg = CURSEG_I(sbi, i);
+		struct curseg_info *curseg = CURSEG_I2(sbi, i);
 
 		if (curseg->segno == segno) {
 			sum = curseg->sum_blk->entries[blkoff];
@@ -728,7 +728,7 @@ static int recover_data(struct f4fs_sb_info *sbi, struct list_head *inode_list,
 	unsigned int ra_blocks = RECOVERY_MAX_RA_BLOCKS;
 
 	/* get node pages in the current segment */
-	curseg = CURSEG_I(sbi, CURSEG_WARM_NODE);
+	curseg = CURSEG_I2(sbi, CURSEG_WARM_NODE);
 	blkaddr = NEXT_FREE_BLKADDR(sbi, curseg);
 
 	while (1) {

@@ -3791,6 +3791,9 @@ unsigned int f4fs_usable_segs_in_sec(struct f4fs_sb_info *sbi,
 			unsigned int segno);
 unsigned int f4fs_usable_blks_in_seg(struct f4fs_sb_info *sbi,
 			unsigned int segno);
+#ifdef MLOG
+void write_normal_summaries_mlog(struct f4fs_sb_info *sbi, block_t blkaddr, int type, int mlog);
+#endif
 
 #define DEF_FRAGMENT_SIZE	4
 #define MIN_FRAGMENT_SIZE	1

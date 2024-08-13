@@ -228,7 +228,11 @@ struct sec_entry {
 };
 
 struct segment_allocation {
+#ifdef MLOG
+	void (*allocate_segment)(struct f4fs_sb_info *, int, bool, int);
+#else
 	void (*allocate_segment)(struct f4fs_sb_info *, int, bool);
+#endif
 };
 
 #define MAX_SKIP_GC_COUNT			16
@@ -339,7 +343,11 @@ struct sit_entry_set {
 /*
  * inline functions
  */
+#ifdef MLOG
+static inline struct curseg_info *CURSEG_I2(struct f4fs_sb_info *sbi, int type)
+#else
 static inline struct curseg_info *CURSEG_I(struct f4fs_sb_info *sbi, int type)
+#endif
 {
 	return (struct curseg_info *)(SM_I(sbi)->curseg_array + type);
 }
@@ -592,6 +600,25 @@ static inline bool has_curseg_enough_space(struct f4fs_sb_info *sbi,
 	int i;
 
 	/* check current node segment */
+#ifdef MLOG
+  for (int j = 0 ; j < sbi->nr_mlog ; j++) {
+	for (i = CURSEG_HOT_NODE; i <= CURSEG_COLD_NODE; i++) {
+		segno = CURSEG_I2(sbi, i + j * NR_CURSEG_TYPE)->segno;
+		left_blocks = f4fs_usable_blks_in_seg(sbi, segno) -
+				get_seg_entry(sbi, segno)->ckpt_valid_blocks;
+
+		if (node_blocks > left_blocks)
+			return false;
+	}
+
+	/* check current data segment */
+	segno = CURSEG_I2(sbi, CURSEG_HOT_DATA + NR_CURSEG_TYPE)->segno;
+	left_blocks = f4fs_usable_blks_in_seg(sbi, segno) -
+			get_seg_entry(sbi, segno)->ckpt_valid_blocks;
+	if (dent_blocks > left_blocks)
+		return false;
+  }
+#else
 	for (i = CURSEG_HOT_NODE; i <= CURSEG_COLD_NODE; i++) {
 		segno = CURSEG_I(sbi, i)->segno;
 		left_blocks = f4fs_usable_blks_in_seg(sbi, segno) -
@@ -607,6 +634,7 @@ static inline bool has_curseg_enough_space(struct f4fs_sb_info *sbi,
 			get_seg_entry(sbi, segno)->ckpt_valid_blocks;
 	if (dent_blocks > left_blocks)
 		return false;
+#endif
 	return true;
 }
 
@@ -695,20 +723,32 @@ enum {
 static inline unsigned int curseg_segno(struct f4fs_sb_info *sbi,
 		int type)
 {
+#ifdef MLOG
+	struct curseg_info *curseg = CURSEG_I2(sbi, type);
+#else
 	struct curseg_info *curseg = CURSEG_I(sbi, type);
+#endif
 	return curseg->segno;
 }
 
 static inline unsigned char curseg_alloc_type(struct f4fs_sb_info *sbi,
 		int type)
 {
+#ifdef MLOG
+	struct curseg_info *curseg = CURSEG_I2(sbi, type);
+#else
 	struct curseg_info *curseg = CURSEG_I(sbi, type);
+#endif
 	return curseg->alloc_type;
 }
 
 static inline unsigned short curseg_blkoff(struct f4fs_sb_info *sbi, int type)
 {
+#ifdef MLOG
+	struct curseg_info *curseg = CURSEG_I2(sbi, type);
+#else
 	struct curseg_info *curseg = CURSEG_I(sbi, type);
+#endif
 	return curseg->next_blkoff;
 }
 
@@ -849,11 +889,19 @@ static inline void set_summary(struct f4fs_summary *sum, nid_t nid,
 	sum->version = version;
 }
 
+#ifdef MLOG
+static inline block_t start_sum_block(struct f4fs_sb_info *sbi, int blk_off)
+{
+	return __start_cp_addr(sbi) +
+		le32_to_cpu(F4FS_CKPT(sbi)->cp_pack_start_sum) + blk_off;
+}
+#else
 static inline block_t start_sum_block(struct f4fs_sb_info *sbi)
 {
 	return __start_cp_addr(sbi) +
 		le32_to_cpu(F4FS_CKPT(sbi)->cp_pack_start_sum);
 }
+#endif
 
 static inline block_t sum_blk_addr(struct f4fs_sb_info *sbi, int base, int type)
 {
