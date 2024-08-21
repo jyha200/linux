@@ -261,7 +261,7 @@ struct sit_info {
 	unsigned long long dirty_min_mtime;	/* rerange candidates in GC_AT */
 	unsigned long long dirty_max_mtime;	/* rerange candidates in GC_AT */
 
-	unsigned int last_victim[MAX_GC_POLICY]; /* last victim segment # */
+	unsigned int last_victim[48][MAX_GC_POLICY]; /* last victim segment # */
 };
 
 struct free_segmap_info {
@@ -305,7 +305,7 @@ struct victim_selection {
 	int (*get_victim)(struct f3fs_sb_info *, unsigned int *,
 					int, int, char, unsigned long long);
 	int (*get_multiple_victim)(struct f3fs_sb_info *, unsigned int *,
-					int, int, char, unsigned long long);
+					int, int, char, unsigned long long, int);
 };
 
 /* for active log information */
