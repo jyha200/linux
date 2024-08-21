@@ -2905,9 +2905,9 @@ static int f3fs_ioc_flush_device(struct file *filp, unsigned long arg)
 			ret = -EBUSY;
 			goto out;
 		}
-		sm->last_victim[GC_CB] = end_segno + 1;
-		sm->last_victim[GC_GREEDY] = end_segno + 1;
-		sm->last_victim[ALLOC_NEXT] = end_segno + 1;
+		sm->last_victim[0][GC_CB] = end_segno + 1;
+		sm->last_victim[0][GC_GREEDY] = end_segno + 1;
+		sm->last_victim[0][ALLOC_NEXT] = end_segno + 1;
 
 		gc_control.victim_segno = start_segno;
 		ret = f3fs_gc(sbi, &gc_control);
