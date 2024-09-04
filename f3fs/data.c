@@ -2946,6 +2946,7 @@ int f3fs_do_write_data_page2(struct f3fs_io_info *fio, block_t index)
   }
 
   if (fio->old_blkaddr != dn.data_blkaddr) {
+    atomic_inc(&fio->sbi->false_positives);
     goto out_writepage;
   }
   fio->old_blkaddr = dn.data_blkaddr;

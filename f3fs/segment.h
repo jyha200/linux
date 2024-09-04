@@ -628,6 +628,10 @@ static inline unsigned int dirty_segments(struct f3fs_sb_info *sbi)
 		atomic_read(&dirty_i->nr_dirty[DIRTY_COLD_NODE]);
 }
 
+static inline unsigned int false_positives(struct f3fs_sb_info* sbi)
+{
+  return atomic_read(&sbi->false_positives);
+}
 static inline unsigned int total_written_direct_request_blocks(struct f3fs_sb_info* sbi)
 {
   return atomic_read(&sbi->total_written_direct_request_blocks);

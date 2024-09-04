@@ -1870,6 +1870,7 @@ struct f3fs_sb_info {
   atomic_t total_written_direct_request_blocks;
   atomic_t gc_read_blocks;
   atomic_t gc_written_blocks;
+  atomic_t false_positives;
   int num_gc_thread;
 	struct mutex gc_internal_cp;		/* lock for segment bitmaps */
 };

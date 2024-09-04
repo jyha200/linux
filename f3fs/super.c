@@ -4036,6 +4036,7 @@ try_onemore:
   atomic_set(&sbi->total_written_blocks, 0);
   atomic_set(&sbi->total_written_request_blocks, 0);
   atomic_set(&sbi->total_written_direct_request_blocks, 0);
+  atomic_set(&sbi->false_positives, 0);
   atomic_set(&sbi->gc_read_blocks, 0);
   atomic_set(&sbi->gc_written_blocks, 0);
   sbi->num_gc_thread = num_gc_thread;
