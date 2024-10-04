@@ -1239,6 +1239,7 @@ static struct ceph_osd *create_osd(struct ceph_osd_client *osdc, int onum)
 	osd->o_osd = onum;
 
 	ceph_con_init(&osd->o_con, osd, &osd_con_ops, &osdc->client->msgr);
+	osd->o_con.osd_con = true;
 
 	return osd;
 }

@@ -148,6 +148,7 @@ struct ceph_client {
 	struct dentry *debugfs_osdmap;
 	struct dentry *debugfs_options;
 #endif
+  bool is_fsc;
 };
 
 #define from_msgr(ms)	container_of(ms, struct ceph_client, msgr)

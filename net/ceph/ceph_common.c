@@ -737,7 +737,7 @@ struct ceph_client *ceph_create_client(struct ceph_options *opt, void *private)
 	client = kzalloc(sizeof(*client), GFP_KERNEL);
 	if (client == NULL)
 		return ERR_PTR(-ENOMEM);
-
+  client->is_fsc = false;
 	client->private = private;
 	client->options = opt;
 

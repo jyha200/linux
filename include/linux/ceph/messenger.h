@@ -468,6 +468,7 @@ struct ceph_connection {
 		struct ceph_connection_v1_info v1;
 		struct ceph_connection_v2_info v2;
 	};
+	bool osd_con;
 };
 
 extern struct page *ceph_zero_page;

@@ -24,6 +24,7 @@
 #include <linux/ceph/decode.h>
 #include <linux/ceph/pagelist.h>
 #include <linux/export.h>
+#include <../../fs/ceph/super.h>
 
 /*
  * Ceph uses the messenger to exchange ceph_msg messages with other
@@ -637,6 +638,7 @@ void ceph_con_init(struct ceph_connection *con, void *private,
 	INIT_DELAYED_WORK(&con->work, ceph_con_workfn);
 
 	con->state = CEPH_CON_S_CLOSED;
+	con->osd_con = false;
 }
 EXPORT_SYMBOL(ceph_con_init);
 
@@ -1446,6 +1448,37 @@ static bool con_sock_closed(struct ceph_connection *con)
 	}
 #undef CASE
 
+	if (con->state == CEPH_CON_S_OPEN) {
+		if (con->osd_con) {
+			struct ceph_osd* osd = (struct ceph_osd*)con->private;
+			dout("%s %d failure detected\n", __func__, __LINE__);
+      if (osd->o_osdc) {
+        if (osd->o_osdc->client) {
+          if (osd->o_osdc->client->is_fsc) {
+            struct ceph_fs_client* fsc = (struct ceph_fs_client*)osd->o_osdc->client->private;
+            if (fsc->sb) {
+              fsc->sb->s_failed = true;
+            }
+            else {
+              dout("%s %d\n", __func__, __LINE__);
+            }
+          }
+          else {
+            dout("%s %d\n", __func__, __LINE__);
+          }
+        }
+        else {
+          dout("%s %d\n", __func__, __LINE__);
+        }
+      }
+      else {
+        dout("%s %d\n", __func__, __LINE__);
+      }
+    }
+    else {
+      dout("%s %d\n", __func__, __LINE__);
+    }
+	}
 	return true;
 }
 
