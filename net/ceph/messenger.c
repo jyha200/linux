@@ -1456,33 +1456,27 @@ static bool con_sock_closed(struct ceph_connection *con)
 	if (con->state == CEPH_CON_S_OPEN) {
 		if (con->osd_con) {
 			struct ceph_osd* osd = (struct ceph_osd*)con->private;
-			dout("%s %d failure detected\n", __func__, __LINE__);
-      if (osd->o_osdc) {
-        if (osd->o_osdc->client) {
-          if (osd->o_osdc->client->is_fsc) {
-            struct ceph_fs_client* fsc = (struct ceph_fs_client*)osd->o_osdc->client->private;
-            if (fsc->sb) {
-              fsc->sb->s_failed = true;
-            }
-            else {
-              dout("%s %d\n", __func__, __LINE__);
-            }
-          }
-          else {
-            dout("%s %d\n", __func__, __LINE__);
-          }
-        }
-        else {
-          dout("%s %d\n", __func__, __LINE__);
-        }
-      }
-      else {
-        dout("%s %d\n", __func__, __LINE__);
-      }
-    }
-    else {
-      dout("%s %d\n", __func__, __LINE__);
-    }
+			if (osd->o_osdc) {
+				if (osd->o_osdc->client) {
+					if (osd->o_osdc->client->is_fsc) {
+						struct ceph_fs_client* fsc = (struct ceph_fs_client*)osd->o_osdc->client->private;
+						if (fsc->sb) {
+							fsc->sb->s_failed = true;
+						}
+						else {
+						}
+					}
+					else {
+					}
+				}
+				else {
+				}
+			}
+			else {
+			}
+		}
+		else {
+		}
 	}
 	return true;
 }

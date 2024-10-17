@@ -1418,6 +1418,16 @@ int filp_close(struct file *filp, fl_owner_t id)
 		printk(KERN_ERR "VFS: Close: file count is 0\n");
 		return 0;
 	}
+	if (filp->f_mapping) {
+		if (filp->f_mapping->host) {
+			struct inode *inode = filp->f_mapping->host;
+			struct super_block *sb = inode->i_sb;
+			if (sb->s_failed) {
+				fput(filp);
+				return 0;
+			}
+		}
+	}
 
 	if (filp->f_op->flush)
 		retval = filp->f_op->flush(filp, id);

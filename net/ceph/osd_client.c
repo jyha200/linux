@@ -21,6 +21,7 @@
 #include <linux/ceph/auth.h>
 #include <linux/ceph/pagelist.h>
 #include <linux/ceph/striper.h>
+#include <../../fs/ceph/super.h>
 
 #define OSD_OPREPLY_FRONT_LEN	512
 
@@ -2246,6 +2247,7 @@ static void encode_request_finish(struct ceph_msg *msg)
 	     le32_to_cpu(msg->hdr.middle_len), le32_to_cpu(msg->hdr.data_len),
 	     le16_to_cpu(msg->hdr.version));
 }
+static void complete_request(struct ceph_osd_request *req, int err);
 
 /*
  * @req has to be assigned a tid and registered.
@@ -2253,6 +2255,15 @@ static void encode_request_finish(struct ceph_msg *msg)
 static void send_request(struct ceph_osd_request *req)
 {
 	struct ceph_osd *osd = req->r_osd;
+	if (osd->o_osdc->client->is_fsc) {
+		struct ceph_fs_client* fsc = (struct ceph_fs_client*)osd->o_osdc->client->private;
+		if (fsc->sb) {
+			if (fsc->sb->s_failed) {
+				complete_request(req, -EIO);
+				return;
+			}
+		}
+	}
 
 	verify_osd_locked(osd);
 	WARN_ON(osd->o_osd != req->r_t.osd);
@@ -2312,7 +2323,6 @@ static void maybe_request_map(struct ceph_osd_client *osdc)
 		ceph_monc_renew_subs(&osdc->client->monc);
 }
 
-static void complete_request(struct ceph_osd_request *req, int err);
 static void send_map_check(struct ceph_osd_request *req);
 
 static void __submit_request(struct ceph_osd_request *req, bool wrlocked)
