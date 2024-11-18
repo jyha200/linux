@@ -920,12 +920,6 @@ void part_stat_get2(struct device *dev, unsigned long* stats)
 		inflight = blk_mq_in_flight(q, bdev);
 	else
 		inflight = part_in_flight(bdev);
-
-	if (inflight) {
-		part_stat_lock();
-		update_io_ticks(bdev, jiffies, true);
-		part_stat_unlock();
-	}
 	part_stat_read_all(bdev, &stat);
   stats[0] = inflight;
   stats[1] = stat.ios[STAT_WRITE];

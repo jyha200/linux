@@ -7988,6 +7988,7 @@ void md_error(struct mddev *mddev, struct md_rdev *rdev)
       printk("raid failed without gendisk");
     }
 		return;
+  }
 	mddev->pers->error_handler(mddev,rdev);
 	if (mddev->degraded)
 		set_bit(MD_RECOVERY_RECOVER, &mddev->recovery);

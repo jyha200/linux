@@ -59,7 +59,8 @@ bool validate_path(char* path) {
 
 void validate_device_list(void) {
   int count = 0;
-  for (int i = 0 ; i < num_devices ; i++) {
+  int i;
+  for (i = 0 ; i < num_devices ; i++) {
     char target_path[MAX_PATH_LEN] = "/dev/";
     if (strlen(target_path) + strlen(parsed_device_list[i]) >= MAX_PATH_LEN) {
       printk("Too long path %s", parsed_device_list[i]);
@@ -76,7 +77,7 @@ void validate_device_list(void) {
     }
   }
   num_devices = count;
-  for (int i = 0 ; i < num_devices ; i++) {
+  for (i = 0 ; i < num_devices ; i++) {
     printk("%d: %s", i, validated_device_path[i]);
   }
 }
@@ -140,9 +141,10 @@ unsigned infer_timeout(unsigned long iops, unsigned long inflight,
   int size_idx = get_size_idx(size);
   int iops_idx = get_iops_idx(iops);
   int max_idx = NUM_LAT - 1;
+  int i;
 
   *max_loc = &q_table[iops_idx][size_idx][inflight_idx][NUM_LAT - 1];
-  for (int i = NUM_LAT - 2; i >= 0 ; i--) {
+  for (i = NUM_LAT - 2; i >= 0 ; i--) {
     if (**max_loc < q_table[iops_idx][size_idx][inflight_idx][i]) {
       *max_loc = &q_table[iops_idx][size_idx][inflight_idx][i];
       max_idx = i;
@@ -175,17 +177,18 @@ int watchdog_fn(void* arg) {
   int prev_reward = 0;
   int spec_max_iops = max_kiops * 1000;
   long good = 0, bad = 0, some_bad = 0, count = 0;
+  int i;
   spec_max_iops /= 16;
   memset(&c, 0x0, sizeof(struct nvme_command));
   c.common.opcode = INVALID_OPCODE;
   parse_device_list();
   validate_device_list();
-  for (int i = NUM_IOPS - 2 ; i >= 0 ; i--) {
+  for (i = NUM_IOPS - 2 ; i >= 0 ; i--) {
     iops_bound[i] = spec_max_iops;
     spec_max_iops >>= 4;
   }
 
-  for (int i = 0 ; i < num_devices ; i++) {
+  for (i = 0 ; i < num_devices ; i++) {
     if (validated_device_path[i][0] != '\0') {
       devs[i] = filp_open(validated_device_path[i], O_RDWR, 0);
       {
@@ -241,7 +244,7 @@ int watchdog_fn(void* arg) {
           timeout = msecs_to_jiffies(timeout_ms);
         }
         start_time = ktime_get();
-        ret = nvme_submit_user_cmd(ctrl->admin_q, &c, NULL, 0, NULL, 0, 0, &result, timeout, false);
+        ret = nvme_submit_user_cmd(ctrl->admin_q, &c, 0, 0, NULL, 0, 0, &result, timeout, NULL, 0);
 				end_time = ktime_get();
 				time_diff = ktime_to_ns(ktime_sub(end_time, start_time));
         if (rl_on) {
@@ -303,7 +306,7 @@ int watchdog_fn(void* arg) {
     msleep(polling_duration_ms);
   }
 
-  for (int i = 0 ; i < num_devices; i++) {
+  for (i = 0 ; i < num_devices; i++) {
     if (devs[i]) {
       filp_close(devs[i], NULL);
     }
