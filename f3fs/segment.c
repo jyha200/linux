@@ -3233,7 +3233,7 @@ static int __get_segment_type(struct f3fs_io_info *fio)
 	case 4:
 		type = __get_segment_type_4(fio);
 		break;
-	case 64:
+	case 78:
 		type = __get_segment_type_6(fio);
 		break;
 	default:

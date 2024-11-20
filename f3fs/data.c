@@ -472,8 +472,8 @@ int f3fs_target_device_index(struct f3fs_sb_info *sbi, block_t blkaddr)
 
 static blk_opf_t f3fs_io_flags(struct f3fs_io_info *fio)
 {
-	unsigned long long temp_mask = ((unsigned long long)1 << NR_TEMP_TYPE) - 1;
-	unsigned long long fua_flag, meta_flag, io_flag;
+	__uint128_t temp_mask = ((__uint128_t)1 << NR_TEMP_TYPE) - 1;
+	__uint128_t fua_flag, meta_flag, io_flag;
 	blk_opf_t op_flags = 0;
 
 	if (fio->op != REQ_OP_WRITE)
@@ -494,9 +494,9 @@ static blk_opf_t f3fs_io_flags(struct f3fs_io_info *fio)
 	 *    5 |    4 |   3 |    2 |    1 |   0 |
 	 * Cold | Warm | Hot | Cold | Warm | Hot |
 	 */
-	if ((1 << fio->temp) & meta_flag)
+	if (((__uint128_t)1 << fio->temp) & meta_flag)
 		op_flags |= REQ_META;
-	if ((1 << fio->temp) & fua_flag)
+	if (((__uint128_t)1 << fio->temp) & fua_flag)
 		op_flags |= REQ_FUA;
 	return op_flags;
 }

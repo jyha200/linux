@@ -193,11 +193,11 @@ struct victim_sel_policy {
 };
 
 struct seg_entry {
-	unsigned int type:6;		/* segment type like CURSEG_XXX_TYPE */
+	unsigned int type:7;		/* segment type like CURSEG_XXX_TYPE */
 	unsigned int valid_blocks:10;	/* # of valid blocks */
 	unsigned int ckpt_valid_blocks:10;	/* # of valid blocks last cp */
 	unsigned int curseg:1;
-	unsigned int padding:5;		/* padding */
+	unsigned int padding:4;		/* padding */
 	unsigned char cur_valid_map[SIT_VBLOCK_MAP_SIZE];	/* validity bitmap of blocks */
 	/*
 	 * # of valid blocks and the validity bitmap stored in the last

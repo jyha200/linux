@@ -30,8 +30,6 @@
 /* Search max. number of dirty segments to select a victim segment */
 #define DEF_MAX_VICTIM_SEARCH 4096 /* covers 8GB */
 
-#define NUM_GC_WORKER (32)
-
 #define VICTIM_COUNT (16)
 
 struct worker_arg {

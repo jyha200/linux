@@ -56,9 +56,9 @@
  * enoughly. The implementaion currently uses no more than 6 logs.
  * Half the logs are used for nodes, and the other half are used for data.
  */
-#define MAX_ACTIVE_LOGS	90
+#define MAX_ACTIVE_LOGS	100
 #define MAX_ACTIVE_NODE_LOGS	8
-#define MAX_ACTIVE_DATA_LOGS	82
+#define MAX_ACTIVE_DATA_LOGS	92
 
 #define VERSION_LEN	256
 #define MAX_VOLUME_NAME		512
@@ -361,13 +361,13 @@ struct f3fs_nat_block {
 #define SIT_VBLOCKS_SHIFT	10
 #define SIT_VBLOCKS_MASK	((1 << SIT_VBLOCKS_SHIFT) - 1)
 #define GET_SIT_VBLOCKS(raw_sit)				\
-	(le16_to_cpu((raw_sit)->vblocks) & SIT_VBLOCKS_MASK)
+	(le32_to_cpu((raw_sit)->vblocks) & SIT_VBLOCKS_MASK)
 #define GET_SIT_TYPE(raw_sit)					\
-	((le16_to_cpu((raw_sit)->vblocks) & ~SIT_VBLOCKS_MASK)	\
+	((le32_to_cpu((raw_sit)->vblocks) & ~SIT_VBLOCKS_MASK)	\
 	 >> SIT_VBLOCKS_SHIFT)
 
 struct f3fs_sit_entry {
-	__le16 vblocks;				/* reference above */
+	__le32 vblocks;				/* reference above */
 	__u8 valid_map[SIT_VBLOCK_MAP_SIZE];	/* bitmap for valid blocks */
 	__le64 mtime;				/* segment age for cleaning */
 } __packed;
