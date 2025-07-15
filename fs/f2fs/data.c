@@ -488,6 +488,39 @@ static bool f2fs_crypt_mergeable_bio(struct bio *bio, const struct inode *inode,
 	return fscrypt_mergeable_bio(bio, inode, next_idx);
 }
 
+#if THROTTLE
+void busy_wait(struct f2fs_sb_info *sbi, struct bio *bio)
+{
+  bool is_read = !is_read_io(bio_op(bio));
+  int size = bio_sectors(bio) << 9;
+  ktime_t start = sbi->start[is_read];
+  int turn = atomic_read(&sbi->turn[is_read]);
+  int result = 0;
+
+  if (sbi->refresh[is_read] == 0) {
+    return;
+  }
+
+  result = atomic_sub_return(size, &sbi->remain_io[is_read]);
+
+  while (result < 0) {
+    ktime_t end = ktime_add_ms(start, 1000);
+    while (ktime_before(ktime_get(), end)) {
+      cpu_relax();
+    }
+    if (atomic_try_cmpxchg(&sbi->turn[is_read], &turn, turn + 1)) {
+      sbi->start[is_read] = ktime_get();
+      atomic_set(&sbi->remain_io[is_read], sbi->refresh[is_read] - size);
+      break;
+    } else {
+      start = sbi->start[is_read];
+      turn = atomic_read(&sbi->turn[is_read]);
+      result = atomic_sub_return(size, &sbi->remain_io[is_read]);
+    }
+  }
+}
+#endif
+
 static inline void __submit_bio(struct f2fs_sb_info *sbi,
 				struct bio *bio, enum page_type type)
 {
@@ -536,6 +569,9 @@ submit_io:
 		trace_f2fs_submit_read_bio(sbi->sb, type, bio);
 	else
 		trace_f2fs_submit_write_bio(sbi->sb, type, bio);
+#if THROTTLE
+  busy_wait(sbi, bio);
+#endif
 
 	iostat_update_submit_ctx(bio, type);
 	submit_bio(bio);

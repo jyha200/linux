@@ -29,6 +29,8 @@
 #include <linux/fscrypt.h>
 #include <linux/fsverity.h>
 
+#define THROTTLE (1)
+
 struct pagevec;
 
 #ifdef CONFIG_F2FS_CHECK_FS
@@ -1852,6 +1854,13 @@ struct f2fs_sb_info {
 	/* For io latency related statistics info in one iostat period */
 	spinlock_t iostat_lat_lock;
 	struct iostat_lat_info *iostat_io_lat;
+#endif
+
+#if THROTTLE
+  ktime_t start[2];
+  atomic_t turn[2];
+  int refresh[2];
+  atomic_t remain_io[2];
 #endif
 };
 
