@@ -41,6 +41,11 @@
 
 static struct kmem_cache *f3fs_inode_cachep;
 
+#if THROTTLE
+static int rw_limit = 0;
+module_param(rw_limit, int, 0);
+#endif
+
 #ifdef CONFIG_F3FS_FAULT_INJECTION
 
 const char *f3fs_fault_name[FAULT_MAX] = {
@@ -3646,6 +3651,15 @@ static void init_sb_info(struct f3fs_sb_info *sbi)
 	init_f3fs_rwsem(&sbi->sb_lock);
 	init_f3fs_rwsem(&sbi->pin_sem);
   mutex_init(&sbi->gc_internal_cp);
+
+#if THROTTLE
+  for (int i = 0 ; i < 2 ; i++) {
+    sbi->start[i] = ktime_get();
+    atomic_set(&sbi->turn[i], 0);
+    sbi->refresh[i] = rw_limit;
+    atomic_set(&sbi->remain_io[i], sbi->refresh[i]);
+  }
+#endif
 }
 
 static int init_percpu_info(struct f3fs_sb_info *sbi)

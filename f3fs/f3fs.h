@@ -32,6 +32,8 @@
 #include "range_lock.h"
 #include "lockfree_list.h"
 
+#define THROTTLE (1)
+
 struct pagevec;
 
 #ifdef CONFIG_F3FS_CHECK_FS
@@ -1872,6 +1874,13 @@ struct f3fs_sb_info {
   atomic_t gc_written_blocks;
   int num_gc_thread;
 	struct mutex gc_internal_cp;		/* lock for segment bitmaps */
+
+#if THROTTLE
+  ktime_t start[2];
+  atomic_t turn[2];
+  int refresh[2];
+  atomic_t remain_io[2];
+#endif
 };
 
 #ifdef CONFIG_F3FS_FAULT_INJECTION
