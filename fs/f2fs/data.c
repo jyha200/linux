@@ -493,7 +493,7 @@ void busy_wait(struct f2fs_sb_info *sbi, struct bio *bio)
 {
   //bool is_read = !is_read_io(bio_op(bio));
   bool is_read = false;
-  int size = bio_sectors(bio) << 9;
+  int size = bio_sectors(bio) >> 1; // KiB unit
   ktime_t start = sbi->start[is_read];
   int turn = atomic_read(&sbi->turn[is_read]);
   int result = 0;
